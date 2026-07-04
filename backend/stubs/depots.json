@@ -1,0 +1,16 @@
+[
+  {
+    "depot_id": "DPT_NORTH",
+    "name": "North Depot",
+    "region": "Great Lakes",
+    "sales_territory": "North Metro",
+    "location": { "lat": 42.3314, "lng": -83.0458 }
+  },
+  {
+    "depot_id": "DPT_WEST",
+    "name": "West Depot",
+    "region": "Great Lakes",
+    "sales_territory": "West Metro",
+    "location": { "lat": 42.9634, "lng": -85.6681 }
+  }
+]

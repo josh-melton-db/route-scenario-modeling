@@ -1,0 +1,191 @@
+[
+  {
+    "scenario_type": "baseline",
+    "label": "Baseline",
+    "description": "Run the identity scenario to confirm the current-state network and full run lifecycle.",
+    "result_stub_id": "scn_baseline_identity",
+    "fields": []
+  },
+  {
+    "scenario_type": "ma_new_customers",
+    "label": "M&A / New Customers",
+    "description": "Add a small acquired account group and test whether the existing network can absorb the new demand.",
+    "result_stub_id": "scn_ma_newcustomers",
+    "fields": [
+      {
+        "name": "new_customer_count",
+        "label": "New customer count",
+        "field_type": "integer",
+        "required": true,
+        "default": 4,
+        "min": 1,
+        "max": 12,
+        "step": 1,
+        "options": [],
+        "placeholder": null,
+        "help_text": "Number of fictional acquired customer locations added to the selected depot/day."
+      },
+      {
+        "name": "avg_cases_per_customer",
+        "label": "Average cases per customer",
+        "field_type": "integer",
+        "required": true,
+        "default": 95,
+        "min": 20,
+        "max": 250,
+        "step": 5,
+        "options": [],
+        "placeholder": null,
+        "help_text": "Demand volume used for the stubbed new-customer scenario."
+      }
+    ]
+  },
+  {
+    "scenario_type": "new_customer_growth",
+    "label": "Organic New Customer Growth",
+    "description": "Model new customer wins without an acquisition event using the same network impact pattern.",
+    "result_stub_id": "scn_ma_newcustomers",
+    "fields": [
+      {
+        "name": "growth_customer_count",
+        "label": "Growth customer count",
+        "field_type": "integer",
+        "required": true,
+        "default": 4,
+        "min": 1,
+        "max": 10,
+        "step": 1,
+        "options": [],
+        "placeholder": null,
+        "help_text": "Number of newly won customer locations to add."
+      },
+      {
+        "name": "growth_zone",
+        "label": "Growth zone",
+        "field_type": "select",
+        "required": true,
+        "default": "east_corridor",
+        "min": null,
+        "max": null,
+        "step": null,
+        "options": [
+          { "value": "east_corridor", "label": "East corridor" },
+          { "value": "south_ring", "label": "South ring" },
+          { "value": "north_suburbs", "label": "North suburbs" }
+        ],
+        "placeholder": null,
+        "help_text": "Fictional geographic pocket where the growth appears."
+      }
+    ]
+  },
+  {
+    "scenario_type": "driver_count_change",
+    "label": "Driver / Truck Count Change",
+    "description": "Test whether the network remains feasible when available driver or vehicle count changes.",
+    "result_stub_id": "scn_driver_minus_one",
+    "fields": [
+      {
+        "name": "driver_delta",
+        "label": "Driver count change",
+        "field_type": "integer",
+        "required": true,
+        "default": -1,
+        "min": -3,
+        "max": 3,
+        "step": 1,
+        "options": [],
+        "placeholder": null,
+        "help_text": "Negative values remove drivers; positive values add drivers."
+      },
+      {
+        "name": "allow_overtime",
+        "label": "Allow overtime",
+        "field_type": "boolean",
+        "required": true,
+        "default": true,
+        "min": null,
+        "max": null,
+        "step": null,
+        "options": [],
+        "placeholder": null,
+        "help_text": "When enabled, the scenario can trade overtime cost for feasibility."
+      }
+    ]
+  },
+  {
+    "scenario_type": "delivery_frequency_day_change",
+    "label": "Delivery Frequency / Day Change",
+    "description": "Evaluate shifting customer cadence or delivery days while preserving service feasibility.",
+    "result_stub_id": "scn_day_change",
+    "fields": [
+      {
+        "name": "target_customers",
+        "label": "Target customer segment",
+        "field_type": "select",
+        "required": true,
+        "default": "flexible_independents",
+        "min": null,
+        "max": null,
+        "step": null,
+        "options": [
+          { "value": "flexible_independents", "label": "Flexible independent retailers" },
+          { "value": "low_volume", "label": "Low-volume customers" },
+          { "value": "non_strategic", "label": "Non-strategic accounts" }
+        ],
+        "placeholder": null,
+        "help_text": "Customer group eligible for day changes in the stub."
+      },
+      {
+        "name": "target_day",
+        "label": "Target day",
+        "field_type": "select",
+        "required": true,
+        "default": "Thursday",
+        "min": null,
+        "max": null,
+        "step": null,
+        "options": [
+          { "value": "Wednesday", "label": "Wednesday" },
+          { "value": "Thursday", "label": "Thursday" },
+          { "value": "Friday", "label": "Friday" }
+        ],
+        "placeholder": null,
+        "help_text": "New delivery day used for eligible customers."
+      }
+    ]
+  },
+  {
+    "scenario_type": "facility_move",
+    "label": "Facility / Warehouse Move",
+    "description": "Move a depot location and evaluate route duration and service-window feasibility.",
+    "result_stub_id": "scn_facility_move",
+    "fields": [
+      {
+        "name": "new_depot_location",
+        "label": "New depot location",
+        "field_type": "latlng",
+        "required": true,
+        "default": { "lat": 42.1015, "lng": -84.0230 },
+        "min": null,
+        "max": null,
+        "step": null,
+        "options": [],
+        "placeholder": "42.1015, -84.0230",
+        "help_text": "Fictional replacement depot coordinates for this scenario."
+      },
+      {
+        "name": "preserve_service_windows",
+        "label": "Preserve current service windows",
+        "field_type": "boolean",
+        "required": true,
+        "default": true,
+        "min": null,
+        "max": null,
+        "step": null,
+        "options": [],
+        "placeholder": null,
+        "help_text": "When true, the scenario fails if the move creates hard service-window violations."
+      }
+    ]
+  }
+]

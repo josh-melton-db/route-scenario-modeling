@@ -1,0 +1,70 @@
+{
+  "scenario_id": "scn_ma_newcustomers",
+  "baseline_scenario_id": "baseline",
+  "scenario_name": "Acquired Customer Group",
+  "status": "succeeded",
+  "route_variant": "new_customers",
+  "matrix_source": "haversine_circuity",
+  "generated_at": "2026-07-02T12:00:00Z",
+  "summary": "Four new Generic Co customer locations are added with one incremental route and no missed windows.",
+  "scenario_depot": {
+    "depot_id": "DPT_NORTH",
+    "name": "North Depot",
+    "region": "Great Lakes",
+    "sales_territory": "North Metro",
+    "location": { "lat": 42.3314, "lng": -83.0458 }
+  },
+  "scenario_kpis": {
+    "route_count": 5,
+    "driver_count": 5,
+    "vehicle_count": 5,
+    "total_miles": 334,
+    "drive_minutes": 486,
+    "service_minutes": 690,
+    "total_cases": 3240,
+    "avg_stops_per_route": 5.6,
+    "avg_capacity_utilization_pct": 78.0,
+    "avg_driver_utilization_pct": 82.0,
+    "overtime_minutes": 42,
+    "missed_windows": 0,
+    "late_minutes": 0,
+    "cost_breakdown": {
+      "mileage_cost": 1002,
+      "labor_cost": 3040,
+      "overtime_cost": 147,
+      "fixed_vehicle_cost": 1700,
+      "sla_penalty_cost": 0,
+      "total_cost": 5889
+    }
+  },
+  "kpi_deltas": {
+    "route_count": 1,
+    "driver_count": 1,
+    "vehicle_count": 1,
+    "total_miles": 48,
+    "drive_minutes": 74,
+    "service_minutes": 100,
+    "total_cases": 400,
+    "avg_stops_per_route": -0.4,
+    "avg_capacity_utilization_pct": -4.0,
+    "avg_driver_utilization_pct": -4.0,
+    "overtime_minutes": 7,
+    "missed_windows": 0,
+    "late_minutes": 0,
+    "mileage_cost": 144,
+    "labor_cost": 460,
+    "overtime_cost": 25,
+    "fixed_vehicle_cost": 340,
+    "sla_penalty_cost": 0,
+    "total_cost": 969
+  },
+  "customer_impacts": [
+    { "customer_id": "CUST-901", "customer_name": "Meadowbrook Foods", "is_new_customer": true, "changed_route": true, "changed_day": true, "changed_depot": false, "sequence_shift": 0, "baseline_day": null, "scenario_day": "Tuesday", "baseline_route_id": null, "scenario_route_id": "RTE-005", "window_risk": "none", "disruption_score": 0.12, "summary": "New acquired customer assigned to incremental route." },
+    { "customer_id": "CUST-902", "customer_name": "Creekside Market", "is_new_customer": true, "changed_route": true, "changed_day": true, "changed_depot": false, "sequence_shift": 0, "baseline_day": null, "scenario_day": "Tuesday", "baseline_route_id": null, "scenario_route_id": "RTE-005", "window_risk": "none", "disruption_score": 0.12, "summary": "New acquired customer assigned to incremental route." },
+    { "customer_id": "CUST-903", "customer_name": "Prairie Grocery", "is_new_customer": true, "changed_route": true, "changed_day": true, "changed_depot": false, "sequence_shift": 0, "baseline_day": null, "scenario_day": "Tuesday", "baseline_route_id": null, "scenario_route_id": "RTE-005", "window_risk": "none", "disruption_score": 0.12, "summary": "New acquired customer assigned to incremental route." },
+    { "customer_id": "CUST-904", "customer_name": "Townline Retail", "is_new_customer": true, "changed_route": true, "changed_day": true, "changed_depot": false, "sequence_shift": 0, "baseline_day": null, "scenario_day": "Tuesday", "baseline_route_id": null, "scenario_route_id": "RTE-005", "window_risk": "none", "disruption_score": 0.12, "summary": "New acquired customer assigned to incremental route." },
+    { "customer_id": "CUST-004", "customer_name": "Maple Corner Store", "is_new_customer": false, "changed_route": true, "changed_day": false, "changed_depot": false, "sequence_shift": 1, "baseline_day": "Tuesday", "scenario_day": "Tuesday", "baseline_route_id": "RTE-001", "scenario_route_id": "RTE-002", "window_risk": "none", "disruption_score": 0.18, "summary": "Shifted to balance the new-customer route." },
+    { "customer_id": "CUST-021", "customer_name": "Union Square Market", "is_new_customer": false, "changed_route": true, "changed_day": false, "changed_depot": false, "sequence_shift": 2, "baseline_day": "Tuesday", "scenario_day": "Tuesday", "baseline_route_id": "RTE-004", "scenario_route_id": "RTE-003", "window_risk": "none", "disruption_score": 0.21, "summary": "Shifted to preserve service windows after new-customer adds." }
+  ],
+  "constraint_violations": []
+}

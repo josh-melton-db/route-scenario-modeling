@@ -1,0 +1,16 @@
+command:
+  - uvicorn
+  - backend.main:app
+  - --host=0.0.0.0
+  - --port=8000
+env:
+  - name: DATABRICKS_CATALOG
+    value: demos
+  - name: DATABRICKS_SCHEMA
+    value: route_scenario_modeling
+  - name: DATABRICKS_SQL_WAREHOUSE_ID
+    valueFrom: sql_warehouse
+  - name: DATA_BACKEND
+    value: databricks
+  - name: DATABRICKS_ROUTE_SOLVER_ENDPOINT
+    value: route-solver-dev

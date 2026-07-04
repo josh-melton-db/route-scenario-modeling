@@ -1,0 +1,175 @@
+bundle:
+  name: route-scenario-modeling
+
+include:
+  - resources/*.yml
+
+sync:
+  include:
+    - dist/**
+  exclude:
+    - node_modules/
+    - .venv/
+    - .pytest_cache/
+    - "**/__pycache__/"
+    - .DS_Store
+    - src/
+    - /package.json
+    - /package-lock.json
+    - /vite.config.ts
+    - /tsconfig.json
+    - /tsconfig.app.json
+    - /tsconfig.node.json
+    - /postcss.config.js
+    - /tailwind.config.ts
+
+variables:
+  catalog:
+    description: Unity Catalog catalog
+    default: demos
+  schema:
+    description: Unity Catalog schema
+    default: route_scenario_modeling
+  raw_volume:
+    description: Unity Catalog volume for generated raw data
+    default: raw
+  warehouse_name:
+    description: Serverless SQL warehouse used by the app and jobs
+    default: route-scenario-modeling-warehouse
+  app_name:
+    description: Databricks App name
+    default: route-scenario-modeling
+  route_scenario_modeling_job_name:
+    description: Job that runs baseline reconstruction, scenarios, solver, comparison, and validation
+    default: route-scenario-modeling-plan
+  solver_model_name:
+    description: Unity Catalog registered MLflow PyFunc model for the OR-Tools route solver
+    default: demos.route_scenario_modeling.route_solver
+  solver_model_alias:
+    description: Alias used by the solve task when loading the route solver model
+    default: champion
+  route_solver_endpoint_name:
+    description: Databricks Model Serving endpoint used for interactive route solves
+    default: route-solver
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      profile: DEFAULT
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      app_name: route-scenario-modeling-dev
+      warehouse_name: route-scenario-modeling-warehouse-dev
+      route_scenario_modeling_job_name: route-scenario-modeling-plan-dev
+      route_solver_endpoint_name: route-solver-dev
+
+  prod:
+    mode: production
+    workspace:
+      profile: DEFAULT
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+
+resources:
+  sql_warehouses:
+    sql_warehouse:
+      name: ${var.warehouse_name}
+      cluster_size: Small
+      enable_photon: true
+      enable_serverless_compute: true
+      # Auto-scale up to 5 clusters under concurrent load. The app fires a few
+      # SQL statements in parallel on each page load; this gives the warehouse
+      # room to multiplex without queueing.
+      min_num_clusters: 1
+      max_num_clusters: 5
+      auto_stop_mins: 10
+      warehouse_type: PRO
+
+  schemas:
+    route_scenario_modeling_schema:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+
+  volumes:
+    raw:
+      catalog_name: ${var.catalog}
+      schema_name: ${var.schema}
+      name: ${var.raw_volume}
+      volume_type: MANAGED
+
+  apps:
+    route_scenario_modeling_app:
+      name: ${var.app_name}
+      description: Route scenario modeling for baseline reconstruction and what-if planning
+      source_code_path: .
+      resources:
+        - name: sql_warehouse
+          sql_warehouse:
+            id: ${resources.sql_warehouses.sql_warehouse.id}
+            permission: CAN_USE
+        - name: dim_depots_augmented
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.dim_depots_augmented
+            permission: SELECT
+        - name: dim_customers_augmented
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.dim_customers_augmented
+            permission: SELECT
+        - name: dim_fleet_assets
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.dim_fleet_assets
+            permission: SELECT
+        - name: fact_delivery_orders
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.fact_delivery_orders
+            permission: SELECT
+        - name: baseline_route_daily_summary
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.baseline_route_daily_summary
+            permission: SELECT
+        - name: scenario_kpis
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.scenario_kpis
+            permission: SELECT
+        - name: app_scenario_results
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.app_scenario_results
+            permission: SELECT
+        - name: scenario_definitions
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.scenario_definitions
+            permission: MODIFY
+        - name: scenario_parameters
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.scenario_parameters
+            permission: MODIFY
+        - name: scenario_customer_overrides
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.scenario_customer_overrides
+            permission: SELECT
+        - name: scenario_fleet_overrides
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.scenario_fleet_overrides
+            permission: SELECT
+        - name: scenario_depot_overrides
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.scenario_depot_overrides
+            permission: SELECT
+        - name: scenario_frequency_overrides
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.scenario_frequency_overrides
+            permission: SELECT

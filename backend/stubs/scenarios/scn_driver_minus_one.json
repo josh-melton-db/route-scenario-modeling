@@ -1,0 +1,67 @@
+{
+  "scenario_id": "scn_driver_minus_one",
+  "baseline_scenario_id": "baseline",
+  "scenario_name": "One Fewer Driver",
+  "status": "succeeded",
+  "route_variant": "driver_minus_one",
+  "matrix_source": "haversine_circuity",
+  "generated_at": "2026-07-02T12:00:00Z",
+  "summary": "The network remains feasible with one fewer driver, but route duration and overtime increase.",
+  "scenario_depot": {
+    "depot_id": "DPT_NORTH",
+    "name": "North Depot",
+    "region": "Great Lakes",
+    "sales_territory": "North Metro",
+    "location": { "lat": 42.3314, "lng": -83.0458 }
+  },
+  "scenario_kpis": {
+    "route_count": 3,
+    "driver_count": 3,
+    "vehicle_count": 3,
+    "total_miles": 301,
+    "drive_minutes": 448,
+    "service_minutes": 590,
+    "total_cases": 2840,
+    "avg_stops_per_route": 8.0,
+    "avg_capacity_utilization_pct": 91.0,
+    "avg_driver_utilization_pct": 96.0,
+    "overtime_minutes": 118,
+    "missed_windows": 0,
+    "late_minutes": 0,
+    "cost_breakdown": {
+      "mileage_cost": 903,
+      "labor_cost": 2470,
+      "overtime_cost": 413,
+      "fixed_vehicle_cost": 1020,
+      "sla_penalty_cost": 0,
+      "total_cost": 4806
+    }
+  },
+  "kpi_deltas": {
+    "route_count": -1,
+    "driver_count": -1,
+    "vehicle_count": -1,
+    "total_miles": 15,
+    "drive_minutes": 36,
+    "service_minutes": 0,
+    "total_cases": 0,
+    "avg_stops_per_route": 2.0,
+    "avg_capacity_utilization_pct": 9.0,
+    "avg_driver_utilization_pct": 10.0,
+    "overtime_minutes": 83,
+    "missed_windows": 0,
+    "late_minutes": 0,
+    "mileage_cost": 45,
+    "labor_cost": -110,
+    "overtime_cost": 291,
+    "fixed_vehicle_cost": -340,
+    "sla_penalty_cost": 0,
+    "total_cost": -114
+  },
+  "customer_impacts": [
+    { "customer_id": "CUST-011", "customer_name": "Northline Foods", "is_new_customer": false, "changed_route": true, "changed_day": false, "changed_depot": false, "sequence_shift": 3, "baseline_day": "Tuesday", "scenario_day": "Tuesday", "baseline_route_id": "RTE-002", "scenario_route_id": "RTE-001", "window_risk": "at_risk", "disruption_score": 0.35, "summary": "Moved to a later stop on Route 1 to consolidate workload." },
+    { "customer_id": "CUST-017", "customer_name": "Parkview Retail", "is_new_customer": false, "changed_route": true, "changed_day": false, "changed_depot": false, "sequence_shift": 2, "baseline_day": "Tuesday", "scenario_day": "Tuesday", "baseline_route_id": "RTE-003", "scenario_route_id": "RTE-002", "window_risk": "at_risk", "disruption_score": 0.31, "summary": "Retained Tuesday service with later arrival risk." },
+    { "customer_id": "CUST-024", "customer_name": "Orchard Market", "is_new_customer": false, "changed_route": true, "changed_day": false, "changed_depot": false, "sequence_shift": 4, "baseline_day": "Tuesday", "scenario_day": "Tuesday", "baseline_route_id": "RTE-004", "scenario_route_id": "RTE-003", "window_risk": "at_risk", "disruption_score": 0.39, "summary": "Absorbed into the consolidated south route." }
+  ],
+  "constraint_violations": []
+}

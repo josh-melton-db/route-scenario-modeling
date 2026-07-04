@@ -1,0 +1,23 @@
+{
+  "route_count": 4,
+  "driver_count": 4,
+  "vehicle_count": 4,
+  "total_miles": 286,
+  "drive_minutes": 412,
+  "service_minutes": 590,
+  "total_cases": 2840,
+  "avg_stops_per_route": 6.0,
+  "avg_capacity_utilization_pct": 82.0,
+  "avg_driver_utilization_pct": 86.0,
+  "overtime_minutes": 35,
+  "missed_windows": 0,
+  "late_minutes": 0,
+  "cost_breakdown": {
+    "mileage_cost": 858,
+    "labor_cost": 2580,
+    "overtime_cost": 122,
+    "fixed_vehicle_cost": 1360,
+    "sla_penalty_cost": 0,
+    "total_cost": 4920
+  }
+}

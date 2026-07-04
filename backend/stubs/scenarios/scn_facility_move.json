@@ -1,0 +1,29 @@
+{
+  "scenario_id": "scn_facility_move",
+  "baseline_scenario_id": "baseline",
+  "scenario_name": "Facility Move South",
+  "status": "infeasible",
+  "route_variant": "facility_move",
+  "matrix_source": "haversine_circuity",
+  "generated_at": "2026-07-02T12:00:00Z",
+  "summary": "The moved depot creates hard route-duration and service-window violations under current constraints.",
+  "scenario_depot": {
+    "depot_id": "DPT_NORTH_MOVED",
+    "name": "Proposed South Depot",
+    "region": "Great Lakes",
+    "sales_territory": "South Metro",
+    "location": { "lat": 42.1015, "lng": -84.0230 }
+  },
+  "scenario_kpis": null,
+  "kpi_deltas": null,
+  "customer_impacts": [
+    { "customer_id": "CUST-004", "customer_name": "Maple Corner Store", "is_new_customer": false, "changed_route": false, "changed_day": false, "changed_depot": true, "sequence_shift": 0, "baseline_day": "Tuesday", "scenario_day": "Tuesday", "baseline_route_id": "RTE-001", "scenario_route_id": "RTE-001", "window_risk": "missed", "disruption_score": 0.82, "summary": "Depot move pushes arrival outside the customer service window." },
+    { "customer_id": "CUST-018", "customer_name": "Redwood Market", "is_new_customer": false, "changed_route": false, "changed_day": false, "changed_depot": true, "sequence_shift": 0, "baseline_day": "Tuesday", "scenario_day": "Tuesday", "baseline_route_id": "RTE-003", "scenario_route_id": "RTE-003", "window_risk": "missed", "disruption_score": 0.87, "summary": "Longer inbound leg causes a hard late-arrival violation." },
+    { "customer_id": "CUST-024", "customer_name": "Orchard Market", "is_new_customer": false, "changed_route": false, "changed_day": false, "changed_depot": true, "sequence_shift": 0, "baseline_day": "Tuesday", "scenario_day": "Tuesday", "baseline_route_id": "RTE-004", "scenario_route_id": "RTE-004", "window_risk": "missed", "disruption_score": 0.91, "summary": "Route cannot return within the driver duration limit from the moved depot." }
+  ],
+  "constraint_violations": [
+    { "violation_id": "VIO-001", "severity": "hard", "scope": "route", "ref_id": "RTE-003", "route_id": "RTE-003", "customer_id": null, "metric": "route_duration_minutes", "limit_value": 600, "actual_value": 668, "message": "Route 3 exceeds the maximum driver duration after the depot move.", "recommendation": "Add a driver, relax route duration, or keep the route assigned to the original depot." },
+    { "violation_id": "VIO-002", "severity": "hard", "scope": "customer", "ref_id": "CUST-018", "route_id": "RTE-003", "customer_id": "CUST-018", "metric": "arrival_minutes_after_window", "limit_value": 0, "actual_value": 38, "message": "Redwood Market would be served after its committed window.", "recommendation": "Shift delivery day, resequence the route, or negotiate a wider window." },
+    { "violation_id": "VIO-003", "severity": "hard", "scope": "depot", "ref_id": "DPT_NORTH_MOVED", "route_id": null, "customer_id": null, "metric": "network_feasibility", "limit_value": 1, "actual_value": 0, "message": "The proposed depot location makes the selected Tuesday network infeasible under current constraints.", "recommendation": "Evaluate a closer site or add temporary overflow capacity near the original North Depot." }
+  ]
+}

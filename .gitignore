@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.databricks/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+.env
+.env.local
+*.log
+.vscode/
+.idea/
+.cursor/

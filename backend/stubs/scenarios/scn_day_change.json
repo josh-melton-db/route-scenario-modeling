@@ -1,0 +1,70 @@
+{
+  "scenario_id": "scn_day_change",
+  "baseline_scenario_id": "baseline",
+  "scenario_name": "Delivery Day Rebalance",
+  "status": "succeeded",
+  "route_variant": "day_change",
+  "matrix_source": "haversine_circuity",
+  "generated_at": "2026-07-02T12:00:00Z",
+  "summary": "Selected flexible customers move from Tuesday to Thursday to smooth workload with no missed windows.",
+  "scenario_depot": {
+    "depot_id": "DPT_NORTH",
+    "name": "North Depot",
+    "region": "Great Lakes",
+    "sales_territory": "North Metro",
+    "location": { "lat": 42.3314, "lng": -83.0458 }
+  },
+  "scenario_kpis": {
+    "route_count": 4,
+    "driver_count": 4,
+    "vehicle_count": 4,
+    "total_miles": 294,
+    "drive_minutes": 421,
+    "service_minutes": 590,
+    "total_cases": 2840,
+    "avg_stops_per_route": 6.0,
+    "avg_capacity_utilization_pct": 82.0,
+    "avg_driver_utilization_pct": 88.0,
+    "overtime_minutes": 28,
+    "missed_windows": 0,
+    "late_minutes": 0,
+    "cost_breakdown": {
+      "mileage_cost": 882,
+      "labor_cost": 2620,
+      "overtime_cost": 98,
+      "fixed_vehicle_cost": 1380,
+      "sla_penalty_cost": 0,
+      "total_cost": 4980
+    }
+  },
+  "kpi_deltas": {
+    "route_count": 0,
+    "driver_count": 0,
+    "vehicle_count": 0,
+    "total_miles": 8,
+    "drive_minutes": 9,
+    "service_minutes": 0,
+    "total_cases": 0,
+    "avg_stops_per_route": 0,
+    "avg_capacity_utilization_pct": 0,
+    "avg_driver_utilization_pct": 2,
+    "overtime_minutes": -7,
+    "missed_windows": 0,
+    "late_minutes": 0,
+    "mileage_cost": 24,
+    "labor_cost": 40,
+    "overtime_cost": -24,
+    "fixed_vehicle_cost": 20,
+    "sla_penalty_cost": 0,
+    "total_cost": 60
+  },
+  "customer_impacts": [
+    { "customer_id": "CUST-003", "customer_name": "Harbor Grocers", "is_new_customer": false, "changed_route": true, "changed_day": true, "changed_depot": false, "sequence_shift": 2, "baseline_day": "Tuesday", "scenario_day": "Thursday", "baseline_route_id": "RTE-001", "scenario_route_id": "RTE-003", "window_risk": "none", "disruption_score": 0.42, "summary": "Moved to Thursday to reduce Tuesday route density." },
+    { "customer_id": "CUST-006", "customer_name": "Cedar Retail", "is_new_customer": false, "changed_route": true, "changed_day": true, "changed_depot": false, "sequence_shift": 3, "baseline_day": "Tuesday", "scenario_day": "Thursday", "baseline_route_id": "RTE-001", "scenario_route_id": "RTE-004", "window_risk": "none", "disruption_score": 0.44, "summary": "Moved to Thursday while preserving service window." },
+    { "customer_id": "CUST-010", "customer_name": "Pine Ridge Market", "is_new_customer": false, "changed_route": true, "changed_day": true, "changed_depot": false, "sequence_shift": 1, "baseline_day": "Tuesday", "scenario_day": "Thursday", "baseline_route_id": "RTE-002", "scenario_route_id": "RTE-004", "window_risk": "none", "disruption_score": 0.39, "summary": "Moved with a low disruption score." },
+    { "customer_id": "CUST-015", "customer_name": "Civic Center Foods", "is_new_customer": false, "changed_route": true, "changed_day": true, "changed_depot": false, "sequence_shift": 2, "baseline_day": "Tuesday", "scenario_day": "Thursday", "baseline_route_id": "RTE-003", "scenario_route_id": "RTE-002", "window_risk": "none", "disruption_score": 0.40, "summary": "Moved to rebalance Wednesday/Thursday delivery pressure." },
+    { "customer_id": "CUST-020", "customer_name": "Terrace Foods", "is_new_customer": false, "changed_route": false, "changed_day": true, "changed_depot": false, "sequence_shift": 0, "baseline_day": "Tuesday", "scenario_day": "Thursday", "baseline_route_id": "RTE-004", "scenario_route_id": "RTE-004", "window_risk": "none", "disruption_score": 0.33, "summary": "Day changed; route affinity preserved." },
+    { "customer_id": "CUST-023", "customer_name": "Westgate Grocery", "is_new_customer": false, "changed_route": false, "changed_day": true, "changed_depot": false, "sequence_shift": 0, "baseline_day": "Tuesday", "scenario_day": "Thursday", "baseline_route_id": "RTE-004", "scenario_route_id": "RTE-004", "window_risk": "none", "disruption_score": 0.33, "summary": "Day changed; route affinity preserved." }
+  ],
+  "constraint_violations": []
+}

@@ -1,0 +1,166 @@
+resources:
+  jobs:
+    route_scenario_modeling_plan:
+      name: ${var.route_scenario_modeling_job_name}
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: raw_volume
+          default: ${var.raw_volume}
+        - name: run_date
+          default: "2026-07-02"
+        - name: solver_model_name
+          default: ${var.solver_model_name}
+        - name: solver_model_alias
+          default: ${var.solver_model_alias}
+        - name: route_solver_endpoint_name
+          default: ${var.route_solver_endpoint_name}
+        - name: app_service_principal_client_id
+          default: ${resources.apps.route_scenario_modeling_app.service_principal_client_id}
+        - name: app_name
+          default: ${var.app_name}
+      environments:
+        - environment_key: route_solver
+          spec:
+            environment_version: "5"
+            dependencies:
+              - databricks-sdk
+              - numpy<2
+              - ortools==9.8.3296
+      tasks:
+        - task_key: generate_synthetic_data
+          notebook_task:
+            notebook_path: ../notebooks/00_generate_synthetic_data.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              raw_volume: "{{job.parameters.raw_volume}}"
+              run_date: "{{job.parameters.run_date}}"
+
+        - task_key: refresh_medallion_pipeline
+          depends_on:
+            - task_key: generate_synthetic_data
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.route_scenario_modeling_pipeline.id}
+            full_refresh: true
+
+        - task_key: reconstruct_baseline
+          depends_on:
+            - task_key: refresh_medallion_pipeline
+          notebook_task:
+            notebook_path: ../notebooks/02_reconstruct_baseline.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+
+        - task_key: build_scenarios
+          depends_on:
+            - task_key: reconstruct_baseline
+          notebook_task:
+            notebook_path: ../notebooks/03_build_scenarios.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+
+        - task_key: apply_overrides
+          depends_on:
+            - task_key: build_scenarios
+          notebook_task:
+            notebook_path: ../notebooks/04_apply_overrides.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+
+        - task_key: build_travel_matrix
+          depends_on:
+            - task_key: apply_overrides
+          notebook_task:
+            notebook_path: ../notebooks/05_build_travel_matrix.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+
+        - task_key: register_solver_model
+          depends_on:
+            - task_key: build_travel_matrix
+          environment_key: route_solver
+          notebook_task:
+            notebook_path: ../notebooks/06a_register_solver_model.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              solver_model_name: "{{job.parameters.solver_model_name}}"
+              solver_model_alias: "{{job.parameters.solver_model_alias}}"
+
+        - task_key: deploy_serving_endpoint
+          depends_on:
+            - task_key: register_solver_model
+          environment_key: route_solver
+          notebook_task:
+            notebook_path: ../notebooks/06b_deploy_serving_endpoint.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              solver_model_name: "{{job.parameters.solver_model_name}}"
+              solver_model_alias: "{{job.parameters.solver_model_alias}}"
+              route_solver_endpoint_name: "{{job.parameters.route_solver_endpoint_name}}"
+              app_service_principal_client_id: "{{job.parameters.app_service_principal_client_id}}"
+              app_name: "{{job.parameters.app_name}}"
+
+        - task_key: solve_routes
+          depends_on:
+            - task_key: register_solver_model
+          environment_key: route_solver
+          notebook_task:
+            notebook_path: ../notebooks/06_solve_routes.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              solver_model_name: "{{job.parameters.solver_model_name}}"
+              solver_model_alias: "{{job.parameters.solver_model_alias}}"
+
+        - task_key: compare_scenarios
+          depends_on:
+            - task_key: solve_routes
+          notebook_task:
+            notebook_path: ../notebooks/07_compare_scenarios.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+
+        - task_key: publish_metric_views
+          depends_on:
+            - task_key: compare_scenarios
+          notebook_task:
+            notebook_path: ../notebooks/08_publish_metric_views.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+
+        - task_key: validate_metrics
+          depends_on:
+            - task_key: publish_metric_views
+          notebook_task:
+            notebook_path: ../notebooks/09_validate_metrics.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+
+        - task_key: grant_app_permissions
+          depends_on:
+            - task_key: validate_metrics
+            - task_key: deploy_serving_endpoint
+          notebook_task:
+            notebook_path: ../notebooks/10_grant_app_permissions.py
+            base_parameters:
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              app_service_principal_client_id: "{{job.parameters.app_service_principal_client_id}}"
+              app_name: "{{job.parameters.app_name}}"
+      queue:
+        enabled: true
+      permissions:
+        - level: CAN_VIEW
+          group_name: users

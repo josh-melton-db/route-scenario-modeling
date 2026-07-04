@@ -1,0 +1,63 @@
+{
+  "scenario_id": "scn_baseline_identity",
+  "baseline_scenario_id": "baseline",
+  "scenario_name": "Baseline Identity",
+  "status": "succeeded",
+  "route_variant": "baseline_identity",
+  "matrix_source": "haversine_circuity",
+  "generated_at": "2026-07-02T12:00:00Z",
+  "summary": "Baseline identity scenario completed with no operational changes.",
+  "scenario_depot": {
+    "depot_id": "DPT_NORTH",
+    "name": "North Depot",
+    "region": "Great Lakes",
+    "sales_territory": "North Metro",
+    "location": { "lat": 42.3314, "lng": -83.0458 }
+  },
+  "scenario_kpis": {
+    "route_count": 4,
+    "driver_count": 4,
+    "vehicle_count": 4,
+    "total_miles": 286,
+    "drive_minutes": 412,
+    "service_minutes": 590,
+    "total_cases": 2840,
+    "avg_stops_per_route": 6.0,
+    "avg_capacity_utilization_pct": 82.0,
+    "avg_driver_utilization_pct": 86.0,
+    "overtime_minutes": 35,
+    "missed_windows": 0,
+    "late_minutes": 0,
+    "cost_breakdown": {
+      "mileage_cost": 858,
+      "labor_cost": 2580,
+      "overtime_cost": 122,
+      "fixed_vehicle_cost": 1360,
+      "sla_penalty_cost": 0,
+      "total_cost": 4920
+    }
+  },
+  "kpi_deltas": {
+    "route_count": 0,
+    "driver_count": 0,
+    "vehicle_count": 0,
+    "total_miles": 0,
+    "drive_minutes": 0,
+    "service_minutes": 0,
+    "total_cases": 0,
+    "avg_stops_per_route": 0,
+    "avg_capacity_utilization_pct": 0,
+    "avg_driver_utilization_pct": 0,
+    "overtime_minutes": 0,
+    "missed_windows": 0,
+    "late_minutes": 0,
+    "mileage_cost": 0,
+    "labor_cost": 0,
+    "overtime_cost": 0,
+    "fixed_vehicle_cost": 0,
+    "sla_penalty_cost": 0,
+    "total_cost": 0
+  },
+  "customer_impacts": [],
+  "constraint_violations": []
+}
