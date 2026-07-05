@@ -90,7 +90,16 @@ def test_databricks_serving_run_path(monkeypatch) -> None:
             "customers": data["location_data"],
             "fleet": data["fleet_assets"],
             "orders": data["fact_delivery_orders"],
-            "override_tables": seed_override_tables(data["location_data"]),
+        },
+    )
+
+    seeded_overrides = seed_override_tables(data["location_data"])
+    monkeypatch.setattr(
+        solver_module.solver_service,
+        "_load_override_tables",
+        lambda scenario_id: {
+            table_name: [row for row in rows if row["scenario_id"] == scenario_id]
+            for table_name, rows in seeded_overrides.items()
         },
     )
 

@@ -65,6 +65,10 @@ select_tables = [
 write_tables = [
     "scenario_definitions",
     "scenario_parameters",
+    "scenario_customer_overrides",
+    "scenario_fleet_overrides",
+    "scenario_depot_overrides",
+    "scenario_frequency_overrides",
     "app_scenario_results",
     "scenario_kpis",
     "scenario_comparison_summary",

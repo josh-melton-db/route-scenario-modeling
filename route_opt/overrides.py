@@ -92,6 +92,127 @@ def seed_scenario_parameters() -> list[dict[str, object]]:
     ]
 
 
+OVERRIDE_TABLE_KEYS = [
+    "scenario_customer_overrides",
+    "scenario_fleet_overrides",
+    "scenario_depot_overrides",
+    "scenario_frequency_overrides",
+]
+
+_GROWTH_ZONE_DIRECTIONS = {
+    "east_corridor": (0.6, 1.0),
+    "south_ring": (-1.0, 0.2),
+    "north_suburbs": (1.0, -0.2),
+}
+
+
+def build_scenario_overrides(
+    *,
+    scenario_id: str,
+    scenario_type: str,
+    depot_id: str,
+    delivery_day: str,
+    parameters: dict[str, object],
+    depot: dict[str, object] | None = None,
+    eligible_customer_ids: list[str] | None = None,
+) -> dict[str, list[dict[str, object]]]:
+    """Translate scenario parameters into normalized override rows.
+
+    Mirrors the seed override patterns but is driven entirely by the scenario's
+    own parameters so app-created scenarios materialize real changes instead of
+    silently returning the baseline.
+    """
+
+    result: dict[str, list[dict[str, object]]] = {key: [] for key in OVERRIDE_TABLE_KEYS}
+
+    if scenario_type in {"ma_new_customers", "new_customer_growth"}:
+        if depot is None:
+            raise ValueError("depot is required to place new customers")
+        if scenario_type == "ma_new_customers":
+            count = int(parameters.get("new_customer_count") or 4)
+            cases = int(parameters.get("avg_cases_per_customer") or 95)
+            name_prefix, id_prefix = "Acquired Retailer", "NEW-MA"
+            service_minutes = 30
+            window_start, window_end = "08:00", "16:00"
+        else:
+            count = int(parameters.get("growth_customer_count") or 4)
+            cases = int(parameters.get("avg_cases_per_customer") or 80)
+            name_prefix, id_prefix = "Growth Account", "NEW-GROWTH"
+            service_minutes = 25
+            window_start, window_end = "09:00", "17:00"
+        base_lat = float(depot["lat"])
+        base_lng = float(depot["lng"])
+        lat_dir, lng_dir = _GROWTH_ZONE_DIRECTIONS.get(
+            str(parameters.get("growth_zone") or "east_corridor"),
+            _GROWTH_ZONE_DIRECTIONS["east_corridor"],
+        )
+        suffix = scenario_id[-6:]
+        for idx in range(1, count + 1):
+            result["scenario_customer_overrides"].append(
+                {
+                    "scenario_id": scenario_id,
+                    "override_type": "add_customer",
+                    "customer_id": f"{id_prefix}-{suffix}-{idx:03d}",
+                    "customer_name": f"{name_prefix} {idx}",
+                    "depot_id": depot_id,
+                    "lat": round(base_lat + lat_dir * (0.05 + idx * 0.015), 6),
+                    "lng": round(base_lng + lng_dir * (0.06 + idx * 0.018), 6),
+                    "delivery_day": delivery_day,
+                    "demand_cases": cases,
+                    "service_minutes": service_minutes,
+                    "receiving_window_start": window_start,
+                    "receiving_window_end": window_end,
+                }
+            )
+
+    elif scenario_type == "driver_count_change":
+        driver_delta = int(parameters.get("driver_delta") or 0)
+        result["scenario_fleet_overrides"].append(
+            {
+                "scenario_id": scenario_id,
+                "depot_id": depot_id,
+                "delivery_day": delivery_day,
+                "driver_delta": driver_delta,
+                "vehicle_delta": driver_delta,
+                "allow_overtime": bool(parameters.get("allow_overtime", True)),
+            }
+        )
+
+    elif scenario_type == "delivery_frequency_day_change":
+        target_day = str(parameters.get("target_day") or "Thursday")
+        for customer_id in list(eligible_customer_ids or [])[:6]:
+            result["scenario_frequency_overrides"].append(
+                {
+                    "scenario_id": scenario_id,
+                    "customer_id": str(customer_id),
+                    "baseline_day": delivery_day,
+                    "scenario_day": target_day,
+                }
+            )
+
+    elif scenario_type == "facility_move":
+        location = parameters.get("new_depot_location")
+        new_lat = location.get("lat") if isinstance(location, dict) else None
+        new_lng = location.get("lng") if isinstance(location, dict) else None
+        if new_lat is None:
+            new_lat = parameters.get("new_depot_lat")
+        if new_lng is None:
+            new_lng = parameters.get("new_depot_lng")
+        if new_lat is None or new_lng is None:
+            raise ValueError("facility_move requires a new depot location")
+        result["scenario_depot_overrides"].append(
+            {
+                "scenario_id": scenario_id,
+                "depot_id": depot_id,
+                "new_lat": float(new_lat),
+                "new_lng": float(new_lng),
+                "preserve_service_windows": bool(parameters.get("preserve_service_windows", True)),
+            }
+        )
+
+    return result
+
+
 def seed_override_tables(customers: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
     strategic = [row for row in customers if row["depot_id"] == "DPT_NORTH"][:4]
     flexible = [row for row in customers if row["depot_id"] == "DPT_NORTH"][8:14]

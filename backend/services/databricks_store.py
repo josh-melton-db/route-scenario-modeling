@@ -18,8 +18,22 @@ from ..models import (
     ScenarioTypeSpec,
     ValidationResponse,
 )
+from route_opt.overrides import build_scenario_overrides
+
 from .sql import SqlService, sql_literal
 from .stub_store import store as stub_store
+
+
+def _override_sql_value(value: object) -> str:
+    """Render a scalar for an override-table INSERT, preserving numeric/boolean types."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    text = str(value).replace("'", "''")
+    return f"'{text}'"
 
 
 class DatabricksStore:
@@ -148,7 +162,54 @@ class DatabricksStore:
                 VALUES ({sql_literal(scenario_id)}, {sql_literal(key)}, {sql_literal(json.dumps(value))})
                 """
             )
+        self._materialize_overrides(scenario)
         return scenario, "databricks"
+
+    def _materialize_overrides(self, scenario: ScenarioDefinition) -> None:
+        """Write normalized override rows so the scenario materializes real changes."""
+        depot = None
+        eligible_customer_ids: list[str] = []
+        if scenario.scenario_type in {"ma_new_customers", "new_customer_growth", "facility_move"}:
+            depot_rows = self.sql.query(
+                f"""
+                SELECT depot_id, lat, lng
+                FROM {self.sql.table('dim_depots_augmented')}
+                WHERE depot_id = {sql_literal(scenario.depot_id)}
+                LIMIT 1
+                """
+            )
+            if depot_rows:
+                depot = depot_rows[0]
+        if scenario.scenario_type == "delivery_frequency_day_change":
+            eligible_customer_ids = [
+                str(row["customer_id"])
+                for row in self.sql.query(
+                    f"""
+                    SELECT DISTINCT customer_id
+                    FROM {self.sql.table('fact_delivery_orders')}
+                    WHERE depot_id = {sql_literal(scenario.depot_id)}
+                      AND delivery_day = {sql_literal(scenario.delivery_day)}
+                    ORDER BY customer_id
+                    """
+                )
+            ]
+
+        override_tables = build_scenario_overrides(
+            scenario_id=scenario.scenario_id,
+            scenario_type=scenario.scenario_type,
+            depot_id=scenario.depot_id,
+            delivery_day=scenario.delivery_day,
+            parameters=scenario.parameters,
+            depot=depot,
+            eligible_customer_ids=eligible_customer_ids,
+        )
+        for table_name, rows in override_tables.items():
+            for row in rows:
+                columns = ", ".join(f"`{column}`" for column in row)
+                values = ", ".join(_override_sql_value(value) for value in row.values())
+                self.sql.execute(
+                    f"INSERT INTO {self.sql.table(table_name)} ({columns}) VALUES ({values})"
+                )
 
     def get_scenario_definition(self, scenario_id: str) -> ScenarioDefinition:
         rows = self.sql.query(

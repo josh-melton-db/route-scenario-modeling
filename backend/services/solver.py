@@ -16,7 +16,14 @@ from route_opt.solver.payload import OUTPUT_COLUMNS, make_input_row
 
 from ..config import get_route_solver_endpoint, get_workspace_client
 from ..models import ComparisonResult, ScenarioDefinition
-from .sql import SqlService
+from .sql import SqlService, sql_literal
+
+OVERRIDE_TABLE_NAMES = [
+    "scenario_customer_overrides",
+    "scenario_fleet_overrides",
+    "scenario_depot_overrides",
+    "scenario_frequency_overrides",
+]
 
 BASE_CACHE_TTL_SECONDS = 300
 
@@ -42,6 +49,7 @@ class SolverService:
 
     def prepare_scenario_inputs(self, scenario: ScenarioDefinition) -> ScenarioInputs:
         base = self._load_base_tables()
+        override_tables = self._load_override_tables(scenario.scenario_id)
         scenario_dict = scenario.model_dump()
         materialized = apply_overrides(
             scenario=scenario_dict,
@@ -49,7 +57,7 @@ class SolverService:
             depots=base["depots"],
             fleet=base["fleet"],
             orders=base["orders"],
-            override_tables=base["override_tables"],  # type: ignore[arg-type]
+            override_tables=override_tables,
         )
         planning_depots = materialized["scenario_planning_depots"]
         planning_customers = materialized["scenario_planning_customers"]
@@ -254,18 +262,23 @@ class SolverService:
             "customers": self.sql.query(f"SELECT * FROM {self.sql.table('dim_customers_augmented')}"),
             "fleet": self.sql.query(f"SELECT * FROM {self.sql.table('dim_fleet_assets')}"),
             "orders": self.sql.query(f"SELECT * FROM {self.sql.table('fact_delivery_orders')}"),
-            "override_tables": {
-                table_name: self.sql.query(f"SELECT * FROM {self.sql.table(table_name)}")
-                for table_name in [
-                    "scenario_customer_overrides",
-                    "scenario_fleet_overrides",
-                    "scenario_depot_overrides",
-                    "scenario_frequency_overrides",
-                ]
-            },
         }
         self._base_cache = (now, base)
         return base
+
+    def _load_override_tables(self, scenario_id: str) -> dict[str, list[dict[str, object]]]:
+        """Read override rows fresh (never cached), scoped to a single scenario.
+
+        Override rows are written at scenario-creation time, so caching them would
+        make a just-created scenario solve against a stale snapshot and no-op.
+        """
+        return {
+            table_name: self.sql.query(
+                f"SELECT * FROM {self.sql.table(table_name)} "
+                f"WHERE scenario_id = {sql_literal(scenario_id)}"
+            )
+            for table_name in OVERRIDE_TABLE_NAMES
+        }
 
 
 def _first_prediction(response: object) -> dict[str, object]:
