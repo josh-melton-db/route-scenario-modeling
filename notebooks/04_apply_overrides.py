@@ -28,15 +28,19 @@ orders = collect_dicts(spark.table(config.table("fact_delivery_orders")))
 scenarios = collect_dicts(spark.table(config.table("scenario_definitions")))
 if scenario_filter:
     scenarios = [row for row in scenarios if row["scenario_id"] == scenario_filter]
-override_tables = {
-    table_name: collect_dicts(spark.table(config.table(table_name)))
-    for table_name in [
-        "scenario_customer_overrides",
-        "scenario_fleet_overrides",
-        "scenario_depot_overrides",
-        "scenario_frequency_overrides",
-    ]
-}
+override_tables = {}
+for table_name in [
+    "scenario_customer_overrides",
+    "scenario_fleet_overrides",
+    "scenario_depot_overrides",
+    "scenario_frequency_overrides",
+    "scenario_cost_overrides",
+]:
+    try:
+        override_tables[table_name] = collect_dicts(spark.table(config.table(table_name)))
+    except Exception:
+        override_tables[table_name] = []
+
 
 outputs = {
     "scenario_planning_customers": [],

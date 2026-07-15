@@ -187,5 +187,12 @@
         "help_text": "When true, the scenario fails if the move creates hard service-window violations."
       }
     ]
+  },
+  {
+    "scenario_type": "custom",
+    "label": "Custom scenario",
+    "description": "Stack any combination of delivery adds, driver changes, day shifts, facility moves, and cost parameter edits in one run.",
+    "result_stub_id": "scn_ma_newcustomers",
+    "fields": []
   }
 ]

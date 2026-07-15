@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields, replace
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,26 @@ class CostParameters:
             }
         )
         return row
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+    def merged(self, overrides: dict[str, object] | None) -> "CostParameters":
+        """Overlay provided fields onto this parameter set; ignore unknown keys and None."""
+        if not overrides:
+            return self
+        allowed = {field.name for field in fields(self)}
+        updates = {
+            key: value
+            for key, value in overrides.items()
+            if key in allowed and value is not None
+        }
+        return replace(self, **updates) if updates else self
+
+    @classmethod
+    def from_row(cls, row: dict[str, object] | None) -> "CostParameters":
+        base = cls()
+        return base.merged(row or {})
 
 
 def route_cost(

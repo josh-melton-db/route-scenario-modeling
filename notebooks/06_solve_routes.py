@@ -19,6 +19,8 @@ import mlflow
 import pandas as pd
 
 from route_opt.config import config_from_widgets, get_widget_value
+from route_opt.cost import CostParameters
+from route_opt.overrides import resolve_cost_override
 from route_opt.solver.payload import OUTPUT_COLUMNS, make_input_row
 from route_opt.spark_io import collect_dicts, write_rows_as_table
 
@@ -32,12 +34,20 @@ customers = collect_dicts(spark.table(config.table("scenario_planning_customers"
 fleet = collect_dicts(spark.table(config.table("scenario_planning_fleet")))
 stops = collect_dicts(spark.table(config.table("scenario_planning_stops")))
 matrix_rows = collect_dicts(spark.table(config.table("travel_time_matrix")))
+base_cost_rows = collect_dicts(spark.table(config.table("cost_parameters")))
+try:
+    cost_override_rows = collect_dicts(spark.table(config.table("scenario_cost_overrides")))
+except Exception:
+    cost_override_rows = []
 if scenario_filter:
     depots = [row for row in depots if row["scenario_id"] == scenario_filter]
     customers = [row for row in customers if row["scenario_id"] == scenario_filter]
     fleet = [row for row in fleet if row["scenario_id"] == scenario_filter]
     stops = [row for row in stops if row["scenario_id"] == scenario_filter]
     matrix_rows = [row for row in matrix_rows if row["scenario_id"] == scenario_filter]
+    cost_override_rows = [row for row in cost_override_rows if row["scenario_id"] == scenario_filter]
+
+base_cost = CostParameters.from_row(base_cost_rows[0] if base_cost_rows else None)
 
 mlflow.set_registry_uri("databricks-uc")
 solver_model = mlflow.pyfunc.load_model(f"models:/{solver_model_name}@{solver_model_alias}")
@@ -65,6 +75,12 @@ for depot in depots:
         for row in matrix_rows
         if row["scenario_id"] == scenario_id and row["depot_id"] == depot_id and row["delivery_day"] == delivery_day
     ]
+    scenario_cost = base_cost.merged(
+        resolve_cost_override(
+            {"scenario_cost_overrides": cost_override_rows},
+            str(scenario_id),
+        )
+    )
     # Keep this as a small driver-side loop for the v0 demo. Once payloads
     # stabilize, the same row contract can be passed through applyInPandas.
     model_input = pd.DataFrame(
@@ -78,6 +94,7 @@ for depot in depots:
                 planning_fleet=partition_fleet,
                 planning_stops=partition_stops,
                 travel_matrix=partition_matrix,
+                cost_parameters=scenario_cost.as_dict(),
             )
         ]
     )
@@ -90,6 +107,7 @@ for depot in depots:
         "planning_fleet",
         "planning_stops",
         "travel_matrix",
+        "cost_parameters",
     ]:
         model_input[column] = model_input[column].astype(object)
     model_input["time_limit_seconds"] = model_input["time_limit_seconds"].astype("int64")

@@ -29,9 +29,22 @@ def test_scenario_results_validate_after_hydration() -> None:
 
 def test_demo_data_uses_generic_labels() -> None:
     result = store.get_scenario_result("scn_ma_newcustomers")
+    banned = ("kroger", "walmart", "sysco", "pepsi", "coca-cola", "kdp")
     for impact in result.customer_impacts:
         name = impact.customer_name.lower()
+        assert impact.customer_name.strip()
+        assert not any(token in name for token in banned)
         assert any(
             token in name
-            for token in ("retailer", "account", "customer", "store", "location")
+            for token in (
+                "retailer",
+                "account",
+                "customer",
+                "store",
+                "location",
+                "market",
+                "grocery",
+                "foods",
+                "retail",
+            )
         )

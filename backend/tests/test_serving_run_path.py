@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from backend.main import app
 from backend.models import ScenarioCreateRequest, ScenarioDefinition, ValidationResponse
 from backend.services.solve_runs import solve_run_manager
+from route_opt.cost import CostParameters
 from route_opt.overrides import seed_override_tables
 from route_opt.solver.ortools_cvrptw import solve_scenario_partition
 from route_opt.synthetic import generate_all
@@ -90,6 +91,7 @@ def test_databricks_serving_run_path(monkeypatch) -> None:
             "customers": data["location_data"],
             "fleet": data["fleet_assets"],
             "orders": data["fact_delivery_orders"],
+            "cost_parameters": data.get("cost_parameters", []),
         },
     )
 
@@ -104,7 +106,9 @@ def test_databricks_serving_run_path(monkeypatch) -> None:
     )
 
     def local_invoke_endpoint(**kwargs):
-        return solve_scenario_partition(**kwargs)
+        cost_parameters = kwargs.pop("cost_parameters", None)
+        params = CostParameters.from_row(cost_parameters) if cost_parameters else None
+        return solve_scenario_partition(**kwargs, params=params)
 
     monkeypatch.setattr(solver_module.solver_service, "invoke_endpoint", local_invoke_endpoint)
     monkeypatch.setattr(solve_runs_module.results_writer, "persist", lambda scenario, result: None)

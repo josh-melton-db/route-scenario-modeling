@@ -9,6 +9,7 @@ ScenarioType = Literal[
     "driver_count_change",
     "delivery_frequency_day_change",
     "facility_move",
+    "custom",
 ]
 
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
@@ -43,6 +44,7 @@ SCENARIO_TABLES = [
     "scenario_fleet_overrides",
     "scenario_depot_overrides",
     "scenario_frequency_overrides",
+    "scenario_cost_overrides",
     "scenario_planning_customers",
     "scenario_planning_depots",
     "scenario_planning_fleet",

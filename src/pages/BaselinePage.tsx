@@ -31,15 +31,7 @@ export default function BaselinePage() {
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Baseline network
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Current-state Generic Co delivery routes and route-level operating metrics.
-          </p>
-        </div>
+      <div className="flex flex-wrap justify-end gap-4">
         <DepotDayFilter
           depots={depots.data ?? []}
           days={days.data ?? []}
@@ -51,7 +43,7 @@ export default function BaselinePage() {
             setSelectedRouteId(null)
           }}
         />
-      </header>
+      </div>
 
       {loading || !network.data || !kpis.data ? (
         <div className="flex h-96 items-center justify-center text-muted-foreground">

@@ -1,51 +1,76 @@
 import { create } from 'zustand'
-import type { ScenarioType, ValidationResponse } from '@/api/types'
+import type {
+  CostOverride,
+  DraftScenarioChange,
+  ValidationResponse,
+} from '@/api/types'
 
 export interface ScenarioDraftState {
-  scenario_type: ScenarioType | null
   scenario_name: string
   depot_id: string
   delivery_day: string
-  parameters: Record<string, unknown>
+  changes: DraftScenarioChange[]
+  costOverride: CostOverride
+  costOverrideEnabled: boolean
   validation: ValidationResponse | null
-  setScenarioType: (scenarioType: ScenarioType) => void
   setScenarioName: (scenarioName: string) => void
   setDepotDay: (depotId: string, deliveryDay: string) => void
-  setParameter: (name: string, value: unknown) => void
-  setParameters: (parameters: Record<string, unknown>) => void
+  setChanges: (changes: DraftScenarioChange[]) => void
+  setCostOverride: (costOverride: CostOverride) => void
+  setCostOverrideEnabled: (enabled: boolean) => void
   setValidation: (validation: ValidationResponse | null) => void
+  buildParameters: () => Record<string, unknown>
   reset: () => void
 }
 
 const initialState = {
-  scenario_type: null,
-  scenario_name: 'New scenario',
+  scenario_name: 'Custom scenario',
   depot_id: 'DPT_NORTH',
   delivery_day: 'Tuesday',
-  parameters: {},
-  validation: null,
+  changes: [] as DraftScenarioChange[],
+  costOverride: {} as CostOverride,
+  costOverrideEnabled: false,
+  validation: null as ValidationResponse | null,
 }
 
-export const useScenarioDraft = create<ScenarioDraftState>((set) => ({
+function hasCostValues(cost: CostOverride): boolean {
+  return Object.values(cost).some((value) => value !== null && value !== undefined)
+}
+
+function uniqueChanges(changes: DraftScenarioChange[]): DraftScenarioChange[] {
+  const activeKinds = new Set<string>()
+  return changes.filter((change) => {
+    if (activeKinds.has(change.kind)) return false
+    activeKinds.add(change.kind)
+    return true
+  })
+}
+
+export const useScenarioDraft = create<ScenarioDraftState>((set, get) => ({
   ...initialState,
-  setScenarioType: (scenario_type) =>
-    set({
-      scenario_type,
-      scenario_name:
-        scenario_type === 'baseline'
-          ? 'Baseline identity run'
-          : 'New scenario',
-      parameters: {},
-      validation: null,
-    }),
   setScenarioName: (scenario_name) => set({ scenario_name }),
-  setDepotDay: (depot_id, delivery_day) => set({ depot_id, delivery_day }),
-  setParameter: (name, value) =>
+  setDepotDay: (depot_id, delivery_day) =>
+    set({ depot_id, delivery_day, validation: null }),
+  setChanges: (changes) =>
+    set({ changes: uniqueChanges(changes), validation: null }),
+  setCostOverride: (costOverride) =>
+    set({ costOverride, costOverrideEnabled: true, validation: null }),
+  setCostOverrideEnabled: (costOverrideEnabled) =>
     set((state) => ({
-      parameters: { ...state.parameters, [name]: value },
+      costOverrideEnabled,
+      costOverride: costOverrideEnabled ? state.costOverride : {},
       validation: null,
     })),
-  setParameters: (parameters) => set({ parameters, validation: null }),
   setValidation: (validation) => set({ validation }),
+  buildParameters: () => {
+    const state = get()
+    const parameters: Record<string, unknown> = {
+      changes: state.changes.map(({ clientId: _clientId, ...change }) => change),
+    }
+    if (state.costOverrideEnabled && hasCostValues(state.costOverride)) {
+      parameters.cost = state.costOverride
+    }
+    return parameters
+  },
   reset: () => set(initialState),
 }))

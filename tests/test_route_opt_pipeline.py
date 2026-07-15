@@ -7,14 +7,17 @@ import pytest
 from backend.models import BaselineNetwork, ComparisonResult, Kpis
 from route_opt.baseline import reconstruct_baseline, summarize_kpis
 from route_opt.compare import compare_scenario
-from route_opt.cost import route_cost, total_cost_is_consistent
+from route_opt.cost import CostParameters, route_cost, total_cost_is_consistent
 from route_opt.dq import validate_kpi_contract
 from route_opt.overrides import (
     apply_overrides,
+    build_scenario_overrides,
+    resolve_cost_override,
     seed_override_tables,
     seed_scenario_definitions,
 )
 from route_opt.solver import solve_scenario_partition
+from route_opt.solver.payload import INPUT_SCHEMA, make_input_row
 from route_opt.synthetic import generate_all
 
 
@@ -123,6 +126,104 @@ def test_apply_overrides_materializes_every_scenario_type() -> None:
         override_tables=overrides,
     )
     assert facility["scenario_planning_depots"][0]["lng"] == -84.8000
+
+    custom = apply_overrides(
+        scenario=scenarios["scn_custom_composite"],
+        customers=data["location_data"],
+        depots=data["depot_master"],
+        fleet=data["fleet_assets"],
+        orders=data["fact_delivery_orders"],
+        override_tables=overrides,
+    )
+    assert any(row["customer_id"] == "NEW-CUSTOM-001" for row in custom["scenario_planning_customers"])
+    assert len(custom["scenario_planning_fleet"]) == 3
+    assert resolve_cost_override(overrides, "scn_custom_composite")["cost_per_mile"] == 4.5
+
+
+def test_custom_build_and_apply_composes_driver_and_delivery_changes() -> None:
+    data = _generated()
+    depot = next(row for row in data["depot_master"] if row["depot_id"] == "DPT_NORTH")
+    overrides = build_scenario_overrides(
+        scenario_id="scn_test_custom",
+        scenario_type="custom",
+        depot_id="DPT_NORTH",
+        delivery_day="Tuesday",
+        parameters={
+            "changes": [
+                {
+                    "kind": "driver_count_change",
+                    "driver_delta": -1,
+                    "allow_overtime": True,
+                },
+                {
+                    "kind": "add_deliveries",
+                    "deliveries": [
+                        {
+                            "customer_name": "Pinned Market",
+                            "lat": 42.4,
+                            "lng": -83.1,
+                            "demand_cases": 70,
+                            "service_minutes": 25,
+                            "receiving_window_start": "09:00",
+                            "receiving_window_end": "15:00",
+                        }
+                    ],
+                },
+            ],
+            "cost": {"cost_per_mile": 4.5},
+        },
+        depot=depot,
+    )
+    assert len(overrides["scenario_customer_overrides"]) == 1
+    assert overrides["scenario_fleet_overrides"][0]["driver_delta"] == -1
+    assert overrides["scenario_cost_overrides"][0]["cost_per_mile"] == 4.5
+
+    planning = apply_overrides(
+        scenario={
+            "scenario_id": "scn_test_custom",
+            "scenario_type": "custom",
+            "depot_id": "DPT_NORTH",
+            "delivery_day": "Tuesday",
+        },
+        customers=data["location_data"],
+        depots=data["depot_master"],
+        fleet=data["fleet_assets"],
+        orders=data["fact_delivery_orders"],
+        override_tables=overrides,
+    )
+    assert any(row["customer_name"] == "Pinned Market" for row in planning["scenario_planning_customers"])
+    assert len(planning["scenario_planning_fleet"]) == 3
+
+
+def test_cost_parameter_merge_raises_mileage_cost() -> None:
+    base = CostParameters()
+    raised = base.merged({"cost_per_mile": 4.5})
+    base_cost = route_cost(miles=100, route_minutes=60, params=base)
+    raised_cost = route_cost(miles=100, route_minutes=60, params=raised)
+    assert raised_cost["mileage_cost"] > base_cost["mileage_cost"]
+    assert total_cost_is_consistent(raised_cost)
+    assert raised.cost_per_mile == 4.5
+    assert raised.labor_regular_hour == base.labor_regular_hour
+
+
+def test_make_input_row_includes_cost_parameters() -> None:
+    row = make_input_row(
+        scenario_id="scn_x",
+        depot_id="DPT_NORTH",
+        delivery_day="Tuesday",
+        planning_depots=[],
+        planning_customers=[],
+        planning_fleet=[],
+        planning_stops=[],
+        cost_parameters={"cost_per_mile": 4.5, "labor_regular_hour": 80.0},
+    )
+    assert "cost_parameters" in row
+    decoded = json.loads(str(row["cost_parameters"]))
+    assert decoded["cost_per_mile"] == 4.5
+
+
+def test_route_solver_model_signature_includes_cost_parameters() -> None:
+    assert dict(INPUT_SCHEMA)["cost_parameters"] == "string"
 
 
 def test_solver_and_comparison_contracts_for_feasible_and_infeasible_scenarios() -> None:
@@ -257,7 +358,11 @@ def test_pyfunc_model_log_load_and_predict_when_mlflow_runtime_is_available(tmp_
     pytest.importorskip("mlflow.pyfunc")
     pd = pytest.importorskip("pandas")
 
-    from route_opt.solver.pyfunc_model import RouteScenarioSolverModel, make_input_row
+    from route_opt.solver.pyfunc_model import (
+        RouteScenarioSolverModel,
+        make_input_row,
+        route_solver_model_signature,
+    )
 
     data = _generated()
     scenarios = {row["scenario_id"]: row for row in seed_scenario_definitions()}
@@ -284,14 +389,26 @@ def test_pyfunc_model_log_load_and_predict_when_mlflow_runtime_is_available(tmp_
             )
         ]
     )
-    mlflow.set_tracking_uri((tmp_path / "mlruns").as_uri())
+    mlflow.set_tracking_uri(f"sqlite:///{tmp_path / 'mlflow.db'}")
+    mlflow.set_experiment("route-solver-pyfunc-test")
     with mlflow.start_run():
         model_info = mlflow.pyfunc.log_model(
             artifact_path="route_solver",
             python_model=RouteScenarioSolverModel(),
             pip_requirements=[],
+            signature=route_solver_model_signature(),
+            input_example=model_input,
         )
     loaded = mlflow.pyfunc.load_model(model_info.model_uri)
+    assert "cost_parameters" in str(loaded.metadata.signature.inputs)
     prediction = loaded.predict(model_input)
     routes = json.loads(prediction.loc[0, "routes"])
     assert len(routes) == 3
+
+    overridden_input = model_input.copy()
+    overridden_input.loc[0, "cost_parameters"] = json.dumps({"cost_per_mile": 9.0})
+    overridden_prediction = loaded.predict(overridden_input)
+    overridden_routes = json.loads(overridden_prediction.loc[0, "routes"])
+    assert sum(float(route["total_cost"]) for route in overridden_routes) > sum(
+        float(route["total_cost"]) for route in routes
+    )

@@ -1,6 +1,18 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from './client'
-import type { RunStatusResponse, ScenarioCreateRequest } from './types'
+import type {
+  CreateScenarioResponse,
+  EditorDeleteRequest,
+  EditorEntityType,
+  EditorInsertRequest,
+  EditorPatchRequest,
+  EditorPreviewRequest,
+  RunStartResponse,
+  RunStatusResponse,
+  ScenarioCreateRequest,
+  ScenarioDefinition,
+  ValidationResponse,
+} from './types'
 
 const terminalStatuses = new Set(['succeeded', 'infeasible', 'failed'])
 
@@ -15,6 +27,13 @@ export const queryKeys = {
   scenario: (scenarioId: string) => ['scenario', scenarioId] as const,
   run: (runId: string, scenarioId?: string | null) => ['run', runId, scenarioId] as const,
   results: (scenarioId: string) => ['scenario-results', scenarioId] as const,
+  editorSession: (sessionId: string) => ['editor-session', sessionId] as const,
+  editorRows: (
+    sessionId: string,
+    entityType: EditorEntityType,
+    page: number,
+    pageSize: number,
+  ) => ['editor-rows', sessionId, entityType, page, pageSize] as const,
 }
 
 export function useDepots() {
@@ -73,9 +92,79 @@ export function useScenarioResults(scenarioId: string | undefined) {
   })
 }
 
+export function useEditorSession(sessionId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.editorSession(sessionId ?? ''),
+    queryFn: () => api.editorSession(sessionId ?? ''),
+    enabled: Boolean(sessionId),
+  })
+}
+
+export function useEditorRows(
+  sessionId: string | undefined,
+  entityType: EditorEntityType,
+  page: number,
+  pageSize: number,
+) {
+  return useQuery({
+    queryKey: queryKeys.editorRows(sessionId ?? '', entityType, page, pageSize),
+    queryFn: () => api.editorRows(sessionId ?? '', entityType, page, pageSize),
+    enabled: Boolean(sessionId),
+  })
+}
+
 export function useCreateScenario() {
   return useMutation({
     mutationFn: (payload: ScenarioCreateRequest) => api.createScenario(payload),
+  })
+}
+
+export interface ScenarioRunStart {
+  scenario: ScenarioDefinition
+  run?: RunStartResponse
+  validation?: ValidationResponse
+}
+
+function runReturnedWithScenario(
+  created: CreateScenarioResponse,
+): RunStartResponse | undefined {
+  if (created.run) return created.run
+  if (!created.run_id) return undefined
+
+  return {
+    run_id: created.run_id,
+    scenario_id: created.scenario.scenario_id,
+    status: created.status ?? 'queued',
+    message: created.message ?? 'Scenario run queued for precheck.',
+    databricks_run_url: created.databricks_run_url,
+  }
+}
+
+/**
+ * New durable-run deployments return a run with scenario creation, so the UI
+ * can navigate straight to server-owned precheck progress. Legacy deployments
+ * still expose validation and run as separate calls; preserve that behavior
+ * until the API cutover is complete.
+ */
+export function useCreateScenarioRun() {
+  return useMutation({
+    mutationFn: async (
+      payload: ScenarioCreateRequest,
+    ): Promise<ScenarioRunStart> => {
+      const created = await api.createScenario(payload)
+      const immediateRun = runReturnedWithScenario(created)
+      if (immediateRun) {
+        return { scenario: created.scenario, run: immediateRun }
+      }
+
+      const validation = await api.validateScenario(created.scenario.scenario_id)
+      if (!validation.valid) {
+        return { scenario: created.scenario, validation }
+      }
+
+      const run = await api.runScenario(created.scenario.scenario_id)
+      return { scenario: created.scenario, run }
+    },
   })
 }
 
@@ -88,5 +177,93 @@ export function useValidateScenario() {
 export function useStartRun() {
   return useMutation({
     mutationFn: (scenarioId: string) => api.runScenario(scenarioId),
+  })
+}
+
+export function useUploadDeliveries() {
+  return useMutation({
+    mutationFn: (file: File) => api.uploadDeliveries(file),
+  })
+}
+
+export function useOpenEditorSession() {
+  return useMutation({
+    mutationFn: api.openEditorSession,
+  })
+}
+
+export function useInsertEditorRow() {
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      entityType,
+      payload,
+    }: {
+      sessionId: string
+      entityType: EditorEntityType
+      payload: EditorInsertRequest
+    }) => api.insertEditorRow(sessionId, entityType, payload),
+  })
+}
+
+export function usePatchEditorRow() {
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      entityType,
+      rowId,
+      payload,
+    }: {
+      sessionId: string
+      entityType: EditorEntityType
+      rowId: string
+      payload: EditorPatchRequest
+    }) => api.patchEditorRow(sessionId, entityType, rowId, payload),
+  })
+}
+
+export function useDeleteEditorRow() {
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      entityType,
+      rowId,
+      payload,
+    }: {
+      sessionId: string
+      entityType: EditorEntityType
+      rowId: string
+      payload: EditorDeleteRequest
+    }) => api.deleteEditorRow(sessionId, entityType, rowId, payload),
+  })
+}
+
+export function useValidateEditorSession() {
+  return useMutation({
+    mutationFn: (sessionId: string) => api.validateEditorSession(sessionId),
+  })
+}
+
+export function usePreviewEditorBaseline() {
+  return useMutation({
+    mutationFn: ({
+      sessionId,
+      payload,
+    }: {
+      sessionId: string
+      payload: EditorPreviewRequest
+    }) => api.previewEditorBaseline(sessionId, payload),
+  })
+}
+
+export function useCommitEditorSession() {
+  return useMutation({
+    mutationFn: (sessionId: string) => api.commitEditorSession(sessionId),
+  })
+}
+
+export function useDiscardEditorSession() {
+  return useMutation({
+    mutationFn: (sessionId: string) => api.discardEditorSession(sessionId),
   })
 }

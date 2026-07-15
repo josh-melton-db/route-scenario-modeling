@@ -10,7 +10,9 @@ back to this process on port 8001.
 
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -18,7 +20,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .config import get_data_backend
 from .routes.api import router as api_router
+from .services.lakebase_migrations import migrate_lakebase
+from .services.lakebase_store import lakebase_store
+from .services.solve_runs import solve_run_manager
 
 api_app = FastAPI(title="Route Scenario Modeling API")
 api_app.add_middleware(
@@ -30,7 +36,33 @@ api_app.add_middleware(
 )
 api_app.include_router(api_router)
 
-app = FastAPI(title="Route Scenario Modeling")
+
+async def _recover_abandoned_lakebase_runs() -> None:
+    while True:
+        await asyncio.sleep(30)
+        solve_run_manager.recover_pending_runs()
+
+
+@asynccontextmanager
+async def _app_lifespan(_: FastAPI):
+    recovery_task: asyncio.Task[None] | None = None
+    if get_data_backend() == "lakebase":
+        # Deploy first so the Databricks App service principal owns this schema.
+        migrate_lakebase(lakebase_store.postgres)
+        solve_run_manager.recover_pending_runs()
+        recovery_task = asyncio.create_task(_recover_abandoned_lakebase_runs())
+    try:
+        yield
+    finally:
+        if recovery_task is not None:
+            recovery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await recovery_task
+        if get_data_backend() == "lakebase":
+            lakebase_store.postgres.close()
+
+
+app = FastAPI(title="Route Scenario Modeling", lifespan=_app_lifespan)
 app.mount("/api", api_app)
 
 

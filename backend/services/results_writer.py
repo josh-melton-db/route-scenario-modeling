@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..config import get_data_backend
 from ..models import ComparisonResult, ScenarioDefinition
 from .sql import SqlService
+from .store_provider import get_store
 
 
 class ResultsWriter:
@@ -12,6 +14,13 @@ class ResultsWriter:
         self.sql = SqlService()
 
     def persist(self, scenario: ScenarioDefinition, result: ComparisonResult) -> None:
+        if get_data_backend() == "lakebase":
+            persist_result = getattr(get_store(), "persist_result", None)
+            if not callable(persist_result):
+                raise RuntimeError("Lakebase store does not support result persistence.")
+            persist_result(scenario, result)
+            return
+
         result_dict = result.model_dump(mode="json")
         scenario_id = scenario.scenario_id
 

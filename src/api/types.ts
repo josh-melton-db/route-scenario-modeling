@@ -5,6 +5,13 @@ export type ScenarioType =
   | 'driver_count_change'
   | 'delivery_frequency_day_change'
   | 'facility_move'
+  | 'custom'
+
+export type ScenarioChangeKind =
+  | 'add_deliveries'
+  | 'driver_count_change'
+  | 'delivery_frequency_day_change'
+  | 'facility_move'
 
 export type ScenarioLifecycleStatus =
   | 'draft'
@@ -14,7 +21,13 @@ export type ScenarioLifecycleStatus =
   | 'infeasible'
   | 'failed'
 
-export type RunStatus = 'queued' | 'running' | 'succeeded' | 'infeasible' | 'failed'
+export type RunStatus =
+  | 'queued'
+  | 'precheck'
+  | 'running'
+  | 'succeeded'
+  | 'infeasible'
+  | 'failed'
 export type ConstraintSeverity = 'hard' | 'soft'
 export type ConstraintScope = 'route' | 'depot' | 'customer' | 'scenario'
 export type WindowRisk = 'none' | 'at_risk' | 'missed'
@@ -180,6 +193,57 @@ export interface ParameterField {
   help_text: string | null
 }
 
+export interface DeliveryDraft {
+  customer_name: string
+  lat: number
+  lng: number
+  demand_cases: number
+  service_minutes: number
+  receiving_window_start: string
+  receiving_window_end: string
+  delivery_day?: string | null
+  customer_id?: string | null
+}
+
+export interface CostOverride {
+  cost_per_mile?: number | null
+  labor_regular_hour?: number | null
+  overtime_multiplier?: number | null
+  overtime_threshold_minutes?: number | null
+  fixed_truck_daily_cost?: number | null
+  late_delivery_penalty?: number | null
+  missed_delivery_penalty?: number | null
+}
+
+export interface ScenarioChange {
+  kind: ScenarioChangeKind
+  deliveries?: DeliveryDraft[]
+  driver_delta?: number | null
+  allow_overtime?: boolean | null
+  target_day?: string | null
+  target_customers?: string | null
+  new_depot_location?: LatLng | null
+  preserve_service_windows?: boolean | null
+}
+
+/**
+ * Browser-only identity for a stacked-change card. It must never cross the API
+ * boundary because scenario changes are validated by a strict backend model.
+ */
+export interface DraftScenarioChange extends ScenarioChange {
+  clientId: string
+}
+
+export interface DeliveryUploadError {
+  row: number
+  message: string
+}
+
+export interface DeliveryUploadResult {
+  deliveries: DeliveryDraft[]
+  errors: DeliveryUploadError[]
+}
+
 export interface ScenarioTypeSpec {
   scenario_type: ScenarioType
   label: string
@@ -210,7 +274,17 @@ export interface ScenarioCreateRequest {
 
 export interface CreateScenarioResponse {
   scenario: ScenarioDefinition
-  result_stub_id: string
+  result_stub_id?: string
+  /**
+   * Returned by the durable-run API once the server owns validation and run
+   * creation. Older deployments omit it, which the client handles by using
+   * the validate-then-run endpoint sequence.
+   */
+  run?: RunStartResponse | null
+  run_id?: string
+  status?: RunStatus
+  message?: string
+  databricks_run_url?: string | null
 }
 
 export interface ValidationIssue {
@@ -246,8 +320,9 @@ export interface BaselineNetwork {
 export interface RunStage {
   stage_id: string
   label: string
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
   message: string
+  duration_ms?: number | null
 }
 
 export interface RunStartResponse {
@@ -268,6 +343,16 @@ export interface RunStatusResponse {
   started_at: string
   completed_at: string | null
   databricks_run_url?: string | null
+  /**
+   * Present when the server-owned precheck has a validation result. It is
+   * optional so current deployments that only expose stages remain supported.
+   */
+  validation?: ValidationResponse | null
+  /**
+   * New durable runs expose per-stage timing, including the synchronous create
+   * phase. Older run endpoints can omit this during the cutover.
+   */
+  stage_durations_ms?: Record<string, number | null>
 }
 
 export interface ComparisonResult {
@@ -287,4 +372,90 @@ export interface ComparisonResult {
   kpi_deltas: KpiDeltas | null
   customer_impacts: CustomerImpact[]
   constraint_violations: ConstraintViolation[]
+}
+
+export type EditorEntityType =
+  | 'orders'
+  | 'customers'
+  | 'fleet'
+  | 'depots'
+  | 'cost_parameters'
+
+export type EditorSessionStatus =
+  | 'open'
+  | 'committed'
+  | 'discarded'
+  | 'expired'
+
+export type EditorRowState = 'unchanged' | 'inserted' | 'updated'
+
+export interface EditorSession {
+  session_id: string
+  principal: string
+  status: EditorSessionStatus
+  created_at: string
+  updated_at: string
+  expires_at: string
+  has_unsaved_changes: boolean
+  entity_counts: Record<EditorEntityType, number>
+}
+
+export interface EditorRow {
+  entity_type: EditorEntityType
+  row_id: string
+  row_version: number
+  state: EditorRowState
+  data: Record<string, unknown>
+}
+
+export interface EditorPage {
+  session: EditorSession
+  entity_type: EditorEntityType
+  page: number
+  page_size: number
+  total: number
+  rows: EditorRow[]
+}
+
+export interface EditorInsertRequest {
+  data: Record<string, unknown>
+}
+
+export interface EditorPatchRequest {
+  row_version: number
+  changes: Record<string, unknown>
+}
+
+export interface EditorDeleteRequest {
+  row_version: number
+}
+
+export interface EditorValidationIssue {
+  entity_type: EditorEntityType
+  row_id: string
+  field: string | null
+  code: string
+  message: string
+}
+
+export interface EditorValidationResponse {
+  session: EditorSession
+  valid: boolean
+  issues: EditorValidationIssue[]
+}
+
+export interface EditorPreviewRequest {
+  depot_id: string
+  delivery_day: string
+}
+
+export interface EditorPreviewResponse {
+  session: EditorSession
+  network: BaselineNetwork
+  kpis: Kpis
+}
+
+export interface EditorCommitResponse {
+  session: EditorSession
+  baseline_snapshot_count: number
 }

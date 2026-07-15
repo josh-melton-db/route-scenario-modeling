@@ -1,0 +1,42 @@
+resources:
+  postgres_projects:
+    route_scenario_modeling_lakebase:
+      project_id: ${var.lakebase_project_id}
+      display_name: ${var.lakebase_project_display_name}
+      pg_version: 17
+      history_retention_duration: 172800s
+      purge_on_delete: false
+      lifecycle:
+        prevent_destroy: true
+
+  # Lakebase creates production with the project. `replace_existing` lets the
+  # bundle adopt that branch so it can enforce protection without recreating it.
+  postgres_branches:
+    route_scenario_modeling_production:
+      parent: ${resources.postgres_projects.route_scenario_modeling_lakebase.id}
+      branch_id: ${var.lakebase_production_branch_id}
+      is_protected: true
+      no_expiry: true
+      replace_existing: true
+      purge_on_delete: false
+      lifecycle:
+        prevent_destroy: true
+    route_scenario_modeling_dev:
+      parent: ${resources.postgres_projects.route_scenario_modeling_lakebase.id}
+      branch_id: ${var.lakebase_app_branch_id}
+      source_branch: ${resources.postgres_branches.route_scenario_modeling_production.id}
+      is_protected: false
+      no_expiry: true
+      purge_on_delete: false
+      lifecycle:
+        prevent_destroy: true
+
+  postgres_databases:
+    route_scenario_modeling_app_database:
+      parent: ${resources.postgres_branches.route_scenario_modeling_dev.id}
+      database_id: ${var.lakebase_database_id}
+      postgres_database: ${var.lakebase_postgres_database}
+      role: ${resources.postgres_branches.route_scenario_modeling_dev.id}/roles/${var.lakebase_database_owner_role_id}
+      replace_existing: true
+      lifecycle:
+        prevent_destroy: true

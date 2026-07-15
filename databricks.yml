@@ -9,10 +9,8 @@ sync:
     - dist/**
   exclude:
     - node_modules/
-    - .venv/
     - .pytest_cache/
     - "**/__pycache__/"
-    - .DS_Store
     - src/
     - /package.json
     - /package-lock.json
@@ -51,6 +49,33 @@ variables:
   route_solver_endpoint_name:
     description: Databricks Model Serving endpoint used for interactive route solves
     default: route-solver
+  lakebase_project_id:
+    description: Lakebase Autoscaling project for interactive scenario state
+    default: route-scenario-modeling-lakebase
+  lakebase_project_display_name:
+    description: Human-readable Lakebase project name
+    default: Route Scenario Modeling Lakebase
+  lakebase_production_branch_id:
+    description: Protected Lakebase branch that anchors durable application data
+    default: production
+  lakebase_app_branch_id:
+    description: Non-expiring Lakebase branch bound to the interactive application
+    default: dev
+  lakebase_database_id:
+    description: Lakebase database resource identifier for the interactive application
+    default: route-scenario-modeling
+  lakebase_postgres_database:
+    description: PostgreSQL database name used by the Lakebase application resource
+    default: route_scenario_modeling
+  lakebase_database_owner_role_id:
+    description: Existing Lakebase role that owns the dedicated application database
+    default: josh-melton
+  lakebase_endpoint_id:
+    description: Read-write Lakebase endpoint used for OAuth database credentials
+    default: primary
+  lakebase_app_schema:
+    description: App-owned PostgreSQL schema for interactive state
+    default: route_scenario_modeling
 
 targets:
   dev:
@@ -103,7 +128,26 @@ resources:
       name: ${var.app_name}
       description: Route scenario modeling for baseline reconstruction and what-if planning
       source_code_path: .
+      config:
+        env:
+          - name: DATA_BACKEND
+            value: lakebase
+          - name: LAKEBASE_APP_SCHEMA
+            value: ${var.lakebase_app_schema}
+          - name: LAKEBASE_ENDPOINT
+            value_from: lakebase
+          - name: DATABRICKS_ROUTE_SOLVER_ENDPOINT
+            value: ${var.route_solver_endpoint_name}
       resources:
+        - name: lakebase
+          postgres:
+            branch: ${resources.postgres_branches.route_scenario_modeling_dev.id}
+            database: ${resources.postgres_databases.route_scenario_modeling_app_database.id}
+            permission: CAN_CONNECT_AND_CREATE
+        - name: route_solver
+          serving_endpoint:
+            name: ${var.route_solver_endpoint_name}
+            permission: CAN_QUERY
         - name: sql_warehouse
           sql_warehouse:
             id: ${resources.sql_warehouses.sql_warehouse.id}
@@ -157,19 +201,29 @@ resources:
           uc_securable:
             securable_type: TABLE
             securable_full_name: ${var.catalog}.${var.schema}.scenario_customer_overrides
-            permission: SELECT
+            permission: MODIFY
         - name: scenario_fleet_overrides
           uc_securable:
             securable_type: TABLE
             securable_full_name: ${var.catalog}.${var.schema}.scenario_fleet_overrides
-            permission: SELECT
+            permission: MODIFY
         - name: scenario_depot_overrides
           uc_securable:
             securable_type: TABLE
             securable_full_name: ${var.catalog}.${var.schema}.scenario_depot_overrides
-            permission: SELECT
+            permission: MODIFY
         - name: scenario_frequency_overrides
           uc_securable:
             securable_type: TABLE
             securable_full_name: ${var.catalog}.${var.schema}.scenario_frequency_overrides
+            permission: MODIFY
+        - name: scenario_cost_overrides
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.scenario_cost_overrides
+            permission: MODIFY
+        - name: cost_parameters
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.cost_parameters
             permission: SELECT

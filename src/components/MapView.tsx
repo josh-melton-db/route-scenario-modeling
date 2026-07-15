@@ -3,7 +3,7 @@ import DeckGL from '@deck.gl/react'
 import { IconLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers'
 import { Map as MapLibreMap } from 'react-map-gl/maplibre'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import type { Depot, Route, Stop } from '@/api/types'
+import type { DeliveryDraft, Depot, Route, Stop } from '@/api/types'
 import { routeColor } from '@/lib/routeColors'
 
 interface ViewState {
@@ -27,6 +27,10 @@ interface StopDatum extends Stop {
   color: [number, number, number]
 }
 
+interface DraftStopDatum extends DeliveryDraft {
+  draft_id: string
+}
+
 interface MapViewProps {
   depot: Depot
   routes: Route[]
@@ -34,12 +38,18 @@ interface MapViewProps {
   onSelectRoute: (routeId: string | null) => void
   viewState?: ViewState
   onViewStateChange?: (viewState: ViewState) => void
+  editable?: boolean
+  draftStops?: DeliveryDraft[]
+  selectedDraftIndex?: number | null
+  onMapClick?: (lngLat: { lat: number; lng: number }) => void
+  onSelectDraftStop?: (index: number | null) => void
 }
 
-function initialView(depot: Depot, routes: Route[]): ViewState {
+function initialView(depot: Depot, routes: Route[], draftStops: DeliveryDraft[]): ViewState {
   const points = [
     depot.location,
     ...routes.flatMap((route) => route.stops.map((stop) => stop.location)),
+    ...draftStops.map((stop) => ({ lat: stop.lat, lng: stop.lng })),
   ]
   const minLat = Math.min(...points.map((point) => point.lat))
   const maxLat = Math.max(...points.map((point) => point.lat))
@@ -61,8 +71,16 @@ export default function MapView({
   onSelectRoute,
   viewState,
   onViewStateChange,
+  editable = false,
+  draftStops = [],
+  selectedDraftIndex = null,
+  onMapClick,
+  onSelectDraftStop,
 }: MapViewProps) {
-  const fallbackInitialView = useMemo(() => initialView(depot, routes), [depot, routes])
+  const fallbackInitialView = useMemo(
+    () => initialView(depot, routes, draftStops),
+    [depot, draftStops, routes],
+  )
   const [localViewState, setLocalViewState] = useState<ViewState>(fallbackInitialView)
   const activeViewState = viewState ?? localViewState
 
@@ -90,11 +108,20 @@ export default function MapView({
     [routes],
   )
 
+  const draftData = useMemo<DraftStopDatum[]>(
+    () =>
+      draftStops.map((stop, index) => ({
+        ...stop,
+        draft_id: `draft-${index}`,
+      })),
+    [draftStops],
+  )
+
   const layers = useMemo(() => {
     const isSelected = (routeId: string) =>
       selectedRouteId === null || selectedRouteId === routeId
 
-    return [
+    const baseLayers = [
       new PathLayer<PathDatum>({
         id: 'route-paths',
         data: paths,
@@ -108,7 +135,7 @@ export default function MapView({
         getWidth: (datum) => (isSelected(datum.route_id) ? 5 : 3),
         capRounded: true,
         jointRounded: true,
-        pickable: true,
+        pickable: !editable,
         updateTriggers: {
           getColor: [selectedRouteId],
           getWidth: [selectedRouteId],
@@ -131,7 +158,7 @@ export default function MapView({
         radiusUnits: 'pixels',
         getRadius: (datum) =>
           datum.is_new_customer ? 10 : isSelected(datum.route_id) ? 8 : 5,
-        pickable: true,
+        pickable: !editable,
         updateTriggers: {
           getFillColor: [selectedRouteId],
           getRadius: [selectedRouteId],
@@ -156,10 +183,41 @@ export default function MapView({
         pickable: true,
       }),
     ]
-  }, [depot, paths, selectedRouteId, stops])
+
+    if (!editable) return baseLayers
+
+    return [
+      ...baseLayers,
+      new ScatterplotLayer<DraftStopDatum>({
+        id: 'draft-stops',
+        data: draftData,
+        getPosition: (datum) => [datum.lng, datum.lat],
+        getFillColor: (_datum, context) =>
+          context.index === selectedDraftIndex
+            ? [250, 204, 21, 255]
+            : [52, 211, 153, 240],
+        getLineColor: [15, 23, 42, 255],
+        stroked: true,
+        lineWidthMinPixels: 2,
+        radiusUnits: 'pixels',
+        getRadius: (_datum, context) =>
+          context.index === selectedDraftIndex ? 12 : 9,
+        pickable: true,
+        updateTriggers: {
+          getFillColor: [selectedDraftIndex],
+          getRadius: [selectedDraftIndex],
+        },
+      }),
+    ]
+  }, [depot, draftData, editable, paths, selectedDraftIndex, selectedRouteId, stops])
 
   return (
     <div className="relative h-full w-full overflow-hidden rounded-lg border border-border bg-card">
+      {editable && (
+        <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-md border border-border/70 bg-background/80 px-2 py-1 text-[11px] text-muted-foreground backdrop-blur">
+          Click the map to drop a delivery pin
+        </div>
+      )}
       <DeckGL
         viewState={activeViewState}
         onViewStateChange={({ viewState: next }) => {
@@ -183,17 +241,43 @@ export default function MapView({
         }}
         controller
         layers={layers}
-        onClick={({ object }) => {
-          if (!object) {
+        onClick={(info) => {
+          if (editable) {
+            if (info.object && 'draft_id' in info.object) {
+              const draftId = String((info.object as DraftStopDatum).draft_id)
+              const index = Number(draftId.replace('draft-', ''))
+              onSelectDraftStop?.(Number.isFinite(index) ? index : null)
+              return
+            }
+            if (info.coordinate) {
+              onMapClick?.({
+                lng: Number(info.coordinate[0]),
+                lat: Number(info.coordinate[1]),
+              })
+              onSelectDraftStop?.(null)
+            }
+            return
+          }
+          if (!info.object) {
             onSelectRoute(null)
             return
           }
-          if ('route_id' in object) {
-            onSelectRoute((object as { route_id: string }).route_id)
+          if ('route_id' in info.object) {
+            onSelectRoute((info.object as { route_id: string }).route_id)
           }
         }}
         getTooltip={({ object }) => {
           if (!object) return null
+          if ('draft_id' in object) {
+            const draft = object as DraftStopDatum
+            return {
+              html: `<div class="deck-tooltip">
+                <div style="font-weight:600">${draft.customer_name}</div>
+                <div style="font-size:11px;opacity:0.8">${draft.demand_cases} cases · ${draft.lat.toFixed(4)}, ${draft.lng.toFixed(4)}</div>
+              </div>`,
+              style: { backgroundColor: 'transparent', padding: '0' },
+            }
+          }
           if ('customer_name' in object) {
             const stop = object as StopDatum
             return {

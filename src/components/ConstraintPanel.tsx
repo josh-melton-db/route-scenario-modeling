@@ -8,8 +8,16 @@ export default function ConstraintPanel({
 }) {
   if (!validation) {
     return (
-      <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
-        Validation feedback will appear here after you run the pre-check.
+      <div className="rounded-lg border border-border bg-card p-4">
+        <div className="flex items-start gap-2">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-400" />
+          <div>
+            <div className="text-sm font-semibold">Ready to run</div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              The server will precheck your changes before optimization starts.
+            </p>
+          </div>
+        </div>
       </div>
     )
   }
@@ -41,6 +49,22 @@ export default function ConstraintPanel({
         <div className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
           Missing fields: {validation.missing_fields.join(', ')}
         </div>
+      )}
+
+      {validation.hard_constraints.length > 0 && (
+        <ul className="mt-4 space-y-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+          {validation.hard_constraints.map((issue, index) => (
+            <li key={`${issue.field ?? 'hard'}-${index}`}>{issue.message}</li>
+          ))}
+        </ul>
+      )}
+
+      {validation.soft_penalties.length > 0 && (
+        <ul className="mt-4 space-y-2 rounded-md border border-border/60 bg-background/40 p-3 text-xs text-muted-foreground">
+          {validation.soft_penalties.map((issue, index) => (
+            <li key={`${issue.field ?? 'soft'}-${index}`}>{issue.message}</li>
+          ))}
+        </ul>
       )}
     </div>
   )

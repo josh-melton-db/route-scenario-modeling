@@ -2,72 +2,62 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Loader2, Play } from 'lucide-react'
 import ConstraintPanel from '@/components/ConstraintPanel'
+import CustomScenarioBuilder from '@/components/CustomScenarioBuilder'
 import DepotDayFilter from '@/components/DepotDayFilter'
 import ErrorState from '@/components/ErrorState'
-import ParameterForm from '@/components/ParameterForm'
-import ScenarioTypePicker from '@/components/ScenarioTypePicker'
 import {
-  useCreateScenario,
+  useBaselineNetwork,
+  useCreateScenarioRun,
   useDays,
   useDepots,
-  useScenarioTypes,
-  useStartRun,
-  useValidateScenario,
 } from '@/api/queries'
-import type { ScenarioTypeSpec } from '@/api/types'
-import {
-  useScenarioDraft,
-  type ScenarioDraftState,
-} from '@/state/useScenarioDraft'
+import { useScenarioDraft } from '@/state/useScenarioDraft'
 
 export default function ScenarioBuilderPage() {
   const navigate = useNavigate()
   const [submitError, setSubmitError] = useState<string | null>(null)
   const depots = useDepots()
   const days = useDays()
-  const scenarioTypes = useScenarioTypes()
-  const createScenario = useCreateScenario()
-  const validateScenario = useValidateScenario()
-  const startRun = useStartRun()
+  const createScenarioRun = useCreateScenarioRun()
   const draft = useScenarioDraft()
+  const baselineNetwork = useBaselineNetwork(draft.depot_id, draft.delivery_day)
 
-  const selectedSpec = useMemo(
+  const selectedDepot = useMemo(
     () =>
-      scenarioTypes.data?.find(
-        (spec) => spec.scenario_type === draft.scenario_type,
-      ) ?? null,
-    [draft.scenario_type, scenarioTypes.data],
+      depots.data?.find((depot) => depot.depot_id === draft.depot_id) ??
+      baselineNetwork.data?.depot ??
+      null,
+    [baselineNetwork.data?.depot, depots.data, draft.depot_id],
   )
 
-  const error = depots.error ?? days.error ?? scenarioTypes.error
+  const error = depots.error ?? days.error
   if (error) return <ErrorState title="Could not load scenario builder" error={error} />
 
-  const loading = depots.isLoading || days.isLoading || scenarioTypes.isLoading
-  const busy =
-    createScenario.isPending || validateScenario.isPending || startRun.isPending
+  const loading = depots.isLoading || days.isLoading
+  const busy = createScenarioRun.isPending
 
   async function handleRun() {
-    if (!draft.scenario_type) {
-      setSubmitError('Choose a scenario type first.')
-      return
-    }
     setSubmitError(null)
+    draft.setValidation(null)
     try {
-      const created = await createScenario.mutateAsync({
-        scenario_name: draft.scenario_name.trim() || selectedSpec?.label || 'Scenario',
-        scenario_type: draft.scenario_type,
+      const started = await createScenarioRun.mutateAsync({
+        scenario_name: draft.scenario_name.trim() || 'Custom scenario',
+        scenario_type: 'custom',
         baseline_scenario_id: 'baseline',
         depot_id: draft.depot_id,
         delivery_day: draft.delivery_day,
-        parameters: draft.parameters,
+        parameters: draft.buildParameters(),
       })
-      const validation = await validateScenario.mutateAsync(
-        created.scenario.scenario_id,
+      if (started.validation) {
+        draft.setValidation(started.validation)
+        return
+      }
+      if (!started.run) {
+        throw new Error('The scenario was created without a run to track.')
+      }
+      navigate(
+        `/runs/${started.run.run_id}?scenarioId=${started.run.scenario_id}`,
       )
-      draft.setValidation(validation)
-      if (!validation.valid) return
-      const run = await startRun.mutateAsync(created.scenario.scenario_id)
-      navigate(`/runs/${run.run_id}?scenarioId=${created.scenario.scenario_id}`)
     } catch (err) {
       setSubmitError(String(err))
     }
@@ -75,15 +65,7 @@ export default function ScenarioBuilderPage() {
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Scenario builder
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Configure a what-if scenario for Generic Co and launch the served optimization run.
-          </p>
-        </div>
+      <div className="flex flex-wrap justify-end gap-4">
         <DepotDayFilter
           depots={depots.data ?? []}
           days={days.data ?? []}
@@ -91,7 +73,7 @@ export default function ScenarioBuilderPage() {
           deliveryDay={draft.delivery_day}
           onChange={draft.setDepotDay}
         />
-      </header>
+      </div>
 
       {loading ? (
         <div className="flex h-96 items-center justify-center text-muted-foreground">
@@ -100,12 +82,6 @@ export default function ScenarioBuilderPage() {
         </div>
       ) : (
         <>
-          <ScenarioTypePicker
-            specs={scenarioTypes.data ?? []}
-            selected={draft.scenario_type}
-            onSelect={(spec) => selectScenarioType(spec, draft)}
-          />
-
           <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
             <div className="flex flex-col gap-4">
               <div className="rounded-lg border border-border bg-card p-4">
@@ -118,13 +94,16 @@ export default function ScenarioBuilderPage() {
                   />
                 </label>
               </div>
-              {selectedSpec && (
-                <ParameterForm
-                  fields={selectedSpec.fields}
-                  values={draft.parameters}
-                  onChange={draft.setParameter}
-                />
-              )}
+              <CustomScenarioBuilder
+                depot={selectedDepot}
+                baselineRoutes={baselineNetwork.data?.routes ?? []}
+                changes={draft.changes}
+                costOverride={draft.costOverride}
+                costOverrideEnabled={draft.costOverrideEnabled}
+                onChangesChange={draft.setChanges}
+                onCostChange={draft.setCostOverride}
+                onCostEnabledChange={draft.setCostOverrideEnabled}
+              />
             </div>
             <div className="flex flex-col gap-4">
               <ConstraintPanel validation={draft.validation} />
@@ -135,7 +114,7 @@ export default function ScenarioBuilderPage() {
               )}
               <button
                 onClick={handleRun}
-                disabled={busy || !draft.scenario_type}
+                disabled={busy}
                 className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {busy ? (
@@ -143,23 +122,12 @@ export default function ScenarioBuilderPage() {
                 ) : (
                   <Play className="h-4 w-4" />
                 )}
-                Validate and run
+                Run scenario
               </button>
             </div>
           </div>
         </>
       )}
     </div>
-  )
-}
-
-function selectScenarioType(
-  spec: ScenarioTypeSpec,
-  draft: ScenarioDraftState,
-) {
-  draft.setScenarioType(spec.scenario_type)
-  draft.setScenarioName(spec.label)
-  draft.setParameters(
-    Object.fromEntries(spec.fields.map((field) => [field.name, field.default])),
   )
 }

@@ -16,6 +16,13 @@ ScenarioType = Literal[
     "driver_count_change",
     "delivery_frequency_day_change",
     "facility_move",
+    "custom",
+]
+ScenarioChangeKind = Literal[
+    "add_deliveries",
+    "driver_count_change",
+    "delivery_frequency_day_change",
+    "facility_move",
 ]
 ScenarioLifecycleStatus = Literal[
     "draft",
@@ -30,6 +37,15 @@ ConstraintSeverity = Literal["hard", "soft"]
 ConstraintScope = Literal["route", "depot", "customer", "scenario"]
 WindowRisk = Literal["none", "at_risk", "missed"]
 MatrixSource = Literal["haversine_circuity"]
+EditorEntityType = Literal[
+    "orders",
+    "customers",
+    "fleet",
+    "depots",
+    "cost_parameters",
+]
+EditorSessionStatus = Literal["open", "committed", "discarded", "expired"]
+EditorRowState = Literal["unchanged", "inserted", "updated"]
 ParameterFieldType = Literal[
     "number",
     "integer",
@@ -193,6 +209,49 @@ class ParameterField(StrictModel):
     help_text: str | None = None
 
 
+class DeliveryDraft(StrictModel):
+    customer_name: str
+    lat: float
+    lng: float
+    demand_cases: int
+    service_minutes: int = 30
+    receiving_window_start: str = "08:00"
+    receiving_window_end: str = "16:00"
+    delivery_day: str | None = None
+    customer_id: str | None = None
+
+
+class CostOverride(StrictModel):
+    cost_per_mile: float | None = None
+    labor_regular_hour: float | None = None
+    overtime_multiplier: float | None = None
+    overtime_threshold_minutes: int | None = None
+    fixed_truck_daily_cost: float | None = None
+    late_delivery_penalty: float | None = None
+    missed_delivery_penalty: float | None = None
+
+
+class ScenarioChange(StrictModel):
+    kind: ScenarioChangeKind
+    deliveries: list[DeliveryDraft] = Field(default_factory=list)
+    driver_delta: int | None = None
+    allow_overtime: bool | None = None
+    target_day: str | None = None
+    target_customers: str | None = None
+    new_depot_location: LatLng | None = None
+    preserve_service_windows: bool | None = None
+
+
+class DeliveryUploadError(StrictModel):
+    row: int
+    message: str
+
+
+class DeliveryUploadResult(StrictModel):
+    deliveries: list[DeliveryDraft]
+    errors: list[DeliveryUploadError] = Field(default_factory=list)
+
+
 class ScenarioTypeSpec(StrictModel):
     scenario_type: ScenarioType
     label: str
@@ -219,11 +278,6 @@ class ScenarioCreateRequest(StrictModel):
     depot_id: str
     delivery_day: str
     parameters: dict[str, Any] = Field(default_factory=dict)
-
-
-class CreateScenarioResponse(StrictModel):
-    scenario: ScenarioDefinition
-    result_stub_id: str
 
 
 class ValidationIssue(StrictModel):
@@ -261,6 +315,7 @@ class RunStage(StrictModel):
     label: str
     status: Literal["pending", "running", "completed", "failed"]
     message: str
+    duration_ms: int | None = None
 
 
 class RunStartResponse(StrictModel):
@@ -269,6 +324,12 @@ class RunStartResponse(StrictModel):
     status: RunStatus
     message: str
     databricks_run_url: str | None = None
+
+
+class CreateScenarioResponse(StrictModel):
+    scenario: ScenarioDefinition
+    result_stub_id: str
+    run: RunStartResponse | None = None
 
 
 class RunStatusResponse(StrictModel):
@@ -281,6 +342,8 @@ class RunStatusResponse(StrictModel):
     started_at: str
     completed_at: str | None = None
     databricks_run_url: str | None = None
+    validation: ValidationResponse | None = None
+    stage_durations_ms: dict[str, int | None] = Field(default_factory=dict)
 
 
 class ComparisonResult(StrictModel):
@@ -300,3 +363,76 @@ class ComparisonResult(StrictModel):
     kpi_deltas: KpiDeltas | None
     customer_impacts: list[CustomerImpact]
     constraint_violations: list[ConstraintViolation]
+
+
+class EditorSession(StrictModel):
+    """Authenticated user's isolated planning-data editing session."""
+
+    session_id: str
+    principal: str
+    status: EditorSessionStatus
+    created_at: str
+    updated_at: str
+    expires_at: str
+    has_unsaved_changes: bool = False
+    entity_counts: dict[EditorEntityType, int] = Field(default_factory=dict)
+
+
+class EditorRow(StrictModel):
+    entity_type: EditorEntityType
+    row_id: str
+    row_version: int = Field(ge=1)
+    state: EditorRowState
+    data: dict[str, Any]
+
+
+class EditorPage(StrictModel):
+    session: EditorSession
+    entity_type: EditorEntityType
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1, le=100)
+    total: int = Field(ge=0)
+    rows: list[EditorRow]
+
+
+class EditorInsertRequest(StrictModel):
+    data: dict[str, Any]
+
+
+class EditorPatchRequest(StrictModel):
+    row_version: int = Field(ge=1)
+    changes: dict[str, Any]
+
+
+class EditorDeleteRequest(StrictModel):
+    row_version: int = Field(ge=1)
+
+
+class EditorValidationIssue(StrictModel):
+    entity_type: EditorEntityType
+    row_id: str
+    field: str | None = None
+    code: str
+    message: str
+
+
+class EditorValidationResponse(StrictModel):
+    session: EditorSession
+    valid: bool
+    issues: list[EditorValidationIssue] = Field(default_factory=list)
+
+
+class EditorPreviewRequest(StrictModel):
+    depot_id: str
+    delivery_day: str
+
+
+class EditorPreviewResponse(StrictModel):
+    session: EditorSession
+    network: BaselineNetwork
+    kpis: Kpis
+
+
+class EditorCommitResponse(StrictModel):
+    session: EditorSession
+    baseline_snapshot_count: int = Field(ge=0)

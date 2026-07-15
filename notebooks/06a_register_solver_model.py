@@ -17,12 +17,14 @@ except Exception:
 
 import mlflow
 import pandas as pd
-from mlflow.models.signature import ModelSignature
 from mlflow.tracking import MlflowClient
-from mlflow.types.schema import ColSpec, Schema
 
 from route_opt.config import config_from_widgets, get_widget_value
-from route_opt.solver.pyfunc_model import RouteScenarioSolverModel, make_input_row
+from route_opt.solver.pyfunc_model import (
+    RouteScenarioSolverModel,
+    make_input_row,
+    route_solver_model_signature,
+)
 
 config = config_from_widgets()
 solver_model_name = get_widget_value("solver_model_name", f"{config.catalog}.{config.schema}.route_solver")
@@ -90,38 +92,14 @@ input_example = pd.DataFrame(
         )
     ]
 )
-signature = ModelSignature(
-    inputs=Schema(
-        [
-            ColSpec("string", "scenario_id"),
-            ColSpec("string", "depot_id"),
-            ColSpec("string", "delivery_day"),
-            ColSpec("string", "planning_depots"),
-            ColSpec("string", "planning_customers"),
-            ColSpec("string", "planning_fleet"),
-            ColSpec("string", "planning_stops"),
-            ColSpec("string", "travel_matrix"),
-            ColSpec("long", "time_limit_seconds"),
-        ]
-    ),
-    outputs=Schema(
-        [
-            ColSpec("string", "scenario_id"),
-            ColSpec("string", "depot_id"),
-            ColSpec("string", "delivery_day"),
-            ColSpec("string", "routes"),
-            ColSpec("string", "route_stops"),
-            ColSpec("string", "unassigned_stops"),
-            ColSpec("string", "diagnostics"),
-        ]
-    ),
-)
+signature = route_solver_model_signature()
 with mlflow.start_run(run_name="register-route-solver-pyfunc") as run:
     model_kwargs = {
         "artifact_path": "route_solver",
         "python_model": RouteScenarioSolverModel(),
         "pip_requirements": ["mlflow", "numpy<2", "ortools==9.8.3296", "pandas"],
         "signature": signature,
+        "input_example": input_example,
         "registered_model_name": solver_model_name,
     }
     code_root = next((candidate for candidate in candidates if candidate.startswith("/Workspace/")), bundle_root)

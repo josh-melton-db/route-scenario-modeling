@@ -8,9 +8,17 @@ env:
     value: demos
   - name: DATABRICKS_SCHEMA
     value: route_scenario_modeling
-  - name: DATABRICKS_SQL_WAREHOUSE_ID
-    valueFrom: sql_warehouse
   - name: DATA_BACKEND
-    value: databricks
+    value: lakebase
+  - name: LAKEBASE_APP_SCHEMA
+    value: route_scenario_modeling
+  - name: LAKEBASE_ENDPOINT
+    valueFrom: lakebase
+  - name: LAKEBASE_POOL_MIN_SIZE
+    value: "1"
+  - name: LAKEBASE_POOL_MAX_SIZE
+    value: "5"
+  - name: LAKEBASE_CONNECT_RETRIES
+    value: "4"
   - name: DATABRICKS_ROUTE_SOLVER_ENDPOINT
     value: route-solver-dev

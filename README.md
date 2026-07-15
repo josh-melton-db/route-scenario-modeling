@@ -2,7 +2,7 @@
 
 An end-to-end Databricks demo for **baseline route reconstruction** and **what-if scenario planning** on a multi-depot delivery network. Compare cost, service level, and route geometry side-by-side before changing fleet, depot, or customer assignments.
 
-The stack is intentionally small and readable: synthetic data generation, a Lakeflow declarative pipeline, OR-Tools CVRPTW solving via MLflow Model Serving, Unity Catalog metric views, and a React + FastAPI control app.
+The stack is intentionally small and readable: synthetic data generation, a Lakeflow declarative pipeline, OR-Tools CVRPTW solving via MLflow Model Serving, Unity Catalog metric views, Lakebase-backed interactive state, and a React + FastAPI control app.
 
 ## How it works
 
@@ -20,7 +20,7 @@ One schema (`demos.route_scenario_modeling` by default), one orchestrated job, s
 notebooks/          pipeline notebooks (data gen → solve → compare → validate)
 route_opt/          shared Python library (baseline, scenarios, solver, synthetic data)
 pipelines/          Lakeflow declarative pipeline SQL (bronze / silver / gold)
-backend/            FastAPI API + Databricks SQL store
+backend/            FastAPI API + Lakebase store (with temporary UC fallback)
 src/                React UI (baseline map, scenario builder, comparison views)
 resources/          DAB job and pipeline definitions
 databricks.yml      bundle config (app, warehouse, jobs)
@@ -47,6 +47,23 @@ databricks apps start route-scenario-modeling-dev --profile DEFAULT
 ```
 
 Grant the app service principal `SELECT` on the schema (see `notebooks/10_grant_app_permissions.py`).
+
+### Lakebase interactive backend
+
+The app defaults to `DATA_BACKEND=lakebase`. Deploy the app resource first so its
+service principal creates and owns the `LAKEBASE_APP_SCHEMA`, then seed the new
+project from an authenticated Lakebase client:
+
+```bash
+PYTHONPATH=. python -m backend.services.lakebase_seed --source uc
+# Or start a new demo dataset:
+PYTHONPATH=. python -m backend.services.lakebase_seed --source synthetic
+```
+
+The seed command applies idempotent migrations, validates reference-data row
+counts and relationships, migrates existing scenarios/overrides when using
+`--source uc`, and rebuilds baseline snapshots with `route_opt.baseline`.
+Set `DATA_BACKEND=databricks` only for the temporary Unity Catalog rollback path.
 
 Local development without a Databricks App:
 

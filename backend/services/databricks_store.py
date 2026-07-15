@@ -9,13 +9,13 @@ from fastapi import HTTPException
 from ..models import (
     BaselineNetwork,
     ComparisonResult,
-    CreateScenarioResponse,
     Depot,
     Kpis,
     ScenarioCreateRequest,
     ScenarioDefinition,
     ScenarioLifecycleStatus,
     ScenarioTypeSpec,
+    ValidationIssue,
     ValidationResponse,
 )
 from route_opt.overrides import build_scenario_overrides
@@ -169,7 +169,17 @@ class DatabricksStore:
         """Write normalized override rows so the scenario materializes real changes."""
         depot = None
         eligible_customer_ids: list[str] = []
-        if scenario.scenario_type in {"ma_new_customers", "new_customer_growth", "facility_move"}:
+        needs_depot = scenario.scenario_type in {
+            "ma_new_customers",
+            "new_customer_growth",
+            "facility_move",
+            "custom",
+        }
+        needs_customers = scenario.scenario_type in {
+            "delivery_frequency_day_change",
+            "custom",
+        }
+        if needs_depot:
             depot_rows = self.sql.query(
                 f"""
                 SELECT depot_id, lat, lng
@@ -180,7 +190,7 @@ class DatabricksStore:
             )
             if depot_rows:
                 depot = depot_rows[0]
-        if scenario.scenario_type == "delivery_frequency_day_change":
+        if needs_customers:
             eligible_customer_ids = [
                 str(row["customer_id"])
                 for row in self.sql.query(
@@ -267,20 +277,146 @@ class DatabricksStore:
             for field in spec.fields
             if field.required and scenario.parameters.get(field.name) in (None, "")
         ]
-        if not missing:
+        hard_constraints: list[ValidationIssue] = []
+        soft_penalties: list[ValidationIssue] = []
+        estimated_customers = 0
+        estimated_routes = 1
+
+        if scenario.scenario_type == "custom":
+            changes = scenario.parameters.get("changes") or []
+            if not isinstance(changes, list) or not changes:
+                cost = scenario.parameters.get("cost")
+                if not isinstance(cost, dict) or not any(v is not None for v in cost.values()):
+                    hard_constraints.append(
+                        ValidationIssue(
+                            field="changes",
+                            scope="scenario",
+                            severity="hard",
+                            message="Custom scenarios need at least one change or a cost override.",
+                        )
+                    )
+            else:
+                for idx, change in enumerate(changes):
+                    if not isinstance(change, dict):
+                        hard_constraints.append(
+                            ValidationIssue(
+                                field=f"changes[{idx}]",
+                                scope="scenario",
+                                severity="hard",
+                                message="Each change must be an object with a kind.",
+                            )
+                        )
+                        continue
+                    kind = change.get("kind")
+                    if kind == "add_deliveries":
+                        deliveries = change.get("deliveries") or []
+                        if not deliveries:
+                            hard_constraints.append(
+                                ValidationIssue(
+                                    field=f"changes[{idx}].deliveries",
+                                    scope="customer",
+                                    severity="hard",
+                                    message="Add-deliveries changes require at least one delivery pin.",
+                                )
+                            )
+                        else:
+                            estimated_customers += len(deliveries)
+                            for d_idx, delivery in enumerate(deliveries):
+                                if not isinstance(delivery, dict):
+                                    continue
+                                for coord in ("lat", "lng"):
+                                    if delivery.get(coord) is None:
+                                        hard_constraints.append(
+                                            ValidationIssue(
+                                                field=f"changes[{idx}].deliveries[{d_idx}].{coord}",
+                                                scope="customer",
+                                                severity="hard",
+                                                message=f"Delivery is missing {coord}.",
+                                            )
+                                        )
+                    elif kind == "driver_count_change":
+                        delta = int(change.get("driver_delta") or 0)
+                        if delta == 0:
+                            soft_penalties.append(
+                                ValidationIssue(
+                                    field=f"changes[{idx}].driver_delta",
+                                    scope="scenario",
+                                    severity="soft",
+                                    message="Driver delta is zero and will not change fleet size.",
+                                )
+                            )
+                        if delta < -3:
+                            soft_penalties.append(
+                                ValidationIssue(
+                                    field=f"changes[{idx}].driver_delta",
+                                    scope="scenario",
+                                    severity="soft",
+                                    message="Removing more than 3 drivers may make the network infeasible.",
+                                )
+                            )
+                        estimated_routes = max(estimated_routes, abs(delta) + 1)
+                    elif kind == "delivery_frequency_day_change":
+                        if not change.get("target_day"):
+                            hard_constraints.append(
+                                ValidationIssue(
+                                    field=f"changes[{idx}].target_day",
+                                    scope="customer",
+                                    severity="hard",
+                                    message="Day-change requires a target_day.",
+                                )
+                            )
+                        estimated_customers += 6
+                    elif kind == "facility_move":
+                        location = change.get("new_depot_location")
+                        if not isinstance(location, dict) or location.get("lat") is None or location.get("lng") is None:
+                            hard_constraints.append(
+                                ValidationIssue(
+                                    field=f"changes[{idx}].new_depot_location",
+                                    scope="depot",
+                                    severity="hard",
+                                    message="Facility move requires a new depot lat/lng.",
+                                )
+                            )
+                        estimated_routes = max(estimated_routes, 3)
+                    else:
+                        hard_constraints.append(
+                            ValidationIssue(
+                                field=f"changes[{idx}].kind",
+                                scope="scenario",
+                                severity="hard",
+                                message=f"Unsupported change kind: {kind}",
+                            )
+                        )
+            if isinstance(scenario.parameters.get("cost"), dict):
+                soft_penalties.append(
+                    ValidationIssue(
+                        field="cost",
+                        scope="scenario",
+                        severity="soft",
+                        message="Cost overrides apply to both baseline and scenario costing for a fair comparison.",
+                    )
+                )
+        else:
+            estimated_customers = 0
+            estimated_routes = 1
+
+        valid = not missing and not hard_constraints
+        if valid:
             self.set_scenario_status(scenario_id, "validated")
         return ValidationResponse(
             scenario_id=scenario_id,
-            valid=not missing,
-            hard_constraints=[],
-            soft_penalties=[],
+            valid=valid,
+            hard_constraints=hard_constraints,
+            soft_penalties=soft_penalties,
             missing_fields=missing,
             inferred_fields=[],
-            estimated_affected_customers=0,
-            estimated_affected_routes=1,
-            summary="Scenario parameters are complete and ready to run."
-            if not missing
-            else "Scenario is missing required fields.",
+            estimated_affected_customers=estimated_customers,
+            estimated_affected_routes=estimated_routes,
+            summary=(
+                "Scenario parameters are complete and ready to run."
+                if valid
+                else "Scenario is missing required fields or has hard validation errors."
+            ),
         )
 
     def get_target_status(self, scenario_id: str) -> str:
@@ -296,6 +432,34 @@ class DatabricksStore:
             """
         )
         return ComparisonResult.model_validate(payload)
+
+    def load_solver_base_tables(self) -> dict[str, list[dict[str, object]]]:
+        """Compatibility path retained while Lakebase parity is being verified."""
+        return {
+            "depots": self.sql.query(f"SELECT * FROM {self.sql.table('dim_depots_augmented')}"),
+            "customers": self.sql.query(f"SELECT * FROM {self.sql.table('dim_customers_augmented')}"),
+            "fleet": self.sql.query(f"SELECT * FROM {self.sql.table('dim_fleet_assets')}"),
+            "orders": self.sql.query(f"SELECT * FROM {self.sql.table('fact_delivery_orders')}"),
+            "cost_parameters": self.sql.query(f"SELECT * FROM {self.sql.table('cost_parameters')}"),
+        }
+
+    def load_scenario_override_tables(
+        self,
+        scenario_id: str,
+    ) -> dict[str, list[dict[str, object]]]:
+        return {
+            table_name: self.sql.query(
+                f"SELECT * FROM {self.sql.table(table_name)} "
+                f"WHERE scenario_id = {sql_literal(scenario_id)}"
+            )
+            for table_name in (
+                "scenario_customer_overrides",
+                "scenario_fleet_overrides",
+                "scenario_depot_overrides",
+                "scenario_frequency_overrides",
+                "scenario_cost_overrides",
+            )
+        }
 
 
 databricks_store = DatabricksStore()

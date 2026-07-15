@@ -5,10 +5,12 @@ from dataclasses import fields
 from typing import Any
 
 import mlflow.pyfunc
+from mlflow.models.signature import ModelSignature
+from mlflow.types.schema import ColSpec, Schema
 import pandas as pd
 
 from .ortools_cvrptw import solve_scenario_partition
-from .payload import OUTPUT_COLUMNS, PAYLOAD_COLUMNS, make_input_row
+from .payload import INPUT_SCHEMA, OUTPUT_COLUMNS, make_input_row
 from ..cost import CostParameters
 
 
@@ -42,6 +44,21 @@ class RouteScenarioSolverModel(mlflow.pyfunc.PythonModel):
                 }
             )
         return pd.DataFrame(rows)
+
+
+def route_solver_model_signature() -> ModelSignature:
+    """Return the explicit serving contract for route-solver PyFunc requests."""
+    return ModelSignature(
+        inputs=Schema([ColSpec(data_type, name) for name, data_type in INPUT_SCHEMA]),
+        outputs=Schema(
+            [
+                ColSpec("string", "scenario_id"),
+                ColSpec("string", "depot_id"),
+                ColSpec("string", "delivery_day"),
+                *[ColSpec("string", column) for column in OUTPUT_COLUMNS],
+            ]
+        ),
+    )
 
 
 def _payload(value: object) -> list[dict[str, object]]:

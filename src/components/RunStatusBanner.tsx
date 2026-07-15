@@ -25,7 +25,7 @@ export default function RunStatusBanner({ run }: { run: RunStatusResponse }) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="text-lg font-semibold">Optimization run</div>
+              <div className="text-lg font-semibold">Run {run.run_id}</div>
               <p className="mt-1 text-sm text-muted-foreground">{run.message}</p>
             </div>
             <div className="rounded-full border border-border px-3 py-1 text-xs uppercase tracking-wider text-muted-foreground">
@@ -43,7 +43,7 @@ export default function RunStatusBanner({ run }: { run: RunStatusResponse }) {
             {run.progress_pct}%
           </div>
 
-          <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-5">
+          <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             {run.stages.map((stage) => (
               <div
                 key={stage.stage_id}
@@ -58,6 +58,7 @@ export default function RunStatusBanner({ run }: { run: RunStatusResponse }) {
                       stage.status === 'running' && 'bg-primary',
                       stage.status === 'pending' && 'bg-muted-foreground',
                       stage.status === 'failed' && 'bg-destructive',
+                      stage.status === 'skipped' && 'bg-muted-foreground/50',
                     )}
                   />
                 </div>
