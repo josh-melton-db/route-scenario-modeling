@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from fastapi import HTTPException
 
@@ -13,7 +13,9 @@ from ..models import (
     Kpis,
     ScenarioCreateRequest,
     ScenarioDefinition,
+    ScenarioHistoryItem,
     ScenarioLifecycleStatus,
+    ScenarioType,
     ScenarioTypeSpec,
     ValidationIssue,
     ValidationResponse,
@@ -73,6 +75,69 @@ class DatabricksStore:
 
     def list_scenario_types(self) -> list[ScenarioTypeSpec]:
         return stub_store.list_scenario_types()
+
+    def list_recent_scenarios(self, limit: int = 10) -> list[ScenarioHistoryItem]:
+        rows = self.sql.query(
+            f"""
+            SELECT
+              definitions.scenario_id,
+              definitions.scenario_name,
+              definitions.scenario_type,
+              definitions.baseline_scenario_id,
+              definitions.depot_id,
+              definitions.delivery_day,
+              definitions.status,
+              CAST(definitions.created_at AS STRING) AS created_at,
+              results.scenario_id IS NOT NULL AS has_results
+            FROM {self.sql.table('scenario_definitions')} definitions
+            LEFT JOIN {self.sql.table('app_scenario_results')} results
+              ON results.scenario_id = definitions.scenario_id
+            WHERE definitions.scenario_type <> 'baseline'
+            ORDER BY definitions.created_at DESC, definitions.scenario_id DESC
+            LIMIT {limit}
+            """
+        )
+        if not rows:
+            return []
+
+        scenario_ids = [str(row["scenario_id"]) for row in rows]
+        scenario_id_values = ", ".join(sql_literal(value) for value in scenario_ids)
+        parameter_rows = self.sql.query(
+            f"""
+            SELECT scenario_id, parameter_name, parameter_value
+            FROM {self.sql.table('scenario_parameters')}
+            WHERE scenario_id IN ({scenario_id_values})
+            ORDER BY scenario_id, parameter_name
+            """
+        )
+        parameters_by_scenario: dict[str, dict[str, Any]] = {
+            scenario_id: {} for scenario_id in scenario_ids
+        }
+        for parameter in parameter_rows:
+            raw = parameter["parameter_value"]
+            try:
+                value = json.loads(raw)
+            except Exception:
+                value = raw
+            parameters_by_scenario[str(parameter["scenario_id"])][
+                str(parameter["parameter_name"])
+            ] = value
+
+        return [
+            ScenarioHistoryItem(
+                scenario_id=str(row["scenario_id"]),
+                scenario_name=str(row["scenario_name"]),
+                scenario_type=cast(ScenarioType, str(row["scenario_type"])),
+                baseline_scenario_id=str(row["baseline_scenario_id"]),
+                depot_id=str(row["depot_id"]),
+                delivery_day=str(row["delivery_day"]),
+                parameters=parameters_by_scenario[str(row["scenario_id"])],
+                status=cast(ScenarioLifecycleStatus, str(row["status"])),
+                created_at=str(row["created_at"]),
+                has_results=bool(row["has_results"]),
+            )
+            for row in rows
+        ]
 
     def get_baseline_network(self, depot_id: str, delivery_day: str) -> BaselineNetwork:
         payload = self.sql.payload_json(

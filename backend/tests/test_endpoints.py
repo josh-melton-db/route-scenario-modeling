@@ -51,6 +51,12 @@ def test_scenario_lifecycle() -> None:
     assert created.status_code == 200
     scenario_id = created.json()["scenario"]["scenario_id"]
 
+    history = client.get("/api/scenarios?limit=10")
+    assert history.status_code == 200
+    assert history.json()[0]["scenario_id"] == scenario_id
+    assert history.json()[0]["parameters"]["driver_delta"] == -1
+    assert history.json()[0]["has_results"] is True
+
     validated = client.post(f"/api/scenarios/{scenario_id}/validate")
     assert validated.status_code == 200
     assert validated.json()["valid"] is True

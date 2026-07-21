@@ -5,6 +5,7 @@ import ConstraintPanel from '@/components/ConstraintPanel'
 import CustomScenarioBuilder from '@/components/CustomScenarioBuilder'
 import DepotDayFilter from '@/components/DepotDayFilter'
 import ErrorState from '@/components/ErrorState'
+import ScenarioHistory from '@/components/ScenarioHistory'
 import {
   useBaselineNetwork,
   useCreateScenarioRun,
@@ -124,6 +125,7 @@ export default function ScenarioBuilderPage() {
                 )}
                 Run scenario
               </button>
+              <ScenarioHistory />
             </div>
           </div>
         </>

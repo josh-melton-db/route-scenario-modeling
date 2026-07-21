@@ -271,6 +271,11 @@ class ScenarioDefinition(StrictModel):
     status: ScenarioLifecycleStatus
 
 
+class ScenarioHistoryItem(ScenarioDefinition):
+    created_at: str
+    has_results: bool
+
+
 class ScenarioCreateRequest(StrictModel):
     scenario_name: str
     scenario_type: ScenarioType

@@ -37,6 +37,10 @@ def test_synthetic_data_shape_and_narrative_anchor() -> None:
     assert len(north_tuesday_orders) == 24
     assert sum(int(row["demand_cases"]) for row in north_tuesday_orders) == 2840
     assert all("confidence_level" in row for row in data["location_data"])
+    customers = {row["customer_id"]: row for row in data["location_data"]}
+    assert (customers["CUST-001"]["lat"], customers["CUST-001"]["lng"]) == (42.388, -82.934)
+    assert (customers["CUST-002"]["lat"], customers["CUST-002"]["lng"]) == (42.456, -82.911)
+    assert (customers["CUST-006"]["lat"], customers["CUST-006"]["lng"]) == (42.33, -82.95)
 
 
 def test_baseline_reconstructs_contract_and_metric_ranges() -> None:
@@ -51,8 +55,8 @@ def test_baseline_reconstructs_contract_and_metric_ranges() -> None:
     assert Kpis.model_validate(baseline["kpis"])
     assert baseline["kpis"]["route_count"] == 4
     assert baseline["kpis"]["total_cases"] == 2840
-    assert baseline["kpis"]["total_miles"] == 234.2
-    assert baseline["kpis"]["drive_minutes"] == 369
+    assert baseline["kpis"]["total_miles"] == 229.9
+    assert baseline["kpis"]["drive_minutes"] == 363
     assert validate_kpi_contract(baseline["kpis"], baseline=True) == []
 
 

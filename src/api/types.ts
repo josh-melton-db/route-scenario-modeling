@@ -263,6 +263,11 @@ export interface ScenarioDefinition {
   status: ScenarioLifecycleStatus
 }
 
+export interface ScenarioHistoryItem extends ScenarioDefinition {
+  created_at: string
+  has_results: boolean
+}
+
 export interface ScenarioCreateRequest {
   scenario_name: string
   scenario_type: ScenarioType

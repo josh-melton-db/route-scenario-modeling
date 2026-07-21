@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from ..models import (
     Route,
     ScenarioCreateRequest,
     ScenarioDefinition,
+    ScenarioHistoryItem,
     ScenarioLifecycleStatus,
     ScenarioTypeSpec,
     Stop,
@@ -115,6 +117,7 @@ class StubStore:
             )
         }
         self._result_registry: dict[str, str] = {"baseline": "scn_baseline_identity"}
+        self._scenario_created_at: dict[str, str] = {}
 
     def list_depots(self) -> list[Depot]:
         return [self._baseline_network.depot]
@@ -124,6 +127,21 @@ class StubStore:
 
     def list_scenario_types(self) -> list[ScenarioTypeSpec]:
         return self._scenario_types
+
+    def list_recent_scenarios(self, limit: int = 10) -> list[ScenarioHistoryItem]:
+        scenarios = [
+            scenario
+            for scenario_id, scenario in reversed(self._scenario_registry.items())
+            if scenario_id != "baseline"
+        ][:limit]
+        return [
+            ScenarioHistoryItem(
+                **scenario.model_dump(),
+                created_at=self._scenario_created_at[scenario.scenario_id],
+                has_results=scenario.scenario_id in self._result_registry,
+            )
+            for scenario in scenarios
+        ]
 
     def get_baseline_network(self, depot_id: str, delivery_day: str) -> BaselineNetwork:
         if depot_id != self._baseline_network.depot.depot_id:
@@ -151,6 +169,7 @@ class StubStore:
         )
         self._scenario_registry[scenario_id] = scenario
         self._result_registry[scenario_id] = spec.result_stub_id
+        self._scenario_created_at[scenario_id] = datetime.now(timezone.utc).isoformat()
         return scenario, spec.result_stub_id
 
     def get_scenario_definition(self, scenario_id: str) -> ScenarioDefinition:

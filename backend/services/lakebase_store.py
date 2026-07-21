@@ -23,6 +23,7 @@ from ..models import (
     RunStatusResponse,
     ScenarioCreateRequest,
     ScenarioDefinition,
+    ScenarioHistoryItem,
     ScenarioLifecycleStatus,
     ScenarioType,
     ScenarioTypeSpec,
@@ -87,6 +88,67 @@ class LakebaseStore:
     def list_scenario_types(self) -> list[ScenarioTypeSpec]:
         # Scenario-type metadata is product configuration, not interactive data.
         return stub_store.list_scenario_types()
+
+    def list_recent_scenarios(self, limit: int = 10) -> list[ScenarioHistoryItem]:
+        rows = self.postgres.query(
+            f"""
+            SELECT
+                scenario_id,
+                scenario_name,
+                scenario_type,
+                baseline_scenario_id,
+                depot_id,
+                delivery_day,
+                status,
+                created_at,
+                EXISTS (
+                    SELECT 1
+                    FROM {self._table("scenario_results")} results
+                    WHERE results.scenario_id = definitions.scenario_id
+                ) AS has_results
+            FROM {self._table("scenario_definitions")} definitions
+            WHERE scenario_type <> 'baseline'
+            ORDER BY created_at DESC, scenario_id DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        if not rows:
+            return []
+
+        scenario_ids = [str(row["scenario_id"]) for row in rows]
+        parameter_rows = self.postgres.query(
+            f"""
+            SELECT scenario_id, parameter_name, parameter_value
+            FROM {self._table("scenario_parameters")}
+            WHERE scenario_id = ANY(%s)
+            ORDER BY scenario_id, parameter_name
+            """,
+            (scenario_ids,),
+        )
+        parameters_by_scenario: dict[str, dict[str, Any]] = {
+            scenario_id: {} for scenario_id in scenario_ids
+        }
+        for parameter in parameter_rows:
+            parameters_by_scenario[str(parameter["scenario_id"])][
+                str(parameter["parameter_name"])
+            ] = _json_value(parameter["parameter_value"])
+
+        return [
+            ScenarioHistoryItem(
+                scenario_id=str(row["scenario_id"]),
+                scenario_name=str(row["scenario_name"]),
+                scenario_type=cast(ScenarioType, str(row["scenario_type"])),
+                baseline_scenario_id=str(row["baseline_scenario_id"]),
+                depot_id=str(row["depot_id"]),
+                delivery_day=str(row["delivery_day"]),
+                parameters=parameters_by_scenario[str(row["scenario_id"])],
+                status=cast(ScenarioLifecycleStatus, str(row["status"])),
+                created_at=str(_plain_value(row["created_at"])),
+                has_results=bool(row["has_results"]),
+            )
+            for row in rows
+        ]
 
     def get_baseline_network(self, depot_id: str, delivery_day: str) -> BaselineNetwork:
         row = self.postgres.query_one(

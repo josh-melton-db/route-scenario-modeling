@@ -20,6 +20,7 @@ export const queryKeys = {
   depots: ['depots'] as const,
   days: ['days'] as const,
   scenarioTypes: ['scenario-types'] as const,
+  recentScenarios: (limit: number) => ['recent-scenarios', limit] as const,
   baselineNetwork: (depotId: string, deliveryDay: string) =>
     ['baseline-network', depotId, deliveryDay] as const,
   baselineKpis: (depotId: string, deliveryDay: string) =>
@@ -46,6 +47,13 @@ export function useDays() {
 
 export function useScenarioTypes() {
   return useQuery({ queryKey: queryKeys.scenarioTypes, queryFn: api.scenarioTypes })
+}
+
+export function useRecentScenarios(limit = 10) {
+  return useQuery({
+    queryKey: queryKeys.recentScenarios(limit),
+    queryFn: () => api.recentScenarios(limit),
+  })
 }
 
 export function useBaselineNetwork(depotId: string, deliveryDay: string) {

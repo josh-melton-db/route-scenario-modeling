@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from ..models import (
     CreateScenarioResponse,
     RunStartResponse,
     ScenarioCreateRequest,
     ScenarioDefinition,
+    ScenarioHistoryItem,
     ValidationResponse,
 )
 from ..config import get_data_backend
@@ -17,6 +18,13 @@ from ..services.solve_runs import solve_run_manager
 from ..services.store_provider import get_store
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
+
+
+@router.get("", response_model=list[ScenarioHistoryItem])
+async def recent_scenarios(
+    limit: int = Query(default=10, ge=1, le=50),
+) -> list[ScenarioHistoryItem]:
+    return get_store().list_recent_scenarios(limit)
 
 
 @router.post("", response_model=CreateScenarioResponse)

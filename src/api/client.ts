@@ -20,6 +20,7 @@ import type {
   RunStatusResponse,
   ScenarioCreateRequest,
   ScenarioDefinition,
+  ScenarioHistoryItem,
   ScenarioTypeSpec,
   ValidationResponse,
 } from './types'
@@ -50,6 +51,10 @@ export const api = {
   depots: () => requestJSON<Depot[]>('/api/meta/depots'),
   days: () => requestJSON<string[]>('/api/meta/days'),
   scenarioTypes: () => requestJSON<ScenarioTypeSpec[]>('/api/meta/scenario-types'),
+  recentScenarios: (limit = 10) =>
+    requestJSON<ScenarioHistoryItem[]>(
+      `/api/scenarios?${qs({ limit: String(limit) })}`,
+    ),
   baselineNetwork: (depotId: string, deliveryDay: string) =>
     requestJSON<BaselineNetwork>(
       `/api/baseline/network?${qs({ depot_id: depotId, delivery_day: deliveryDay })}`,

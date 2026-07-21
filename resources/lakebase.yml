@@ -31,6 +31,20 @@ resources:
       lifecycle:
         prevent_destroy: true
 
+  # Lakebase creates `primary` with the branch. Adopt it so the bundle owns the
+  # scale-to-zero policy while preserving the existing compute size and type.
+  postgres_endpoints:
+    route_scenario_modeling_dev_primary:
+      parent: ${resources.postgres_branches.route_scenario_modeling_dev.id}
+      endpoint_id: ${var.lakebase_endpoint_id}
+      endpoint_type: ENDPOINT_TYPE_READ_WRITE
+      autoscaling_limit_min_cu: 1
+      autoscaling_limit_max_cu: 1
+      suspend_timeout_duration: 28800s
+      replace_existing: true
+      lifecycle:
+        prevent_destroy: true
+
   postgres_databases:
     route_scenario_modeling_app_database:
       parent: ${resources.postgres_branches.route_scenario_modeling_dev.id}

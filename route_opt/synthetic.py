@@ -15,6 +15,14 @@ from .schemas import DAYS, stable_id
 GENERATED_RUN_ID = "seeded-route-scenario-modeling-v0"
 SOURCE_SYSTEM = "python_synthetic_generator"
 
+# Curated corrections for the default demo seed. These three Tuesday customers
+# otherwise land inside the Lake Saint Clair water polygon.
+_DEFAULT_CUSTOMER_COORDINATE_OVERRIDES = {
+    1: (42.388, -82.934),
+    2: (42.456, -82.911),
+    6: (42.33, -82.95),
+}
+
 
 def _source_fields(confidence_level: str = "high", is_inferred: bool = False) -> dict[str, object]:
     return {
@@ -81,6 +89,8 @@ def generate_customers(customer_count: int = 250, seed: int = 42) -> list[dict[s
         theta = rng.uniform(0, math.tau)
         lat = depot_lat + radius * math.sin(theta) * 0.65
         lng = depot_lng + radius * math.cos(theta)
+        if seed == 42 and idx in _DEFAULT_CUSTOMER_COORDINATE_OVERRIDES:
+            lat, lng = _DEFAULT_CUSTOMER_COORDINATE_OVERRIDES[idx]
         priority_roll = rng.random()
         if priority_roll < 0.12:
             priority = "strategic"
