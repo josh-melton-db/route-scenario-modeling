@@ -4,6 +4,8 @@ import type {
   CreateScenarioResponse,
   DeliveryUploadResult,
   Depot,
+  Carrier,
+  CarrierContract,
   EditorCommitResponse,
   EditorDeleteRequest,
   EditorEntityType,
@@ -50,6 +52,8 @@ function qs(params: Record<string, string>): string {
 export const api = {
   depots: () => requestJSON<Depot[]>('/api/meta/depots'),
   days: () => requestJSON<string[]>('/api/meta/days'),
+  carriers: () => requestJSON<Carrier[]>('/api/meta/carriers'),
+  carrierContracts: () => requestJSON<CarrierContract[]>('/api/meta/carrier-contracts'),
   scenarioTypes: () => requestJSON<ScenarioTypeSpec[]>('/api/meta/scenario-types'),
   recentScenarios: (limit = 10) =>
     requestJSON<ScenarioHistoryItem[]>(

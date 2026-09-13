@@ -62,7 +62,7 @@ def validate_scenario_definition(
                     )
         transportation = scenario.parameters.get("transportation_choices")
         if isinstance(transportation, dict) and transportation.get("allow_carrier"):
-            for field in ("carrier_name", "contract_name"):
+            for field in ("carrier_id", "contract_id"):
                 if not transportation.get(field):
                     hard_constraints.append(
                         ValidationIssue(
@@ -72,15 +72,6 @@ def validate_scenario_definition(
                             message=f"Carrier fallback requires {field.replace('_', ' ')}.",
                         )
                     )
-            if float(transportation.get("carrier_capacity_stops", 0)) <= 0:
-                hard_constraints.append(
-                    ValidationIssue(
-                        field="transportation_choices.carrier_capacity_stops",
-                        scope="scenario",
-                        severity="hard",
-                        message="Carrier fallback requires positive stop capacity.",
-                    )
-                )
         if isinstance(changes, list) and changes:
             for index, change in enumerate(changes):
                 if not isinstance(change, dict):

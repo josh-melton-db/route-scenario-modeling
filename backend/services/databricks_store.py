@@ -8,6 +8,8 @@ from fastapi import HTTPException
 
 from ..models import (
     BaselineNetwork,
+    Carrier,
+    CarrierContract,
     ComparisonResult,
     Depot,
     Kpis,
@@ -75,6 +77,12 @@ class DatabricksStore:
 
     def list_scenario_types(self) -> list[ScenarioTypeSpec]:
         return stub_store.list_scenario_types()
+
+    def list_carriers(self) -> list[Carrier]:
+        return stub_store.list_carriers()
+
+    def list_carrier_contracts(self) -> list[CarrierContract]:
+        return stub_store.list_carrier_contracts()
 
     def list_recent_scenarios(self, limit: int = 10) -> list[ScenarioHistoryItem]:
         rows = self.sql.query(
@@ -520,13 +528,16 @@ class DatabricksStore:
 
     def load_solver_base_tables(self) -> dict[str, list[dict[str, object]]]:
         """Compatibility path retained while Lakebase parity is being verified."""
-        return {
+        tables = {
             "depots": self.sql.query(f"SELECT * FROM {self.sql.table('dim_depots_augmented')}"),
             "customers": self.sql.query(f"SELECT * FROM {self.sql.table('dim_customers_augmented')}"),
             "fleet": self.sql.query(f"SELECT * FROM {self.sql.table('dim_fleet_assets')}"),
             "orders": self.sql.query(f"SELECT * FROM {self.sql.table('fact_delivery_orders')}"),
             "cost_parameters": self.sql.query(f"SELECT * FROM {self.sql.table('cost_parameters')}"),
         }
+        tables["carriers"] = [row.model_dump() for row in stub_store.list_carriers()]
+        tables["carrier_contracts"] = [row.model_dump() for row in stub_store.list_carrier_contracts()]
+        return tables
 
     def load_scenario_override_tables(
         self,

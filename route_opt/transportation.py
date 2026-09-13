@@ -17,6 +17,36 @@ DEFAULT_CHOICES: dict[str, object] = {
 }
 
 
+def resolve_transportation_choices(
+    parameters: dict[str, object],
+    carriers: list[dict[str, object]],
+    contracts: list[dict[str, object]],
+) -> dict[str, object]:
+    raw = parameters.get("transportation_choices")
+    choices = dict(raw) if isinstance(raw, dict) else {}
+    carrier_id = str(choices.get("carrier_id", ""))
+    contract_id = str(choices.get("contract_id", ""))
+    carrier = next((row for row in carriers if str(row.get("carrier_id")) == carrier_id), None)
+    contract = next((row for row in contracts if str(row.get("contract_id")) == contract_id), None)
+    if not choices.get("allow_carrier"):
+        return {**DEFAULT_CHOICES, **choices}
+    if carrier is None or contract is None or str(contract.get("carrier_id")) != carrier_id:
+        raise ValueError("Selected carrier contract is not available for the selected carrier.")
+    if not bool(carrier.get("active", True)) or not bool(contract.get("active", True)):
+        raise ValueError("Selected carrier or contract is inactive.")
+    return {
+        **DEFAULT_CHOICES,
+        **choices,
+        "carrier_name": carrier["carrier_name"],
+        "contract_name": contract["contract_name"],
+        "carrier_capacity_stops": contract["capacity_stops"],
+        "rate_per_mile": contract["rate_per_mile"],
+        "rate_per_stop": contract["rate_per_stop"],
+        "minimum_charge": contract["minimum_charge"],
+        "fuel_surcharge_pct": contract["fuel_surcharge_pct"],
+    }
+
+
 def apply_operating_constraints(
     fleet: list[dict[str, object]], parameters: dict[str, object]
 ) -> list[dict[str, object]]:

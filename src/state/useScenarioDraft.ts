@@ -46,13 +46,8 @@ const initialState = {
   transportationChoices: {
     allow_private_fleet: true,
     allow_carrier: false,
-    carrier_name: 'Great Lakes Logistics',
-    contract_name: 'GL-Standard-2026',
-    carrier_capacity_stops: 12,
-    rate_per_mile: 4.25,
-    rate_per_stop: 45,
-    minimum_charge: 350,
-    fuel_surcharge_pct: 12,
+    carrier_id: 'GL_LOGISTICS',
+    contract_id: 'GL_STANDARD_2026',
   },
 }
 

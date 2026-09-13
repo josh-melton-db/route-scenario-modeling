@@ -102,6 +102,34 @@ export const dataEditorTables: Record<EditorEntityType, EditorTableDefinition> =
       { key: 'circuity', label: 'Circuity', input: 'number', required: true, step: '0.01' },
     ],
   },
+  carriers: {
+    label: 'Carriers',
+    singularLabel: 'carrier',
+    description: 'Eligible transportation providers available to scenario planning.',
+    columns: [
+      { key: 'carrier_id', label: 'Carrier ID', input: 'text', required: true },
+      { key: 'carrier_name', label: 'Carrier name', input: 'text', required: true },
+      { key: 'active', label: 'Active', input: 'text', required: true },
+    ],
+  },
+  carrier_contracts: {
+    label: 'Carrier contracts',
+    singularLabel: 'carrier contract',
+    description: 'Contract capacity, validity dates, and transparent rate components used by optimization.',
+    columns: [
+      { key: 'contract_id', label: 'Contract ID', input: 'text', required: true },
+      { key: 'carrier_id', label: 'Carrier ID', input: 'text', required: true },
+      { key: 'contract_name', label: 'Contract name', input: 'text', required: true },
+      { key: 'capacity_stops', label: 'Capacity (stops)', input: 'number', required: true, step: '1' },
+      { key: 'rate_per_mile', label: 'Rate / mile', input: 'number', required: true, step: '0.01' },
+      { key: 'rate_per_stop', label: 'Rate / stop', input: 'number', required: true, step: '0.01' },
+      { key: 'minimum_charge', label: 'Minimum charge', input: 'number', required: true, step: '0.01' },
+      { key: 'fuel_surcharge_pct', label: 'Fuel surcharge %', input: 'number', required: true, step: '0.01' },
+      { key: 'effective_start', label: 'Effective start', input: 'date' },
+      { key: 'effective_end', label: 'Effective end', input: 'date' },
+      { key: 'active', label: 'Active', input: 'text', required: true },
+    ],
+  },
 }
 
 type DraftRow = Record<string, string>

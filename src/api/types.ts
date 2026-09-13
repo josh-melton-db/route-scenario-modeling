@@ -54,6 +54,26 @@ export interface Depot {
   location: LatLng
 }
 
+export interface Carrier {
+  carrier_id: string
+  carrier_name: string
+  active: boolean
+}
+
+export interface CarrierContract {
+  contract_id: string
+  carrier_id: string
+  contract_name: string
+  capacity_stops: number
+  rate_per_mile: number
+  rate_per_stop: number
+  minimum_charge: number
+  fuel_surcharge_pct: number
+  effective_start: string | null
+  effective_end: string | null
+  active: boolean
+}
+
 export interface Stop {
   stop_id: string
   customer_id: string
@@ -420,13 +440,8 @@ export interface OperatingConstraints {
 export interface TransportationChoices {
   allow_private_fleet: boolean
   allow_carrier: boolean
-  carrier_name: string
-  contract_name: string
-  carrier_capacity_stops: number
-  rate_per_mile: number
-  rate_per_stop: number
-  minimum_charge: number
-  fuel_surcharge_pct: number
+  carrier_id: string
+  contract_id: string
 }
 
 export type EditorEntityType =
@@ -435,6 +450,8 @@ export type EditorEntityType =
   | 'fleet'
   | 'depots'
   | 'cost_parameters'
+  | 'carriers'
+  | 'carrier_contracts'
 
 export type EditorSessionStatus =
   | 'open'

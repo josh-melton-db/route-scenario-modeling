@@ -11,6 +11,8 @@ import TransportationOptionsPanel from '@/components/TransportationOptionsPanel'
 import {
   useBaselineNetwork,
   useCreateScenarioRun,
+  useCarriers,
+  useCarrierContracts,
   useDeleteScenario,
   useDays,
   useDepots,
@@ -26,6 +28,8 @@ export default function ScenarioBuilderPage() {
   const [branchSourceId, setBranchSourceId] = useState<string | null>(null)
   const depots = useDepots()
   const days = useDays()
+  const carriers = useCarriers()
+  const contracts = useCarrierContracts()
   const createScenarioRun = useCreateScenarioRun()
   const deleteScenario = useDeleteScenario()
   const scenarios = useRecentScenarios(50)
@@ -44,7 +48,7 @@ export default function ScenarioBuilderPage() {
     [baselineNetwork.data?.depot, depots.data, draft.depot_id],
   )
 
-  const error = depots.error ?? days.error ?? scenarios.error
+  const error = depots.error ?? days.error ?? scenarios.error ?? carriers.error ?? contracts.error
   if (error) return <ErrorState title="Could not load scenario builder" error={error} />
 
   const loading = depots.isLoading || days.isLoading
@@ -236,6 +240,9 @@ export default function ScenarioBuilderPage() {
                 choices={draft.transportationChoices}
                 onConstraintsChange={draft.setOperatingConstraints}
                 onChoicesChange={draft.setTransportationChoices}
+                carriers={carriers.data ?? []}
+                contracts={contracts.data ?? []}
+                loading={carriers.isLoading || contracts.isLoading}
               />
             </div>
             <div className="flex flex-col gap-4">

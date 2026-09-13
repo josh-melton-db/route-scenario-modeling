@@ -51,20 +51,26 @@ _ENTITY_TYPES: tuple[EditorEntityType, ...] = (
     "fleet",
     "depots",
     "cost_parameters",
+    "carriers",
+    "carrier_contracts",
 )
 _DELETE_PROMOTION_ORDER: tuple[EditorEntityType, ...] = (
+    "carrier_contracts",
     "orders",
     "fleet",
     "customers",
     "depots",
     "cost_parameters",
+    "carriers",
 )
 _WRITE_PROMOTION_ORDER: tuple[EditorEntityType, ...] = (
+    "carriers",
     "depots",
     "customers",
     "fleet",
     "cost_parameters",
     "orders",
+    "carrier_contracts",
 )
 _TIME_PATTERN = re.compile(r"^(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)$")
 
@@ -129,6 +135,26 @@ class _CostParametersInput(StrictModel):
     missed_delivery_penalty: float
     avg_speed_mph: float
     circuity: float
+
+
+class _CarrierInput(StrictModel):
+    carrier_id: str
+    carrier_name: str
+    active: bool = True
+
+
+class _CarrierContractInput(StrictModel):
+    contract_id: str
+    carrier_id: str
+    contract_name: str
+    capacity_stops: int
+    rate_per_mile: float
+    rate_per_stop: float
+    minimum_charge: float
+    fuel_surcharge_pct: float
+    effective_start: date | None = None
+    effective_end: date | None = None
+    active: bool = True
 
 
 @dataclass(frozen=True)
@@ -242,6 +268,22 @@ _ENTITY_SPECS: dict[EditorEntityType, _EntitySpec] = {
         ),
         model=_CostParametersInput,
         required_text_fields=("parameter_set_id",),
+    ),
+    "carriers": _EntitySpec(
+        entity_type="carriers",
+        table_name="carriers",
+        id_column="carrier_id",
+        columns=("carrier_id", "carrier_name", "active"),
+        model=_CarrierInput,
+        required_text_fields=("carrier_id", "carrier_name"),
+    ),
+    "carrier_contracts": _EntitySpec(
+        entity_type="carrier_contracts",
+        table_name="carrier_contracts",
+        id_column="contract_id",
+        columns=("contract_id", "carrier_id", "contract_name", "capacity_stops", "rate_per_mile", "rate_per_stop", "minimum_charge", "fuel_surcharge_pct", "effective_start", "effective_end", "active"),
+        model=_CarrierContractInput,
+        required_text_fields=("contract_id", "carrier_id", "contract_name"),
     ),
 }
 
@@ -728,6 +770,22 @@ class GroundTruthStore:
             str(row["row_data"]["customer_id"]): row["row_data"]
             for row in normalized_rows["customers"]
         }
+        carrier_ids = {
+            str(row["row_data"]["carrier_id"])
+            for row in normalized_rows["carriers"]
+        }
+        for row in normalized_rows["carrier_contracts"]:
+            carrier_id = str(row["row_data"]["carrier_id"])
+            if carrier_id not in carrier_ids:
+                issues.append(
+                    EditorValidationIssue(
+                        entity_type="carrier_contracts",
+                        row_id=row["row_id"],
+                        field="carrier_id",
+                        code="missing_reference",
+                        message=f"Carrier {carrier_id!r} does not exist in this session.",
+                    )
+                )
         for entity_type in ("customers", "fleet"):
             for row in normalized_rows[entity_type]:
                 depot_id = str(row["row_data"]["depot_id"])

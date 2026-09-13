@@ -19,7 +19,7 @@ from route_opt.overrides import (
 from route_opt.solver import solve_scenario_partition
 from route_opt.solver.payload import INPUT_SCHEMA, make_input_row
 from route_opt.synthetic import generate_all
-from route_opt.transportation import add_carrier_fallback, apply_operating_constraints
+from route_opt.transportation import add_carrier_fallback, apply_operating_constraints, resolve_transportation_choices
 
 
 def _generated():
@@ -266,6 +266,17 @@ def test_private_capacity_overflow_can_use_contracted_carrier() -> None:
     assert carrier_routes[0]["carrier_name"] == "Test Carrier"
     assert carrier_routes[0]["carrier_linehaul_cost"] > 0
     assert not solution["unassigned_stops"]
+
+
+def test_transportation_choice_resolves_rates_from_contract_reference_data() -> None:
+    resolved = resolve_transportation_choices(
+        {"transportation_choices": {"allow_carrier": True, "carrier_id": "CAR_1", "contract_id": "CON_1"}},
+        [{"carrier_id": "CAR_1", "carrier_name": "Example Carrier", "active": True}],
+        [{"contract_id": "CON_1", "carrier_id": "CAR_1", "contract_name": "2026 Contract", "capacity_stops": 9, "rate_per_mile": 4.5, "rate_per_stop": 40, "minimum_charge": 300, "fuel_surcharge_pct": 11, "active": True}],
+    )
+    assert resolved["carrier_name"] == "Example Carrier"
+    assert resolved["carrier_capacity_stops"] == 9
+    assert resolved["rate_per_mile"] == 4.5
 
 
 def test_make_input_row_includes_cost_parameters() -> None:

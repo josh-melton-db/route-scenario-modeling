@@ -17,6 +17,14 @@ def test_health_and_metadata_endpoints() -> None:
     assert days.status_code == 200
     assert days.json() == ["Tuesday"]
 
+    carriers = client.get("/api/meta/carriers")
+    assert carriers.status_code == 200
+    assert carriers.json()[0]["carrier_id"] == "GL_LOGISTICS"
+
+    contracts = client.get("/api/meta/carrier-contracts")
+    assert contracts.status_code == 200
+    assert {row["carrier_id"] for row in contracts.json()} == {"GL_LOGISTICS", "MIDWEST_EXPRESS"}
+
     scenario_types = client.get("/api/meta/scenario-types")
     assert scenario_types.status_code == 200
     assert {row["scenario_type"] for row in scenario_types.json()} >= {

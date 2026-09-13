@@ -24,6 +24,8 @@ from ..models import (
     ScenarioTypeSpec,
     Stop,
     ValidationResponse,
+    Carrier,
+    CarrierContract,
 )
 
 
@@ -164,6 +166,19 @@ class StubStore:
 
     def list_scenario_types(self) -> list[ScenarioTypeSpec]:
         return self._scenario_types
+
+    def list_carriers(self) -> list[Carrier]:
+        return [
+            Carrier(carrier_id="GL_LOGISTICS", carrier_name="Great Lakes Logistics"),
+            Carrier(carrier_id="MIDWEST_EXPRESS", carrier_name="Midwest Express"),
+        ]
+
+    def list_carrier_contracts(self) -> list[CarrierContract]:
+        return [
+            CarrierContract(contract_id="GL_STANDARD_2026", carrier_id="GL_LOGISTICS", contract_name="GL Standard 2026", capacity_stops=12, rate_per_mile=4.25, rate_per_stop=45, minimum_charge=350, fuel_surcharge_pct=12, effective_start="2026-01-01", effective_end="2026-12-31"),
+            CarrierContract(contract_id="GL_PRIORITY_2026", carrier_id="GL_LOGISTICS", contract_name="GL Priority 2026", capacity_stops=20, rate_per_mile=5.10, rate_per_stop=55, minimum_charge=425, fuel_surcharge_pct=10, effective_start="2026-01-01", effective_end="2026-12-31"),
+            CarrierContract(contract_id="MW_SPOT_2026", carrier_id="MIDWEST_EXPRESS", contract_name="Midwest Spot 2026", capacity_stops=8, rate_per_mile=4.70, rate_per_stop=50, minimum_charge=400, fuel_surcharge_pct=14, effective_start="2026-01-01", effective_end="2026-12-31"),
+        ]
 
     def list_recent_scenarios(self, limit: int = 10) -> list[ScenarioHistoryItem]:
         scenarios = [

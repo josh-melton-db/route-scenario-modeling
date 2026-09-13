@@ -15,7 +15,7 @@ from route_opt.matrix import build_travel_matrix
 from route_opt.overrides import apply_overrides, resolve_cost_override
 from route_opt.schemas import BASELINE_SCENARIO_ID
 from route_opt.solver.payload import OUTPUT_COLUMNS, make_input_row
-from route_opt.transportation import add_carrier_fallback, apply_operating_constraints
+from route_opt.transportation import add_carrier_fallback, apply_operating_constraints, resolve_transportation_choices
 
 from ..config import (
     allow_haversine_fallback,
@@ -55,6 +55,8 @@ class ScenarioInputs:
     travel_matrix: list[dict[str, object]]
     matrix_source: str
     cost_parameters: CostParameters
+    carriers: list[dict[str, object]]
+    carrier_contracts: list[dict[str, object]]
     override_tables: dict[str, list[dict[str, object]]]
 
 
@@ -126,6 +128,8 @@ class SolverService:
             travel_matrix=travel_matrix,
             matrix_source=matrix_source,
             cost_parameters=cost_parameters,
+            carriers=base.get("carriers") or [],
+            carrier_contracts=base.get("carrier_contracts") or [],
             override_tables=override_tables,
         )
 
@@ -196,6 +200,12 @@ class SolverService:
         scenario_depot = next(
             row for row in inputs.planning_depots if row["depot_id"] == scenario.depot_id
         )
+        resolved_parameters = {
+            **scenario.parameters,
+            "transportation_choices": resolve_transportation_choices(
+                scenario.parameters, inputs.carriers, inputs.carrier_contracts
+            ),
+        }
         add_carrier_fallback(
             solution=solution,
             scenario_id=scenario.scenario_id,
@@ -203,7 +213,7 @@ class SolverService:
             customers=inputs.planning_customers,
             planning_stops=inputs.planning_stops,
             delivery_day=scenario.delivery_day,
-            parameters=scenario.parameters,
+            parameters=resolved_parameters,
             cost_parameters=inputs.cost_parameters,
         )
         baseline = self._optimized_baseline_result(scenario, inputs, cost_payload)

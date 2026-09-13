@@ -13,6 +13,8 @@ from route_opt.overrides import build_scenario_overrides
 
 from ..models import (
     BaselineNetwork,
+    Carrier,
+    CarrierContract,
     ComparisonResult,
     Depot,
     Kpis,
@@ -88,6 +90,19 @@ class LakebaseStore:
     def list_scenario_types(self) -> list[ScenarioTypeSpec]:
         # Scenario-type metadata is product configuration, not interactive data.
         return stub_store.list_scenario_types()
+
+    def list_carriers(self) -> list[Carrier]:
+        return [Carrier.model_validate(_plain_row(row)) for row in self.postgres.query(
+            f"SELECT carrier_id, carrier_name, active FROM {self._table('carriers')} WHERE active ORDER BY carrier_name"
+        )]
+
+    def list_carrier_contracts(self) -> list[CarrierContract]:
+        return [CarrierContract.model_validate(_plain_row(row)) for row in self.postgres.query(
+            f"""SELECT contract_id, carrier_id, contract_name, capacity_stops, rate_per_mile,
+                       rate_per_stop, minimum_charge, fuel_surcharge_pct, effective_start,
+                       effective_end, active
+                FROM {self._table('carrier_contracts')} WHERE active ORDER BY carrier_id, contract_name"""
+        )]
 
     def list_recent_scenarios(self, limit: int = 10) -> list[ScenarioHistoryItem]:
         rows = self.postgres.query(
@@ -507,6 +522,8 @@ class LakebaseStore:
             "fleet": ("fleet", "vehicle_id"),
             "orders": ("orders", "order_id"),
             "cost_parameters": ("cost_parameters", "parameter_set_id"),
+            "carriers": ("carriers", "carrier_id"),
+            "carrier_contracts": ("carrier_contracts", "contract_id"),
         }
         return {
             key: [

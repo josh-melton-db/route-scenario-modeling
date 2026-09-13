@@ -6,7 +6,7 @@ from typing import Iterable
 
 from .postgres import PostgresService
 
-MIGRATION_VERSION = "2026_07_15_lakebase_scenario_studio_v2"
+MIGRATION_VERSION = "2026_09_13_carrier_contract_reference_data_v3"
 
 
 def _statements(postgres: PostgresService) -> Iterable[str]:
@@ -120,6 +120,48 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("carriers")} (
+            carrier_id TEXT PRIMARY KEY,
+            carrier_name TEXT NOT NULL,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            row_version INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("carrier_contracts")} (
+            contract_id TEXT PRIMARY KEY,
+            carrier_id TEXT NOT NULL REFERENCES {table("carriers")} (carrier_id),
+            contract_name TEXT NOT NULL,
+            capacity_stops INTEGER NOT NULL,
+            rate_per_mile DOUBLE PRECISION NOT NULL,
+            rate_per_stop DOUBLE PRECISION NOT NULL,
+            minimum_charge DOUBLE PRECISION NOT NULL,
+            fuel_surcharge_pct DOUBLE PRECISION NOT NULL,
+            effective_start DATE,
+            effective_end DATE,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            row_version INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    yield f"""INSERT INTO {table("carriers")} (carrier_id, carrier_name) VALUES
+        ('GL_LOGISTICS', 'Great Lakes Logistics'),
+        ('MIDWEST_EXPRESS', 'Midwest Express')
+        ON CONFLICT (carrier_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("carrier_contracts")} (
+        contract_id, carrier_id, contract_name, capacity_stops, rate_per_mile,
+        rate_per_stop, minimum_charge, fuel_surcharge_pct, effective_start, effective_end
+    ) VALUES
+        ('GL_STANDARD_2026', 'GL_LOGISTICS', 'GL Standard 2026', 12, 4.25, 45, 350, 12, '2026-01-01', '2026-12-31'),
+        ('GL_PRIORITY_2026', 'GL_LOGISTICS', 'GL Priority 2026', 20, 5.10, 55, 425, 10, '2026-01-01', '2026-12-31'),
+        ('MW_SPOT_2026', 'MIDWEST_EXPRESS', 'Midwest Spot 2026', 8, 4.70, 50, 400, 14, '2026-01-01', '2026-12-31')
+        ON CONFLICT (contract_id) DO NOTHING
     """
     yield f"""
         CREATE TABLE IF NOT EXISTS {table("baseline_network_snapshots")} (
@@ -333,7 +375,7 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
     yield f"ALTER TABLE {table('solve_runs')} ADD COLUMN IF NOT EXISTS create_duration_ms INTEGER"
     yield f"ALTER TABLE {table('solve_runs')} ADD COLUMN IF NOT EXISTS worker_id TEXT"
     yield f"ALTER TABLE {table('solve_runs')} ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ"
-    for table_name in ("depots", "customers", "fleet", "orders", "cost_parameters"):
+    for table_name in ("depots", "customers", "fleet", "orders", "cost_parameters", "carriers", "carrier_contracts"):
         yield f"ALTER TABLE {table(table_name)} ADD COLUMN IF NOT EXISTS row_version INTEGER NOT NULL DEFAULT 1"
     yield f"""
         CREATE TABLE IF NOT EXISTS {table("editor_sessions")} (

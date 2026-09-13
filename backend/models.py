@@ -43,6 +43,8 @@ EditorEntityType = Literal[
     "fleet",
     "depots",
     "cost_parameters",
+    "carriers",
+    "carrier_contracts",
 ]
 EditorSessionStatus = Literal["open", "committed", "discarded", "expired"]
 EditorRowState = Literal["unchanged", "inserted", "updated"]
@@ -68,6 +70,26 @@ class Depot(StrictModel):
     region: str
     sales_territory: str
     location: LatLng
+
+
+class Carrier(StrictModel):
+    carrier_id: str
+    carrier_name: str
+    active: bool = True
+
+
+class CarrierContract(StrictModel):
+    contract_id: str
+    carrier_id: str
+    contract_name: str
+    capacity_stops: int
+    rate_per_mile: float
+    rate_per_stop: float
+    minimum_charge: float
+    fuel_surcharge_pct: float
+    effective_start: str | None = None
+    effective_end: str | None = None
+    active: bool = True
 
 
 class Stop(StrictModel):

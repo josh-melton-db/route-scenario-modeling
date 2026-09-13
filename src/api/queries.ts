@@ -19,6 +19,8 @@ const terminalStatuses = new Set(['succeeded', 'infeasible', 'failed'])
 export const queryKeys = {
   depots: ['depots'] as const,
   days: ['days'] as const,
+  carriers: ['carriers'] as const,
+  carrierContracts: ['carrier-contracts'] as const,
   scenarioTypes: ['scenario-types'] as const,
   recentScenarios: (limit: number) => ['recent-scenarios', limit] as const,
   baselineNetwork: (depotId: string, deliveryDay: string) =>
@@ -43,6 +45,14 @@ export function useDepots() {
 
 export function useDays() {
   return useQuery({ queryKey: queryKeys.days, queryFn: api.days })
+}
+
+export function useCarriers() {
+  return useQuery({ queryKey: queryKeys.carriers, queryFn: api.carriers })
+}
+
+export function useCarrierContracts() {
+  return useQuery({ queryKey: queryKeys.carrierContracts, queryFn: api.carrierContracts })
 }
 
 export function useScenarioTypes() {
