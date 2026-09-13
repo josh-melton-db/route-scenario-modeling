@@ -15,6 +15,8 @@ from ..models import (
     BaselineNetwork,
     Carrier,
     CarrierContract,
+    OperatingParameterSet,
+    CostParameterSet,
     ComparisonResult,
     Depot,
     Kpis,
@@ -102,6 +104,21 @@ class LakebaseStore:
                        rate_per_stop, minimum_charge, fuel_surcharge_pct, effective_start,
                        effective_end, active
                 FROM {self._table('carrier_contracts')} WHERE active ORDER BY carrier_id, contract_name"""
+        )]
+
+    def list_operating_parameters(self) -> list[OperatingParameterSet]:
+        return [OperatingParameterSet.model_validate(_plain_row(row)) for row in self.postgres.query(
+            f"""SELECT parameter_set_id, parameter_set_name, private_vehicle_limit,
+                       max_route_minutes, max_stops_per_route, allow_overtime, active
+                FROM {self._table('operating_parameters')} WHERE active ORDER BY parameter_set_name"""
+        )]
+
+    def list_cost_parameters(self) -> list[CostParameterSet]:
+        return [CostParameterSet.model_validate(_plain_row(row)) for row in self.postgres.query(
+            f"""SELECT parameter_set_id, cost_per_mile, labor_regular_hour, overtime_multiplier,
+                       overtime_threshold_minutes, fixed_truck_daily_cost, max_route_minutes,
+                       late_delivery_penalty, missed_delivery_penalty, avg_speed_mph, circuity
+                FROM {self._table('cost_parameters')} ORDER BY parameter_set_id"""
         )]
 
     def list_recent_scenarios(self, limit: int = 10) -> list[ScenarioHistoryItem]:
@@ -524,6 +541,7 @@ class LakebaseStore:
             "cost_parameters": ("cost_parameters", "parameter_set_id"),
             "carriers": ("carriers", "carrier_id"),
             "carrier_contracts": ("carrier_contracts", "contract_id"),
+            "operating_parameters": ("operating_parameters", "parameter_set_id"),
         }
         return {
             key: [

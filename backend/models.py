@@ -45,6 +45,7 @@ EditorEntityType = Literal[
     "cost_parameters",
     "carriers",
     "carrier_contracts",
+    "operating_parameters",
 ]
 EditorSessionStatus = Literal["open", "committed", "discarded", "expired"]
 EditorRowState = Literal["unchanged", "inserted", "updated"]
@@ -90,6 +91,30 @@ class CarrierContract(StrictModel):
     effective_start: str | None = None
     effective_end: str | None = None
     active: bool = True
+
+
+class OperatingParameterSet(StrictModel):
+    parameter_set_id: str
+    parameter_set_name: str
+    private_vehicle_limit: int
+    max_route_minutes: int
+    max_stops_per_route: int
+    allow_overtime: bool = True
+    active: bool = True
+
+
+class CostParameterSet(StrictModel):
+    parameter_set_id: str
+    cost_per_mile: float
+    labor_regular_hour: float
+    overtime_multiplier: float
+    overtime_threshold_minutes: int
+    fixed_truck_daily_cost: float
+    max_route_minutes: int
+    late_delivery_penalty: float
+    missed_delivery_penalty: float
+    avg_speed_mph: float
+    circuity: float
 
 
 class Stop(StrictModel):

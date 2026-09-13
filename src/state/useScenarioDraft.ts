@@ -16,6 +16,8 @@ export interface ScenarioDraftState {
   costOverrideEnabled: boolean
   operatingConstraints: OperatingConstraints
   transportationChoices: TransportationChoices
+  operatingConstraintsEnabled: boolean
+  transportationChoicesEnabled: boolean
   validation: ValidationResponse | null
   setScenarioName: (scenarioName: string) => void
   setDepotDay: (depotId: string, deliveryDay: string) => void
@@ -24,6 +26,8 @@ export interface ScenarioDraftState {
   setCostOverrideEnabled: (enabled: boolean) => void
   setOperatingConstraints: (value: OperatingConstraints) => void
   setTransportationChoices: (value: TransportationChoices) => void
+  setOperatingConstraintsEnabled: (enabled: boolean) => void
+  setTransportationChoicesEnabled: (enabled: boolean) => void
   setValidation: (validation: ValidationResponse | null) => void
   buildParameters: () => Record<string, unknown>
   reset: () => void
@@ -38,6 +42,7 @@ const initialState = {
   costOverrideEnabled: false,
   validation: null as ValidationResponse | null,
   operatingConstraints: {
+    parameter_set_id: 'default',
     private_vehicle_limit: 4,
     max_route_minutes: 600,
     max_stops_per_route: 8,
@@ -49,6 +54,8 @@ const initialState = {
     carrier_id: 'GL_LOGISTICS',
     contract_id: 'GL_STANDARD_2026',
   },
+  operatingConstraintsEnabled: false,
+  transportationChoicesEnabled: false,
 }
 
 function hasCostValues(cost: CostOverride): boolean {
@@ -83,14 +90,18 @@ export const useScenarioDraft = create<ScenarioDraftState>((set, get) => ({
     set({ operatingConstraints, validation: null }),
   setTransportationChoices: (transportationChoices) =>
     set({ transportationChoices, validation: null }),
+  setOperatingConstraintsEnabled: (operatingConstraintsEnabled) =>
+    set({ operatingConstraintsEnabled, validation: null }),
+  setTransportationChoicesEnabled: (transportationChoicesEnabled) =>
+    set({ transportationChoicesEnabled, validation: null }),
   setValidation: (validation) => set({ validation }),
   buildParameters: () => {
     const state = get()
     const parameters: Record<string, unknown> = {
       changes: state.changes.map(({ clientId: _clientId, ...change }) => change),
-      operating_constraints: state.operatingConstraints,
-      transportation_choices: state.transportationChoices,
     }
+    if (state.operatingConstraintsEnabled) parameters.operating_constraints = state.operatingConstraints
+    if (state.transportationChoicesEnabled) parameters.transportation_choices = state.transportationChoices
     if (state.costOverrideEnabled && hasCostValues(state.costOverride)) {
       parameters.cost = state.costOverride
     }

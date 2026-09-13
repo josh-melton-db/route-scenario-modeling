@@ -5,6 +5,7 @@ import DeliveryMapEditor from '@/components/DeliveryMapEditor'
 import DeliveryUploadPanel from '@/components/DeliveryUploadPanel'
 import type {
   CostOverride,
+  CostParameterSet,
   Depot,
   DraftScenarioChange,
   LatLng,
@@ -22,6 +23,11 @@ interface CustomScenarioBuilderProps {
   onChangesChange: (changes: DraftScenarioChange[]) => void
   onCostChange: (cost: CostOverride) => void
   onCostEnabledChange: (enabled: boolean) => void
+  operatingConstraintsEnabled: boolean
+  transportationChoicesEnabled: boolean
+  onOperatingConstraintsEnabledChange: (enabled: boolean) => void
+  onTransportationChoicesEnabledChange: (enabled: boolean) => void
+  costDefaults?: CostParameterSet
 }
 
 const CHANGE_OPTIONS: Array<{ kind: ScenarioChangeKind; label: string }> = [
@@ -77,6 +83,11 @@ export default function CustomScenarioBuilder({
   onChangesChange,
   onCostChange,
   onCostEnabledChange,
+  operatingConstraintsEnabled,
+  transportationChoicesEnabled,
+  onOperatingConstraintsEnabledChange,
+  onTransportationChoicesEnabledChange,
+  costDefaults,
 }: CustomScenarioBuilderProps) {
   const [showUpload, setShowUpload] = useState(false)
   const depotLocation = useMemo<LatLng>(
@@ -132,10 +143,12 @@ export default function CustomScenarioBuilder({
               className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"
             >
               <Plus className="h-3.5 w-3.5" />
-              Cost parameters
+              Cost assumptions
             </button>
           )}
-          {availableChangeOptions.length === 0 && costOverrideEnabled && (
+          {!operatingConstraintsEnabled && <button type="button" onClick={() => onOperatingConstraintsEnabledChange(true)} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"><Plus className="h-3.5 w-3.5" />Operating constraints</button>}
+          {!transportationChoicesEnabled && <button type="button" onClick={() => onTransportationChoicesEnabledChange(true)} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"><Plus className="h-3.5 w-3.5" />Transportation choices</button>}
+          {availableChangeOptions.length === 0 && costOverrideEnabled && operatingConstraintsEnabled && transportationChoicesEnabled && (
             <span className="py-1.5 text-xs text-muted-foreground">
               All change cards are active.
             </span>
@@ -143,7 +156,7 @@ export default function CustomScenarioBuilder({
         </div>
       </div>
 
-      {changes.length === 0 && !costOverrideEnabled && (
+      {changes.length === 0 && !costOverrideEnabled && !operatingConstraintsEnabled && !transportationChoicesEnabled && (
         <div className="rounded-lg border border-dashed border-border bg-card/40 p-4 text-sm text-muted-foreground">
           No changes yet. Add deliveries, adjust drivers, shift days, or move the
           facility. Cost parameters are optional.
@@ -320,6 +333,7 @@ export default function CustomScenarioBuilder({
           value={costOverride}
           onChange={onCostChange}
           onRemove={() => onCostEnabledChange(false)}
+          defaults={costDefaults}
         />
       )}
     </div>

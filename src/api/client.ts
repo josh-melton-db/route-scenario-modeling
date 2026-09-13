@@ -6,6 +6,8 @@ import type {
   Depot,
   Carrier,
   CarrierContract,
+  OperatingParameterSet,
+  CostParameterSet,
   EditorCommitResponse,
   EditorDeleteRequest,
   EditorEntityType,
@@ -54,6 +56,8 @@ export const api = {
   days: () => requestJSON<string[]>('/api/meta/days'),
   carriers: () => requestJSON<Carrier[]>('/api/meta/carriers'),
   carrierContracts: () => requestJSON<CarrierContract[]>('/api/meta/carrier-contracts'),
+  operatingParameters: () => requestJSON<OperatingParameterSet[]>('/api/meta/operating-parameters'),
+  costParameters: () => requestJSON<CostParameterSet[]>('/api/meta/cost-parameters'),
   scenarioTypes: () => requestJSON<ScenarioTypeSpec[]>('/api/meta/scenario-types'),
   recentScenarios: (limit = 10) =>
     requestJSON<ScenarioHistoryItem[]>(

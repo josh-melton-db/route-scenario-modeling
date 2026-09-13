@@ -21,6 +21,8 @@ export const queryKeys = {
   days: ['days'] as const,
   carriers: ['carriers'] as const,
   carrierContracts: ['carrier-contracts'] as const,
+  operatingParameters: ['operating-parameters'] as const,
+  costParameters: ['cost-parameters'] as const,
   scenarioTypes: ['scenario-types'] as const,
   recentScenarios: (limit: number) => ['recent-scenarios', limit] as const,
   baselineNetwork: (depotId: string, deliveryDay: string) =>
@@ -53,6 +55,14 @@ export function useCarriers() {
 
 export function useCarrierContracts() {
   return useQuery({ queryKey: queryKeys.carrierContracts, queryFn: api.carrierContracts })
+}
+
+export function useOperatingParameters() {
+  return useQuery({ queryKey: queryKeys.operatingParameters, queryFn: api.operatingParameters })
+}
+
+export function useCostParameters() {
+  return useQuery({ queryKey: queryKeys.costParameters, queryFn: api.costParameters })
 }
 
 export function useScenarioTypes() {

@@ -13,6 +13,8 @@ import {
   useCreateScenarioRun,
   useCarriers,
   useCarrierContracts,
+  useOperatingParameters,
+  useCostParameters,
   useDeleteScenario,
   useDays,
   useDepots,
@@ -30,6 +32,8 @@ export default function ScenarioBuilderPage() {
   const days = useDays()
   const carriers = useCarriers()
   const contracts = useCarrierContracts()
+  const operatingParameters = useOperatingParameters()
+  const costParameters = useCostParameters()
   const createScenarioRun = useCreateScenarioRun()
   const deleteScenario = useDeleteScenario()
   const scenarios = useRecentScenarios(50)
@@ -40,6 +44,18 @@ export default function ScenarioBuilderPage() {
     draft.reset()
   }, [draft.reset])
 
+  useEffect(() => {
+    const inherited = operatingParameters.data?.[0]
+    if (!inherited || draft.operatingConstraintsEnabled) return
+    draft.setOperatingConstraints({
+      parameter_set_id: inherited.parameter_set_id,
+      private_vehicle_limit: inherited.private_vehicle_limit,
+      max_route_minutes: inherited.max_route_minutes,
+      max_stops_per_route: inherited.max_stops_per_route,
+      allow_overtime: inherited.allow_overtime,
+    })
+  }, [draft.operatingConstraintsEnabled, draft.setOperatingConstraints, operatingParameters.data])
+
   const selectedDepot = useMemo(
     () =>
       depots.data?.find((depot) => depot.depot_id === draft.depot_id) ??
@@ -48,7 +64,7 @@ export default function ScenarioBuilderPage() {
     [baselineNetwork.data?.depot, depots.data, draft.depot_id],
   )
 
-  const error = depots.error ?? days.error ?? scenarios.error ?? carriers.error ?? contracts.error
+  const error = depots.error ?? days.error ?? scenarios.error ?? carriers.error ?? contracts.error ?? operatingParameters.error ?? costParameters.error
   if (error) return <ErrorState title="Could not load scenario builder" error={error} />
 
   const loading = depots.isLoading || days.isLoading
@@ -79,10 +95,12 @@ export default function ScenarioBuilderPage() {
     const operating = scenario.parameters.operating_constraints
     if (operating && typeof operating === 'object' && !Array.isArray(operating)) {
       draft.setOperatingConstraints({ ...draft.operatingConstraints, ...operating })
+      draft.setOperatingConstraintsEnabled(true)
     }
     const transportation = scenario.parameters.transportation_choices
     if (transportation && typeof transportation === 'object' && !Array.isArray(transportation)) {
       draft.setTransportationChoices({ ...draft.transportationChoices, ...transportation })
+      draft.setTransportationChoicesEnabled(true)
     }
     draft.setValidation(null)
   }
@@ -234,16 +252,26 @@ export default function ScenarioBuilderPage() {
                 onChangesChange={draft.setChanges}
                 onCostChange={draft.setCostOverride}
                 onCostEnabledChange={draft.setCostOverrideEnabled}
+                operatingConstraintsEnabled={draft.operatingConstraintsEnabled}
+                transportationChoicesEnabled={draft.transportationChoicesEnabled}
+                onOperatingConstraintsEnabledChange={draft.setOperatingConstraintsEnabled}
+                onTransportationChoicesEnabledChange={draft.setTransportationChoicesEnabled}
+                costDefaults={costParameters.data?.[0]}
               />
-              <TransportationOptionsPanel
+              {(draft.operatingConstraintsEnabled || draft.transportationChoicesEnabled) && <TransportationOptionsPanel
                 constraints={draft.operatingConstraints}
                 choices={draft.transportationChoices}
                 onConstraintsChange={draft.setOperatingConstraints}
                 onChoicesChange={draft.setTransportationChoices}
                 carriers={carriers.data ?? []}
                 contracts={contracts.data ?? []}
-                loading={carriers.isLoading || contracts.isLoading}
-              />
+                parameterSets={operatingParameters.data ?? []}
+                loading={carriers.isLoading || contracts.isLoading || operatingParameters.isLoading}
+                showOperating={draft.operatingConstraintsEnabled}
+                showTransportation={draft.transportationChoicesEnabled}
+                onRemoveOperating={() => draft.setOperatingConstraintsEnabled(false)}
+                onRemoveTransportation={() => draft.setTransportationChoicesEnabled(false)}
+              />}
             </div>
             <div className="flex flex-col gap-4">
               <ConstraintPanel validation={draft.validation} />

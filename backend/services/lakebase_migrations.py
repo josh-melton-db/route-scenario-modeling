@@ -6,7 +6,7 @@ from typing import Iterable
 
 from .postgres import PostgresService
 
-MIGRATION_VERSION = "2026_09_13_carrier_contract_reference_data_v3"
+MIGRATION_VERSION = "2026_09_13_operating_parameter_sets_v4"
 
 
 def _statements(postgres: PostgresService) -> Iterable[str]:
@@ -149,6 +149,20 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("operating_parameters")} (
+            parameter_set_id TEXT PRIMARY KEY,
+            parameter_set_name TEXT NOT NULL,
+            private_vehicle_limit INTEGER NOT NULL,
+            max_route_minutes INTEGER NOT NULL,
+            max_stops_per_route INTEGER NOT NULL,
+            allow_overtime BOOLEAN NOT NULL DEFAULT TRUE,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            row_version INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """
     yield f"""INSERT INTO {table("carriers")} (carrier_id, carrier_name) VALUES
         ('GL_LOGISTICS', 'Great Lakes Logistics'),
         ('MIDWEST_EXPRESS', 'Midwest Express')
@@ -162,6 +176,12 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
         ('GL_PRIORITY_2026', 'GL_LOGISTICS', 'GL Priority 2026', 20, 5.10, 55, 425, 10, '2026-01-01', '2026-12-31'),
         ('MW_SPOT_2026', 'MIDWEST_EXPRESS', 'Midwest Spot 2026', 8, 4.70, 50, 400, 14, '2026-01-01', '2026-12-31')
         ON CONFLICT (contract_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("operating_parameters")} (
+        parameter_set_id, parameter_set_name, private_vehicle_limit,
+        max_route_minutes, max_stops_per_route, allow_overtime
+    ) VALUES ('default', 'Standard delivery operations', 4, 600, 8, TRUE)
+        ON CONFLICT (parameter_set_id) DO NOTHING
     """
     yield f"""
         CREATE TABLE IF NOT EXISTS {table("baseline_network_snapshots")} (
@@ -375,7 +395,7 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
     yield f"ALTER TABLE {table('solve_runs')} ADD COLUMN IF NOT EXISTS create_duration_ms INTEGER"
     yield f"ALTER TABLE {table('solve_runs')} ADD COLUMN IF NOT EXISTS worker_id TEXT"
     yield f"ALTER TABLE {table('solve_runs')} ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ"
-    for table_name in ("depots", "customers", "fleet", "orders", "cost_parameters", "carriers", "carrier_contracts"):
+    for table_name in ("depots", "customers", "fleet", "orders", "cost_parameters", "carriers", "carrier_contracts", "operating_parameters"):
         yield f"ALTER TABLE {table(table_name)} ADD COLUMN IF NOT EXISTS row_version INTEGER NOT NULL DEFAULT 1"
     yield f"""
         CREATE TABLE IF NOT EXISTS {table("editor_sessions")} (

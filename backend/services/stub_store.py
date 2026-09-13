@@ -26,6 +26,8 @@ from ..models import (
     ValidationResponse,
     Carrier,
     CarrierContract,
+    OperatingParameterSet,
+    CostParameterSet,
 )
 
 
@@ -179,6 +181,12 @@ class StubStore:
             CarrierContract(contract_id="GL_PRIORITY_2026", carrier_id="GL_LOGISTICS", contract_name="GL Priority 2026", capacity_stops=20, rate_per_mile=5.10, rate_per_stop=55, minimum_charge=425, fuel_surcharge_pct=10, effective_start="2026-01-01", effective_end="2026-12-31"),
             CarrierContract(contract_id="MW_SPOT_2026", carrier_id="MIDWEST_EXPRESS", contract_name="Midwest Spot 2026", capacity_stops=8, rate_per_mile=4.70, rate_per_stop=50, minimum_charge=400, fuel_surcharge_pct=14, effective_start="2026-01-01", effective_end="2026-12-31"),
         ]
+
+    def list_operating_parameters(self) -> list[OperatingParameterSet]:
+        return [OperatingParameterSet(parameter_set_id="default", parameter_set_name="Standard delivery operations", private_vehicle_limit=4, max_route_minutes=600, max_stops_per_route=8, allow_overtime=True)]
+
+    def list_cost_parameters(self) -> list[CostParameterSet]:
+        return [CostParameterSet(parameter_set_id="default", cost_per_mile=3, labor_regular_hour=80, overtime_multiplier=1.5, overtime_threshold_minutes=480, fixed_truck_daily_cost=340, max_route_minutes=600, late_delivery_penalty=75, missed_delivery_penalty=400, avg_speed_mph=38, circuity=1.3)]
 
     def list_recent_scenarios(self, limit: int = 10) -> list[ScenarioHistoryItem]:
         scenarios = [

@@ -130,6 +130,20 @@ export const dataEditorTables: Record<EditorEntityType, EditorTableDefinition> =
       { key: 'active', label: 'Active', input: 'text', required: true },
     ],
   },
+  operating_parameters: {
+    label: 'Operating parameters',
+    singularLabel: 'operating parameter set',
+    description: 'Shared feasibility defaults inherited by route scenarios unless explicitly overridden.',
+    columns: [
+      { key: 'parameter_set_id', label: 'Parameter set ID', input: 'text', required: true },
+      { key: 'parameter_set_name', label: 'Parameter set name', input: 'text', required: true },
+      { key: 'private_vehicle_limit', label: 'Private vehicles', input: 'number', required: true, step: '1' },
+      { key: 'max_route_minutes', label: 'Max route min.', input: 'number', required: true, step: '1' },
+      { key: 'max_stops_per_route', label: 'Max stops / route', input: 'number', required: true, step: '1' },
+      { key: 'allow_overtime', label: 'Allow overtime', input: 'text', required: true },
+      { key: 'active', label: 'Active', input: 'text', required: true },
+    ],
+  },
 }
 
 type DraftRow = Record<string, string>

@@ -53,6 +53,7 @@ _ENTITY_TYPES: tuple[EditorEntityType, ...] = (
     "cost_parameters",
     "carriers",
     "carrier_contracts",
+    "operating_parameters",
 )
 _DELETE_PROMOTION_ORDER: tuple[EditorEntityType, ...] = (
     "carrier_contracts",
@@ -62,6 +63,7 @@ _DELETE_PROMOTION_ORDER: tuple[EditorEntityType, ...] = (
     "depots",
     "cost_parameters",
     "carriers",
+    "operating_parameters",
 )
 _WRITE_PROMOTION_ORDER: tuple[EditorEntityType, ...] = (
     "carriers",
@@ -71,6 +73,7 @@ _WRITE_PROMOTION_ORDER: tuple[EditorEntityType, ...] = (
     "cost_parameters",
     "orders",
     "carrier_contracts",
+    "operating_parameters",
 )
 _TIME_PATTERN = re.compile(r"^(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)$")
 
@@ -154,6 +157,16 @@ class _CarrierContractInput(StrictModel):
     fuel_surcharge_pct: float
     effective_start: date | None = None
     effective_end: date | None = None
+    active: bool = True
+
+
+class _OperatingParametersInput(StrictModel):
+    parameter_set_id: str
+    parameter_set_name: str
+    private_vehicle_limit: int
+    max_route_minutes: int
+    max_stops_per_route: int
+    allow_overtime: bool = True
     active: bool = True
 
 
@@ -284,6 +297,14 @@ _ENTITY_SPECS: dict[EditorEntityType, _EntitySpec] = {
         columns=("contract_id", "carrier_id", "contract_name", "capacity_stops", "rate_per_mile", "rate_per_stop", "minimum_charge", "fuel_surcharge_pct", "effective_start", "effective_end", "active"),
         model=_CarrierContractInput,
         required_text_fields=("contract_id", "carrier_id", "contract_name"),
+    ),
+    "operating_parameters": _EntitySpec(
+        entity_type="operating_parameters",
+        table_name="operating_parameters",
+        id_column="parameter_set_id",
+        columns=("parameter_set_id", "parameter_set_name", "private_vehicle_limit", "max_route_minutes", "max_stops_per_route", "allow_overtime", "active"),
+        model=_OperatingParametersInput,
+        required_text_fields=("parameter_set_id", "parameter_set_name"),
     ),
 }
 

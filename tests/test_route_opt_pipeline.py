@@ -19,7 +19,7 @@ from route_opt.overrides import (
 from route_opt.solver import solve_scenario_partition
 from route_opt.solver.payload import INPUT_SCHEMA, make_input_row
 from route_opt.synthetic import generate_all
-from route_opt.transportation import add_carrier_fallback, apply_operating_constraints, resolve_transportation_choices
+from route_opt.transportation import add_carrier_fallback, apply_operating_constraints, resolve_operating_constraints, resolve_transportation_choices
 
 
 def _generated():
@@ -277,6 +277,23 @@ def test_transportation_choice_resolves_rates_from_contract_reference_data() -> 
     assert resolved["carrier_name"] == "Example Carrier"
     assert resolved["carrier_capacity_stops"] == 9
     assert resolved["rate_per_mile"] == 4.5
+
+
+def test_operating_constraints_inherit_parameter_set_and_overlay_scenario_values() -> None:
+    resolved = resolve_operating_constraints(
+        {"operating_constraints": {"parameter_set_id": "standard", "max_stops_per_route": 5}},
+        [{"parameter_set_id": "standard", "private_vehicle_limit": 4, "max_route_minutes": 600, "max_stops_per_route": 8, "allow_overtime": True}],
+    )
+    assert resolved["private_vehicle_limit"] == 4
+    assert resolved["max_stops_per_route"] == 5
+
+    fleet = apply_operating_constraints(
+        [{"vehicle_id": "V1", "max_route_minutes": 600}],
+        {"operating_constraints": {"parameter_set_id": "standard", "allow_overtime": False}},
+        [{"parameter_set_id": "standard", "private_vehicle_limit": 4, "max_route_minutes": 600, "max_stops_per_route": 8, "allow_overtime": True}],
+        overtime_threshold_minutes=480,
+    )
+    assert fleet[0]["max_route_minutes"] == 480
 
 
 def test_make_input_row_includes_cost_parameters() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from ..models import Carrier, CarrierContract, Depot, ScenarioTypeSpec
+from ..models import Carrier, CarrierContract, CostParameterSet, Depot, OperatingParameterSet, ScenarioTypeSpec
 from ..services.store_provider import get_store
 
 router = APIRouter(prefix="/meta", tags=["meta"])
@@ -31,3 +31,13 @@ async def carriers() -> list[Carrier]:
 @router.get("/carrier-contracts", response_model=list[CarrierContract])
 async def carrier_contracts() -> list[CarrierContract]:
     return get_store().list_carrier_contracts()
+
+
+@router.get("/operating-parameters", response_model=list[OperatingParameterSet])
+async def operating_parameters() -> list[OperatingParameterSet]:
+    return get_store().list_operating_parameters()
+
+
+@router.get("/cost-parameters", response_model=list[CostParameterSet])
+async def cost_parameters() -> list[CostParameterSet]:
+    return get_store().list_cost_parameters()

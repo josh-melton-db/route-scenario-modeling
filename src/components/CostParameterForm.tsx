@@ -27,48 +27,56 @@ const FIELDS: Array<{
   label: string
   help: string
   step?: number
+  group: 'Fleet operating expense' | 'Labor expense' | 'Service-risk penalties'
 }> = [
   {
     key: 'cost_per_mile',
     label: 'Cost per mile ($)',
     help: 'Mileage rate applied to road-adjusted miles.',
     step: 0.1,
+    group: 'Fleet operating expense',
   },
   {
     key: 'labor_regular_hour',
     label: 'Labor regular hour ($)',
     help: 'Fully loaded regular labor cost per hour.',
     step: 1,
+    group: 'Labor expense',
   },
   {
     key: 'overtime_multiplier',
     label: 'Overtime multiplier',
     help: 'Multiplier applied to labor after the overtime threshold.',
     step: 0.1,
+    group: 'Labor expense',
   },
   {
     key: 'overtime_threshold_minutes',
     label: 'Overtime threshold (min)',
     help: 'Minutes before overtime labor cost starts.',
     step: 15,
+    group: 'Labor expense',
   },
   {
     key: 'fixed_truck_daily_cost',
     label: 'Fixed truck daily cost ($)',
     help: 'Fixed cost charged once per active route/vehicle.',
     step: 10,
+    group: 'Fleet operating expense',
   },
   {
     key: 'late_delivery_penalty',
     label: 'Late delivery penalty ($)',
     help: 'Penalty per late stop.',
     step: 5,
+    group: 'Service-risk penalties',
   },
   {
     key: 'missed_delivery_penalty',
     label: 'Missed delivery penalty ($)',
     help: 'Penalty per missed/unassigned stop.',
     step: 10,
+    group: 'Service-risk penalties',
   },
 ]
 
@@ -76,18 +84,21 @@ interface CostParameterFormProps {
   value: CostOverride
   onChange: (value: CostOverride) => void
   onRemove?: () => void
+  defaults?: Partial<typeof DEFAULTS>
 }
 
 export default function CostParameterForm({
   value,
   onChange,
   onRemove,
+  defaults,
 }: CostParameterFormProps) {
+  const inherited = { ...DEFAULTS, ...defaults }
   return (
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold">Cost parameters</div>
+          <div className="text-sm font-semibold">Cost assumptions</div>
           <p className="mt-1 text-xs text-muted-foreground">
             Overrides apply to both baseline and scenario costing so before/after
             deltas stay comparable.
@@ -104,11 +115,11 @@ export default function CostParameterForm({
           </button>
         )}
       </div>
-      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-        {FIELDS.map((field) => {
+      <div className="mt-4 space-y-4">
+        {(['Fleet operating expense', 'Labor expense', 'Service-risk penalties'] as const).map((group) => <section key={group}><h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group}</h4><div className="grid grid-cols-1 gap-3 md:grid-cols-2">{FIELDS.filter((field) => field.group === group).map((field) => {
           const current =
             value[field.key] === null || value[field.key] === undefined
-              ? DEFAULTS[field.key]
+              ? inherited[field.key]
               : Number(value[field.key])
           return (
             <label key={field.key} className="flex flex-col gap-1.5 text-sm">
@@ -126,11 +137,11 @@ export default function CostParameterForm({
                 className="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
               />
               <span className="text-xs leading-5 text-muted-foreground">
-                {field.help} Default {DEFAULTS[field.key]}.
+                {field.help} Inherited {inherited[field.key]}.
               </span>
             </label>
           )
-        })}
+        })}</div></section>)}
       </div>
       <button
         type="button"

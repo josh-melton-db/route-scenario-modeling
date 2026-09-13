@@ -10,6 +10,8 @@ from ..models import (
     BaselineNetwork,
     Carrier,
     CarrierContract,
+    OperatingParameterSet,
+    CostParameterSet,
     ComparisonResult,
     Depot,
     Kpis,
@@ -83,6 +85,13 @@ class DatabricksStore:
 
     def list_carrier_contracts(self) -> list[CarrierContract]:
         return stub_store.list_carrier_contracts()
+
+    def list_operating_parameters(self) -> list[OperatingParameterSet]:
+        return stub_store.list_operating_parameters()
+
+    def list_cost_parameters(self) -> list[CostParameterSet]:
+        rows = self.sql.query(f"SELECT * FROM {self.sql.table('cost_parameters')} ORDER BY parameter_set_id")
+        return [CostParameterSet.model_validate(row) for row in rows]
 
     def list_recent_scenarios(self, limit: int = 10) -> list[ScenarioHistoryItem]:
         rows = self.sql.query(
@@ -537,6 +546,7 @@ class DatabricksStore:
         }
         tables["carriers"] = [row.model_dump() for row in stub_store.list_carriers()]
         tables["carrier_contracts"] = [row.model_dump() for row in stub_store.list_carrier_contracts()]
+        tables["operating_parameters"] = [row.model_dump() for row in stub_store.list_operating_parameters()]
         return tables
 
     def load_scenario_override_tables(

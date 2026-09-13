@@ -41,6 +41,7 @@ const editorEntities: EditorEntityType[] = [
   'cost_parameters',
   'carriers',
   'carrier_contracts',
+  'operating_parameters',
 ]
 
 function messageFor(error: unknown): string {
@@ -218,6 +219,8 @@ export default function DataEditorPage() {
         queryClient.invalidateQueries({ queryKey: queryKeys.days }),
         queryClient.invalidateQueries({ queryKey: queryKeys.carriers }),
         queryClient.invalidateQueries({ queryKey: queryKeys.carrierContracts }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.operatingParameters }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.costParameters }),
         queryClient.invalidateQueries({ queryKey: ['baseline-network'] }),
         queryClient.invalidateQueries({ queryKey: ['baseline-kpis'] }),
       ])

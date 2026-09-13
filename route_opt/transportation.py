@@ -47,20 +47,40 @@ def resolve_transportation_choices(
     }
 
 
+def resolve_operating_constraints(
+    parameters: dict[str, object], parameter_sets: list[dict[str, object]]
+) -> dict[str, object]:
+    raw = parameters.get("operating_constraints")
+    overrides = dict(raw) if isinstance(raw, dict) else {}
+    parameter_set_id = str(overrides.get("parameter_set_id", "default"))
+    selected = next(
+        (row for row in parameter_sets if str(row.get("parameter_set_id")) == parameter_set_id),
+        parameter_sets[0] if parameter_sets else {},
+    )
+    return {**selected, **overrides, "parameter_set_id": parameter_set_id}
+
+
 def apply_operating_constraints(
-    fleet: list[dict[str, object]], parameters: dict[str, object]
+    fleet: list[dict[str, object]], parameters: dict[str, object],
+    parameter_sets: list[dict[str, object]] | None = None,
+    overtime_threshold_minutes: int = 480,
 ) -> list[dict[str, object]]:
     choices = parameters.get("transportation_choices")
     if isinstance(choices, dict) and not bool(choices.get("allow_private_fleet", True)):
         return []
-    constraints = parameters.get("operating_constraints")
-    if not isinstance(constraints, dict):
+    constraints = resolve_operating_constraints(parameters, parameter_sets or [])
+    if not constraints:
         return fleet
     limit = max(0, int(constraints.get("private_vehicle_limit", len(fleet))))
     rows = [dict(row) for row in fleet[:limit]]
     for row in rows:
         if constraints.get("max_route_minutes") is not None:
             row["max_route_minutes"] = int(constraints["max_route_minutes"])
+        if not bool(constraints.get("allow_overtime", True)):
+            row["max_route_minutes"] = min(
+                int(row.get("max_route_minutes", overtime_threshold_minutes)),
+                overtime_threshold_minutes,
+            )
         if constraints.get("max_stops_per_route") is not None:
             row["max_stops_per_route"] = int(constraints["max_stops_per_route"])
     return rows

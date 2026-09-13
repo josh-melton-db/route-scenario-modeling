@@ -74,6 +74,23 @@ export interface CarrierContract {
   active: boolean
 }
 
+export interface OperatingParameterSet {
+  parameter_set_id: string
+  parameter_set_name: string
+  private_vehicle_limit: number
+  max_route_minutes: number
+  max_stops_per_route: number
+  allow_overtime: boolean
+  active: boolean
+}
+
+export interface CostParameterSet extends Required<CostOverride> {
+  parameter_set_id: string
+  max_route_minutes: number
+  avg_speed_mph: number
+  circuity: number
+}
+
 export interface Stop {
   stop_id: string
   customer_id: string
@@ -431,6 +448,7 @@ export interface ComparisonResult {
 }
 
 export interface OperatingConstraints {
+  parameter_set_id: string
   private_vehicle_limit: number
   max_route_minutes: number
   max_stops_per_route: number
@@ -452,6 +470,7 @@ export type EditorEntityType =
   | 'cost_parameters'
   | 'carriers'
   | 'carrier_contracts'
+  | 'operating_parameters'
 
 export type EditorSessionStatus =
   | 'open'

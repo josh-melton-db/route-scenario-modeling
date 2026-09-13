@@ -57,6 +57,7 @@ class ScenarioInputs:
     cost_parameters: CostParameters
     carriers: list[dict[str, object]]
     carrier_contracts: list[dict[str, object]]
+    operating_parameters: list[dict[str, object]]
     override_tables: dict[str, list[dict[str, object]]]
 
 
@@ -90,7 +91,18 @@ class SolverService:
         planning_depots = materialized["scenario_planning_depots"]
         planning_customers = materialized["scenario_planning_customers"]
         planning_fleet = materialized["scenario_planning_fleet"]
-        planning_fleet = apply_operating_constraints(planning_fleet, scenario.parameters)
+        cost_parameters = self._resolve_cost_parameters(
+            scenario_id=scenario.scenario_id,
+            override_tables=override_tables,
+            base_cost_rows=base.get("cost_parameters") or [],
+        )
+        operating_parameters = base.get("operating_parameters") or []
+        planning_fleet = apply_operating_constraints(
+            planning_fleet,
+            scenario.parameters,
+            operating_parameters,
+            cost_parameters.overtime_threshold_minutes,
+        )
         planning_stops = materialized["scenario_planning_stops"]
 
         travel_matrix: list[dict[str, object]] = []
@@ -109,12 +121,6 @@ class SolverService:
 
         matrix_source = _matrix_source(travel_matrix)
 
-        cost_parameters = self._resolve_cost_parameters(
-            scenario_id=scenario.scenario_id,
-            override_tables=override_tables,
-            base_cost_rows=base.get("cost_parameters") or [],
-        )
-
         return ScenarioInputs(
             scenario=scenario_dict,
             depots=base["depots"],
@@ -130,6 +136,7 @@ class SolverService:
             cost_parameters=cost_parameters,
             carriers=base.get("carriers") or [],
             carrier_contracts=base.get("carrier_contracts") or [],
+            operating_parameters=operating_parameters,
             override_tables=override_tables,
         )
 
