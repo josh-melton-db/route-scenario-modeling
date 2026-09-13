@@ -73,6 +73,18 @@ pip install -r requirements.txt
 npm run dev:all    # Vite on :5173, FastAPI on :8001 with stub data
 ```
 
+To run locally against the isolated Lakebase `dev` branch using the `DEFAULT`
+Databricks profile:
+
+```bash
+npm run setup:python
+npm run dev:lakebase
+```
+
+The launcher uses OAuth credential refresh and contains no database password.
+It targets `projects/route-scenario-modeling-lakebase/branches/dev`; the protected
+`production` branch is not modified by local development.
+
 ## Scenario types
 
 The demo ships with representative scenario levers:

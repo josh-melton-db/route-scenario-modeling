@@ -6,7 +6,7 @@ import ErrorState from '@/components/ErrorState'
 import RunStatusBanner from '@/components/RunStatusBanner'
 import { useRunStatus } from '@/api/queries'
 
-const comparisonStatuses = new Set(['succeeded', 'infeasible'])
+const resultStatuses = new Set(['succeeded', 'infeasible'])
 
 export default function OptimizationRunsPage() {
   const { runId } = useParams()
@@ -24,11 +24,13 @@ export default function OptimizationRunsPage() {
     if (
       !run.data ||
       precheckFailed ||
-      !comparisonStatuses.has(run.data.status)
+      !resultStatuses.has(run.data.status)
     ) {
       return
     }
-    navigate(`/comparison/${run.data.scenario_id}`, { replace: true })
+    navigate(`/analyze?compare=${encodeURIComponent(run.data.scenario_id)}`, {
+      replace: true,
+    })
   }, [navigate, precheckFailed, run.data?.scenario_id, run.data?.status])
 
   if (run.error) return <ErrorState title="Could not load run" error={run.error} />

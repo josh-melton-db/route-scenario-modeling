@@ -230,6 +230,26 @@ class DatabricksStore:
         self._materialize_overrides(scenario)
         return scenario, "databricks"
 
+    def delete_scenario(self, scenario_id: str) -> None:
+        if scenario_id == "baseline":
+            raise HTTPException(status_code=400, detail="The baseline scenario cannot be deleted.")
+        if not any(item.scenario_id == scenario_id for item in self.list_recent_scenarios(50)):
+            raise HTTPException(status_code=404, detail="Scenario not found.")
+        # Unity Catalog tables do not enforce the Lakebase foreign-key cascade.
+        for table_name in (
+            "scenario_customer_overrides",
+            "scenario_fleet_overrides",
+            "scenario_depot_overrides",
+            "scenario_frequency_overrides",
+            "scenario_cost_overrides",
+            "scenario_parameters",
+            "app_scenario_results",
+            "scenario_definitions",
+        ):
+            self.sql.execute(
+                f"DELETE FROM {self.sql.table(table_name)} WHERE scenario_id = {sql_literal(scenario_id)}"
+            )
+
     def _materialize_overrides(self, scenario: ScenarioDefinition) -> None:
         """Write normalized override rows so the scenario materializes real changes."""
         depot = None

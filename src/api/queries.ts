@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import type {
   CreateScenarioResponse,
@@ -173,6 +173,15 @@ export function useCreateScenarioRun() {
       const run = await api.runScenario(created.scenario.scenario_id)
       return { scenario: created.scenario, run }
     },
+  })
+}
+
+export function useDeleteScenario() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (scenarioId: string) => api.deleteScenario(scenarioId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['recent-scenarios'] }),
   })
 }
 

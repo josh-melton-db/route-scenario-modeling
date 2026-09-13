@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response, status
 
 from ..models import (
     CreateScenarioResponse,
@@ -44,6 +44,12 @@ async def create_scenario(payload: ScenarioCreateRequest) -> CreateScenarioRespo
 @router.get("/{scenario_id}", response_model=ScenarioDefinition)
 async def scenario_definition(scenario_id: str) -> ScenarioDefinition:
     return get_store().get_scenario_definition(scenario_id)
+
+
+@router.delete("/{scenario_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_scenario(scenario_id: str) -> Response:
+    get_store().delete_scenario(scenario_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{scenario_id}/validate", response_model=ValidationResponse)

@@ -5,10 +5,10 @@ import { cn } from '@/lib/utils'
 
 const navItems = [
   {
-    path: '/baseline',
+    path: '/analyze',
     label: 'Analyze',
     icon: MapPinned,
-    activePrefixes: ['/baseline', '/comparison'],
+    activePrefixes: ['/analyze'],
   },
   {
     path: '/scenario',
@@ -31,7 +31,7 @@ export function Layout({ children }: { children: ReactNode }) {
     <div className="min-h-screen flex flex-col bg-background">
       <nav className="sticky top-0 z-50 border-b border-border/60 bg-card/80 backdrop-blur">
         <div className="grid min-h-16 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-4 sm:px-6 lg:px-8">
-          <Link to="/baseline" className="flex min-w-0 items-center gap-2 justify-self-start">
+          <Link to="/analyze" className="flex min-w-0 items-center gap-2 justify-self-start">
             <div className="rounded-md bg-primary/15 p-1.5 text-primary">
               <Route className="h-4 w-4" />
             </div>

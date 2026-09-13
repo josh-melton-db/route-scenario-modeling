@@ -70,6 +70,15 @@ export const api = {
     }),
   scenario: (scenarioId: string) =>
     requestJSON<ScenarioDefinition>(`/api/scenarios/${scenarioId}`),
+  deleteScenario: async (scenarioId: string) => {
+    const res = await fetch(`/api/scenarios/${encodeURIComponent(scenarioId)}`, {
+      method: 'DELETE',
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`${res.status} ${res.statusText}: ${text}`)
+    }
+  },
   validateScenario: (scenarioId: string) =>
     requestJSON<ValidationResponse>(`/api/scenarios/${scenarioId}/validate`, {
       method: 'POST',

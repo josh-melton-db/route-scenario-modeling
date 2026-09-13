@@ -223,6 +223,18 @@ class LakebaseStore:
             self._materialize_overrides(scenario, connection)
         return scenario, "lakebase"
 
+    def delete_scenario(self, scenario_id: str) -> None:
+        if scenario_id == "baseline":
+            raise HTTPException(status_code=400, detail="The baseline scenario cannot be deleted.")
+        with self.postgres.transaction() as connection:
+            deleted = self.postgres.execute(
+                f"DELETE FROM {self._table('scenario_definitions')} WHERE scenario_id = %s",
+                (scenario_id,),
+                connection=connection,
+            )
+            if deleted == 0:
+                raise HTTPException(status_code=404, detail="Scenario not found.")
+
     def _materialize_overrides(self, scenario: ScenarioDefinition, connection: Any) -> None:
         depot: dict[str, Any] | None = None
         eligible_customer_ids: list[str] = []

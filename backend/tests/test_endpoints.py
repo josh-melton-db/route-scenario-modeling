@@ -73,3 +73,22 @@ def test_scenario_lifecycle() -> None:
     assert result.status_code == 200
     assert result.json()["scenario_id"] == scenario_id
     assert result.json()["scenario_kpis"]["driver_count"] == 3
+
+
+def test_delete_scenario() -> None:
+    created = client.post(
+        "/api/scenarios",
+        json={
+            "scenario_name": "Delete me",
+            "scenario_type": "custom",
+            "baseline_scenario_id": "baseline",
+            "depot_id": "DPT_NORTH",
+            "delivery_day": "Tuesday",
+            "parameters": {"changes": []},
+        },
+    )
+    scenario_id = created.json()["scenario"]["scenario_id"]
+
+    assert client.delete(f"/api/scenarios/{scenario_id}").status_code == 204
+    assert client.get(f"/api/scenarios/{scenario_id}").status_code == 404
+    assert client.delete("/api/scenarios/baseline").status_code == 400

@@ -9,6 +9,8 @@ interface DualMapProps {
   baselineRoutes: Route[]
   scenarioRoutes: Route[]
   status: RunStatus
+  baselineLabel?: string
+  scenarioLabel?: string
 }
 
 export default function DualMap({
@@ -17,13 +19,15 @@ export default function DualMap({
   baselineRoutes,
   scenarioRoutes,
   status,
+  baselineLabel = 'Baseline',
+  scenarioLabel = 'Scenario',
 }: DualMapProps) {
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null)
   const [viewState, setViewState] = useState<ViewState | undefined>()
 
   return (
     <div className="grid min-h-[520px] grid-cols-1 gap-4 lg:grid-cols-2">
-      <MapPanel title="Baseline">
+      <MapPanel title={baselineLabel}>
         <MapView
           depot={baselineDepot}
           routes={baselineRoutes}
@@ -33,7 +37,7 @@ export default function DualMap({
           onViewStateChange={setViewState}
         />
       </MapPanel>
-      <MapPanel title={status === 'infeasible' ? 'Scenario (infeasible)' : 'Scenario'}>
+      <MapPanel title={status === 'infeasible' ? `${scenarioLabel} (infeasible)` : scenarioLabel}>
         <MapView
           depot={scenarioDepot}
           routes={scenarioRoutes}

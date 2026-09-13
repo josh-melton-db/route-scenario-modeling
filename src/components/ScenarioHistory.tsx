@@ -95,7 +95,7 @@ function HistoryRow({ scenario }: { scenario: ScenarioHistoryItem }) {
 
   return (
     <Link
-      to={`/comparison/${scenario.scenario_id}`}
+      to={`/analyze?compare=${encodeURIComponent(scenario.scenario_id)}`}
       className="block px-4 py-3 transition-colors hover:bg-accent/50"
       aria-label={`Analyze ${scenario.scenario_name}`}
     >

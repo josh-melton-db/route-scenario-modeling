@@ -119,6 +119,43 @@ class StubStore:
         self._result_registry: dict[str, str] = {"baseline": "scn_baseline_identity"}
         self._scenario_created_at: dict[str, str] = {}
 
+        # Make the modeled demo results discoverable through the same scenario
+        # listing used by Scenario History and the Analyze selectors. Previously
+        # these files could be opened by ID but were absent from /api/scenarios.
+        seeded_result_ids: set[str] = set()
+        for spec in self._scenario_types:
+            result_stub_id = spec.result_stub_id
+            if (
+                spec.scenario_type in {"baseline", "custom"}
+                or result_stub_id in seeded_result_ids
+            ):
+                continue
+            raw = self._scenario_raw.get(result_stub_id)
+            if raw is None:
+                continue
+            seeded_result_ids.add(result_stub_id)
+            raw_status = str(raw.get("status", "succeeded"))
+            status = "infeasible" if raw_status == "infeasible" else "completed"
+            parameters = {
+                field.name: field.default
+                for field in spec.fields
+                if field.default is not None
+            }
+            self._scenario_registry[result_stub_id] = ScenarioDefinition(
+                scenario_id=result_stub_id,
+                scenario_name=str(raw.get("scenario_name", spec.label)),
+                scenario_type=spec.scenario_type,
+                baseline_scenario_id="baseline",
+                depot_id=self._baseline_network.depot.depot_id,
+                delivery_day=self._baseline_network.delivery_day,
+                parameters=parameters,
+                status=status,
+            )
+            self._result_registry[result_stub_id] = result_stub_id
+            self._scenario_created_at[result_stub_id] = str(
+                raw.get("generated_at", datetime.now(timezone.utc).isoformat())
+            )
+
     def list_depots(self) -> list[Depot]:
         return [self._baseline_network.depot]
 
@@ -177,6 +214,15 @@ class StubStore:
         if not scenario:
             raise HTTPException(status_code=404, detail="Scenario not found.")
         return scenario
+
+    def delete_scenario(self, scenario_id: str) -> None:
+        if scenario_id == "baseline":
+            raise HTTPException(status_code=400, detail="The baseline scenario cannot be deleted.")
+        if scenario_id not in self._scenario_registry:
+            raise HTTPException(status_code=404, detail="Scenario not found.")
+        del self._scenario_registry[scenario_id]
+        self._result_registry.pop(scenario_id, None)
+        self._scenario_created_at.pop(scenario_id, None)
 
     def set_scenario_status(self, scenario_id: str, status: ScenarioLifecycleStatus) -> None:
         scenario = self.get_scenario_definition(scenario_id)

@@ -1,4 +1,4 @@
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { AlertTriangle, Loader2 } from 'lucide-react'
 import ConstraintViolationsTable from '@/components/ConstraintViolationsTable'
 import CostBreakdown from '@/components/CostBreakdown'
@@ -7,16 +7,22 @@ import DualMap from '@/components/DualMap'
 import ErrorState from '@/components/ErrorState'
 import KpiDeltaGrid from '@/components/KpiDeltaGrid'
 import { useScenarioResults } from '@/api/queries'
+import type { KpiDeltas, Kpis } from '@/api/types'
 
 export default function ComparisonPage() {
   const { scenarioId } = useParams()
+  const [searchParams] = useSearchParams()
+  const baselineId = searchParams.get('baselineId') ?? 'baseline'
   const result = useScenarioResults(scenarioId)
+  const selectedBaseline = useScenarioResults(
+    baselineId === 'baseline' ? undefined : baselineId,
+  )
 
-  if (result.error) {
-    return <ErrorState title="Could not load comparison" error={result.error} />
+  if (result.error || selectedBaseline.error) {
+    return <ErrorState title="Could not load comparison" error={result.error ?? selectedBaseline.error} />
   }
 
-  if (result.isLoading || !result.data) {
+  if (result.isLoading || !result.data || selectedBaseline.isLoading) {
     return (
       <div className="flex h-96 items-center justify-center text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -26,6 +32,14 @@ export default function ComparisonPage() {
   }
 
   const comparison = result.data
+  const customBaseline = selectedBaseline.data
+  const baselineName = customBaseline?.scenario_name ?? 'Baseline'
+  const baselineDepot = customBaseline?.scenario_depot ?? comparison.baseline_depot
+  const baselineRoutes = customBaseline?.scenario_routes ?? comparison.baseline_routes
+  const baselineKpis = customBaseline?.scenario_kpis ?? comparison.baseline_kpis
+  const deltas = comparison.scenario_kpis
+    ? calculateKpiDeltas(baselineKpis, comparison.scenario_kpis)
+    : comparison.kpi_deltas
   const infeasible = comparison.status === 'infeasible'
 
   return (
@@ -33,7 +47,7 @@ export default function ComparisonPage() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            {comparison.scenario_name}
+            {baselineName} vs. {comparison.scenario_name}
           </h1>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
             {comparison.summary}
@@ -60,17 +74,19 @@ export default function ComparisonPage() {
       )}
 
       <KpiDeltaGrid
-        baselineKpis={comparison.baseline_kpis}
+        baselineKpis={baselineKpis}
         scenarioKpis={comparison.scenario_kpis}
-        deltas={comparison.kpi_deltas}
+        deltas={deltas}
       />
 
       <DualMap
-        baselineDepot={comparison.baseline_depot}
+        baselineDepot={baselineDepot}
         scenarioDepot={comparison.scenario_depot}
-        baselineRoutes={comparison.baseline_routes}
+        baselineRoutes={baselineRoutes}
         scenarioRoutes={comparison.scenario_routes}
         status={comparison.status}
+        baselineLabel={baselineName}
+        scenarioLabel={comparison.scenario_name}
       />
 
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
@@ -86,4 +102,28 @@ export default function ComparisonPage() {
       <ConstraintViolationsTable violations={comparison.constraint_violations} />
     </div>
   )
+}
+
+function calculateKpiDeltas(baseline: Kpis, scenario: Kpis): KpiDeltas {
+  return {
+    route_count: scenario.route_count - baseline.route_count,
+    driver_count: scenario.driver_count - baseline.driver_count,
+    vehicle_count: scenario.vehicle_count - baseline.vehicle_count,
+    total_miles: scenario.total_miles - baseline.total_miles,
+    drive_minutes: scenario.drive_minutes - baseline.drive_minutes,
+    service_minutes: scenario.service_minutes - baseline.service_minutes,
+    total_cases: scenario.total_cases - baseline.total_cases,
+    avg_stops_per_route: scenario.avg_stops_per_route - baseline.avg_stops_per_route,
+    avg_capacity_utilization_pct: scenario.avg_capacity_utilization_pct - baseline.avg_capacity_utilization_pct,
+    avg_driver_utilization_pct: scenario.avg_driver_utilization_pct - baseline.avg_driver_utilization_pct,
+    overtime_minutes: scenario.overtime_minutes - baseline.overtime_minutes,
+    missed_windows: scenario.missed_windows - baseline.missed_windows,
+    late_minutes: scenario.late_minutes - baseline.late_minutes,
+    mileage_cost: scenario.cost_breakdown.mileage_cost - baseline.cost_breakdown.mileage_cost,
+    labor_cost: scenario.cost_breakdown.labor_cost - baseline.cost_breakdown.labor_cost,
+    overtime_cost: scenario.cost_breakdown.overtime_cost - baseline.cost_breakdown.overtime_cost,
+    fixed_vehicle_cost: scenario.cost_breakdown.fixed_vehicle_cost - baseline.cost_breakdown.fixed_vehicle_cost,
+    sla_penalty_cost: scenario.cost_breakdown.sla_penalty_cost - baseline.cost_breakdown.sla_penalty_cost,
+    total_cost: scenario.cost_breakdown.total_cost - baseline.cost_breakdown.total_cost,
+  }
 }
