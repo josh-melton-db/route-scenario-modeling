@@ -22,3 +22,9 @@ env:
     value: "4"
   - name: DATABRICKS_ROUTE_SOLVER_ENDPOINT
     value: route-solver-dev
+  - name: VALHALLA_APP_URL
+    valueFrom: valhalla
+  - name: VALHALLA_COSTING
+    value: truck
+  - name: VALHALLA_ALLOW_HAVERSINE_FALLBACK
+    value: "false"

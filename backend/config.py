@@ -56,6 +56,23 @@ def get_route_solver_endpoint() -> str:
     return os.getenv("DATABRICKS_ROUTE_SOLVER_ENDPOINT", "route-solver-dev").strip() or "route-solver-dev"
 
 
+def get_valhalla_app_url() -> str | None:
+    value = os.getenv("VALHALLA_APP_URL", "").strip()
+    return value.rstrip("/") or None
+
+
+def get_valhalla_costing() -> str:
+    return os.getenv("VALHALLA_COSTING", "truck").strip() or "truck"
+
+
+def allow_haversine_fallback() -> bool:
+    return os.getenv("VALHALLA_ALLOW_HAVERSINE_FALLBACK", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
 def get_stub_dir() -> Path:
     configured = os.getenv("STUB_DIR", "").strip()
     if configured:

@@ -131,6 +131,7 @@ def compare_scenario(
     solution: dict[str, object],
     baseline_depot: dict[str, object],
     scenario_depot: dict[str, object],
+    matrix_source: str = MATRIX_SOURCE,
 ) -> dict[str, object]:
     baseline_kpis = baseline_result["kpis"]
     scenario_routes = solution.get("routes", [])
@@ -187,7 +188,7 @@ def compare_scenario(
         "baseline_scenario_id": scenario["baseline_scenario_id"],
         "scenario_name": scenario["scenario_name"],
         "status": status,
-        "matrix_source": MATRIX_SOURCE,
+        "matrix_source": matrix_source,
         "generated_at": DEFAULT_GENERATED_AT,
         "summary": "Scenario is infeasible under current constraints." if status == "infeasible" else "Scenario solved and compared against an optimized baseline.",
         "baseline_depot": {

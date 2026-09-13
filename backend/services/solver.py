@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, cast
@@ -16,9 +17,18 @@ from route_opt.schemas import BASELINE_SCENARIO_ID
 from route_opt.solver.payload import OUTPUT_COLUMNS, make_input_row
 from route_opt.transportation import add_carrier_fallback, apply_operating_constraints
 
-from ..config import get_route_solver_endpoint, get_workspace_client
+from ..config import (
+    allow_haversine_fallback,
+    get_route_solver_endpoint,
+    get_valhalla_app_url,
+    get_valhalla_costing,
+    get_workspace_client,
+)
 from ..models import ComparisonResult, ScenarioDefinition
 from .store_provider import get_store
+from .valhalla import ValhallaMatrixClient, ValhallaMatrixError
+
+logger = logging.getLogger(__name__)
 
 OVERRIDE_TABLE_NAMES = [
     "scenario_customer_overrides",
@@ -43,6 +53,7 @@ class ScenarioInputs:
     planning_fleet: list[dict[str, object]]
     planning_stops: list[dict[str, object]]
     travel_matrix: list[dict[str, object]]
+    matrix_source: str
     cost_parameters: CostParameters
     override_tables: dict[str, list[dict[str, object]]]
 
@@ -82,7 +93,7 @@ class SolverService:
 
         travel_matrix: list[dict[str, object]] = []
         for depot in planning_depots:
-            _, arc_rows = build_travel_matrix(
+            _, arc_rows = self._build_travel_matrix(
                 scenario_id=scenario.scenario_id,
                 depot=depot,
                 stops=[
@@ -93,6 +104,8 @@ class SolverService:
                 delivery_day=scenario.delivery_day,
             )
             travel_matrix.extend(arc_rows)
+
+        matrix_source = _matrix_source(travel_matrix)
 
         cost_parameters = self._resolve_cost_parameters(
             scenario_id=scenario.scenario_id,
@@ -111,6 +124,7 @@ class SolverService:
             planning_fleet=planning_fleet,
             planning_stops=planning_stops,
             travel_matrix=travel_matrix,
+            matrix_source=matrix_source,
             cost_parameters=cost_parameters,
             override_tables=override_tables,
         )
@@ -211,6 +225,7 @@ class SolverService:
             solution=cast(dict[str, object], solved.solution),
             baseline_depot=baseline_depot,
             scenario_depot=scenario_depot,
+            matrix_source=inputs.matrix_source,
         )
         return ComparisonResult.model_validate(result)
 
@@ -244,7 +259,7 @@ class SolverService:
         baseline_stops = materialized["scenario_planning_stops"]
         baseline_matrix: list[dict[str, object]] = []
         for depot in baseline_depots:
-            _, arc_rows = build_travel_matrix(
+            _, arc_rows = self._build_travel_matrix(
                 scenario_id=BASELINE_SCENARIO_ID,
                 depot=depot,
                 stops=[
@@ -271,6 +286,43 @@ class SolverService:
             "route_stops": solution["route_stops"],
             "kpis": summarize_kpis(solution["routes"]),
         }
+
+    def _build_travel_matrix(
+        self,
+        *,
+        scenario_id: str,
+        depot: dict[str, object],
+        stops: list[dict[str, object]],
+        delivery_day: str,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        valhalla_url = get_valhalla_app_url()
+        if not valhalla_url:
+            return build_travel_matrix(
+                scenario_id=scenario_id,
+                depot=depot,
+                stops=stops,
+                delivery_day=delivery_day,
+            )
+        try:
+            return ValhallaMatrixClient(
+                valhalla_url,
+                costing=get_valhalla_costing(),
+            ).build_travel_matrix(
+                scenario_id=scenario_id,
+                depot=depot,
+                stops=stops,
+                delivery_day=delivery_day,
+            )
+        except ValhallaMatrixError:
+            if not allow_haversine_fallback():
+                raise
+            logger.exception("Valhalla failed; using explicitly enabled Haversine fallback")
+            return build_travel_matrix(
+                scenario_id=scenario_id,
+                depot=depot,
+                stops=stops,
+                delivery_day=delivery_day,
+            )
 
     def _solve_inputs(
         self,
@@ -378,3 +430,8 @@ def _first_prediction(response: object) -> dict[str, object]:
 
 
 solver_service = SolverService()
+
+
+def _matrix_source(rows: list[dict[str, object]]) -> str:
+    sources = {str(row.get("matrix_source", "")) for row in rows}
+    return sources.pop() if len(sources) == 1 else "haversine_circuity"

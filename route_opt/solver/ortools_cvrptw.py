@@ -7,8 +7,8 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
 from .diagnostics import solver_diagnostic
 from .problem import SolverProblem, build_solver_problem
-from ..baseline import build_route_from_ordered_stops
-from ..cost import CostParameters
+from ..baseline import _hhmm_to_minutes, _minutes_to_hhmm, build_route_from_ordered_stops
+from ..cost import CostParameters, route_cost
 from ..schemas import stable_id
 
 DROP_PENALTY = 10_000_000
@@ -234,11 +234,88 @@ def _extract_routes(
             params=params,
             vehicle_id=problem.vehicle_ids[vehicle_index],
             driver_id=stable_id("DRV", route_number),
+            capacity_cases=problem.vehicle_capacities[vehicle_index],
+        )
+        _apply_matrix_route_metrics(
+            route=route,
+            sequence_rows=sequence_rows,
+            ordered_node_indexes=ordered_node_indexes,
+            problem=problem,
+            params=params,
         )
         routes.append(route)
         route_stops.extend(sequence_rows)
         route_number += 1
     return routes, route_stops
+
+
+def _apply_matrix_route_metrics(
+    *,
+    route: dict[str, object],
+    sequence_rows: list[dict[str, object]],
+    ordered_node_indexes: list[int],
+    problem: SolverProblem,
+    params: CostParameters,
+) -> None:
+    """Make reported route timing and cost use the same directed arcs as optimization."""
+    route_nodes = [0, *ordered_node_indexes, 0]
+    total_miles = round(
+        sum(problem.distance_matrix[origin][destination] for origin, destination in zip(route_nodes, route_nodes[1:])),
+        2,
+    )
+    drive_minutes = sum(
+        problem.duration_matrix[origin][destination]
+        for origin, destination in zip(route_nodes, route_nodes[1:])
+    )
+
+    elapsed = problem.route_start_minutes
+    previous_node = 0
+    late_minutes = 0
+    missed_windows = 0
+    for node_index, stop_row in zip(ordered_node_indexes, sequence_rows):
+        elapsed += problem.duration_matrix[previous_node][node_index]
+        window_open = _hhmm_to_minutes(str(stop_row["time_window_start"]))
+        window_close = _hhmm_to_minutes(str(stop_row["time_window_end"]))
+        arrival = max(elapsed, window_open)
+        late = max(0, arrival - window_close)
+        departure = arrival + int(stop_row["service_minutes"])
+        stop_row.update(
+            {
+                "arrival_time": _minutes_to_hhmm(arrival),
+                "departure_time": _minutes_to_hhmm(departure),
+                "window_risk": "missed" if late > 0 else "none",
+                "late_minutes": late,
+            }
+        )
+        late_minutes += late
+        missed_windows += int(late > 0)
+        elapsed = departure
+        previous_node = node_index
+
+    service_minutes = sum(int(row["service_minutes"]) for row in sequence_rows)
+    route_minutes = drive_minutes + service_minutes
+    costs = route_cost(
+        miles=total_miles,
+        route_minutes=route_minutes,
+        late_stops=missed_windows,
+        params=params,
+    )
+    route.update(
+        {
+            "total_miles": total_miles,
+            "drive_minutes": drive_minutes,
+            "service_minutes": service_minutes,
+            "driver_utilization_pct": min(
+                100.0,
+                round(100 * max(route_minutes, 360) / params.overtime_threshold_minutes, 1),
+            ),
+            "overtime_minutes": int(costs["overtime_minutes"]),
+            "missed_windows": missed_windows,
+            "late_minutes": late_minutes,
+            "total_cost": float(costs["total_cost"]),
+            **{key: value for key, value in costs.items() if key.endswith("_cost")},
+        }
+    )
 
 
 def _extract_unassigned(

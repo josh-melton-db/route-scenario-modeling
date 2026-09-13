@@ -288,6 +288,70 @@ def test_route_solver_model_signature_includes_cost_parameters() -> None:
     assert dict(INPUT_SCHEMA)["cost_parameters"] == "string"
 
 
+def test_solver_reports_cost_and_timing_from_supplied_road_matrix() -> None:
+    scenario_id = "scn_matrix"
+    depot_id = "D1"
+    day = "Tuesday"
+    node_ids = [f"{depot_id}:DEPOT", "C1"]
+    distances = [[0.0, 10.0], [20.0, 0.0]]
+    durations = [[0, 15], [30, 0]]
+    matrix = [
+        {
+            "scenario_id": scenario_id,
+            "depot_id": depot_id,
+            "delivery_day": day,
+            "origin_id": node_ids[origin],
+            "destination_id": node_ids[destination],
+            "distance_miles": distances[origin][destination],
+            "duration_minutes": durations[origin][destination],
+        }
+        for origin in range(2)
+        for destination in range(2)
+    ]
+    solution = solve_scenario_partition(
+        scenario_id=scenario_id,
+        depot_id=depot_id,
+        delivery_day=day,
+        planning_depots=[{"depot_id": depot_id, "lat": 42.0, "lng": -83.0}],
+        planning_customers=[
+            {
+                "customer_id": "C1",
+                "lat": 42.1,
+                "lng": -83.1,
+                "customer_name": "Customer 1",
+                "service_minutes": 10,
+                "receiving_window_start": "06:30",
+                "receiving_window_end": "17:00",
+            }
+        ],
+        planning_fleet=[
+            {
+                "depot_id": depot_id,
+                "vehicle_id": "V1",
+                "available_days": day,
+                "capacity_cases": 100,
+                "max_route_minutes": 600,
+            }
+        ],
+        planning_stops=[
+            {
+                "customer_id": "C1",
+                "depot_id": depot_id,
+                "delivery_day": day,
+                "demand_cases": 10,
+                "route_date": "2026-07-07",
+            }
+        ],
+        travel_matrix=matrix,
+    )
+
+    route = solution["routes"][0]
+    assert route["total_miles"] == 30.0
+    assert route["drive_minutes"] == 45
+    assert route["capacity_cases"] == 100
+    assert route["mileage_cost"] == 90.0
+
+
 def test_solver_and_comparison_contracts_for_feasible_and_infeasible_scenarios() -> None:
     data = _generated()
     scenarios = {row["scenario_id"]: row for row in seed_scenario_definitions()}

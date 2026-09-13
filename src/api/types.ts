@@ -31,7 +31,7 @@ export type RunStatus =
 export type ConstraintSeverity = 'hard' | 'soft'
 export type ConstraintScope = 'route' | 'depot' | 'customer' | 'scenario'
 export type WindowRisk = 'none' | 'at_risk' | 'missed'
-export type MatrixSource = 'haversine_circuity'
+export type MatrixSource = 'haversine_circuity' | 'valhalla'
 export type ParameterFieldType =
   | 'number'
   | 'integer'

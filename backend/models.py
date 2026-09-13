@@ -36,7 +36,7 @@ RunStatus = Literal["queued", "running", "succeeded", "infeasible", "failed"]
 ConstraintSeverity = Literal["hard", "soft"]
 ConstraintScope = Literal["route", "depot", "customer", "scenario"]
 WindowRisk = Literal["none", "at_risk", "missed"]
-MatrixSource = Literal["haversine_circuity"]
+MatrixSource = Literal["haversine_circuity", "valhalla"]
 EditorEntityType = Literal[
     "orders",
     "customers",

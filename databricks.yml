@@ -49,6 +49,9 @@ variables:
   route_solver_endpoint_name:
     description: Databricks Model Serving endpoint used for interactive route solves
     default: route-solver
+  valhalla_app_name:
+    description: Databricks App providing the directed road travel matrix
+    default: valhalla-poc
   lakebase_project_id:
     description: Lakebase Autoscaling project for interactive scenario state
     default: route-scenario-modeling-lakebase
@@ -138,6 +141,12 @@ resources:
             value_from: lakebase
           - name: DATABRICKS_ROUTE_SOLVER_ENDPOINT
             value: ${var.route_solver_endpoint_name}
+          - name: VALHALLA_APP_URL
+            value_from: valhalla
+          - name: VALHALLA_COSTING
+            value: truck
+          - name: VALHALLA_ALLOW_HAVERSINE_FALLBACK
+            value: "false"
       resources:
         - name: lakebase
           postgres:
@@ -148,6 +157,10 @@ resources:
           serving_endpoint:
             name: ${var.route_solver_endpoint_name}
             permission: CAN_QUERY
+        - name: valhalla
+          app:
+            name: ${var.valhalla_app_name}
+            permission: CAN_USE
         - name: sql_warehouse
           sql_warehouse:
             id: ${resources.sql_warehouses.sql_warehouse.id}
