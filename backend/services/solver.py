@@ -14,6 +14,7 @@ from route_opt.matrix import build_travel_matrix
 from route_opt.overrides import apply_overrides, resolve_cost_override
 from route_opt.schemas import BASELINE_SCENARIO_ID
 from route_opt.solver.payload import OUTPUT_COLUMNS, make_input_row
+from route_opt.transportation import add_carrier_fallback, apply_operating_constraints
 
 from ..config import get_route_solver_endpoint, get_workspace_client
 from ..models import ComparisonResult, ScenarioDefinition
@@ -76,6 +77,7 @@ class SolverService:
         planning_depots = materialized["scenario_planning_depots"]
         planning_customers = materialized["scenario_planning_customers"]
         planning_fleet = materialized["scenario_planning_fleet"]
+        planning_fleet = apply_operating_constraints(planning_fleet, scenario.parameters)
         planning_stops = materialized["scenario_planning_stops"]
 
         travel_matrix: list[dict[str, object]] = []
@@ -176,6 +178,19 @@ class SolverService:
             planning_stops=inputs.planning_stops,
             travel_matrix=inputs.travel_matrix,
             cost_parameters=cost_payload,
+        )
+        scenario_depot = next(
+            row for row in inputs.planning_depots if row["depot_id"] == scenario.depot_id
+        )
+        add_carrier_fallback(
+            solution=solution,
+            scenario_id=scenario.scenario_id,
+            depot=scenario_depot,
+            customers=inputs.planning_customers,
+            planning_stops=inputs.planning_stops,
+            delivery_day=scenario.delivery_day,
+            parameters=scenario.parameters,
+            cost_parameters=inputs.cost_parameters,
         )
         baseline = self._optimized_baseline_result(scenario, inputs, cost_payload)
         return SolvedScenario(inputs=inputs, solution=solution, baseline=baseline)

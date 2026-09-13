@@ -3,6 +3,8 @@ import type {
   CostOverride,
   DraftScenarioChange,
   ValidationResponse,
+  OperatingConstraints,
+  TransportationChoices,
 } from '@/api/types'
 
 export interface ScenarioDraftState {
@@ -12,12 +14,16 @@ export interface ScenarioDraftState {
   changes: DraftScenarioChange[]
   costOverride: CostOverride
   costOverrideEnabled: boolean
+  operatingConstraints: OperatingConstraints
+  transportationChoices: TransportationChoices
   validation: ValidationResponse | null
   setScenarioName: (scenarioName: string) => void
   setDepotDay: (depotId: string, deliveryDay: string) => void
   setChanges: (changes: DraftScenarioChange[]) => void
   setCostOverride: (costOverride: CostOverride) => void
   setCostOverrideEnabled: (enabled: boolean) => void
+  setOperatingConstraints: (value: OperatingConstraints) => void
+  setTransportationChoices: (value: TransportationChoices) => void
   setValidation: (validation: ValidationResponse | null) => void
   buildParameters: () => Record<string, unknown>
   reset: () => void
@@ -31,6 +37,23 @@ const initialState = {
   costOverride: {} as CostOverride,
   costOverrideEnabled: false,
   validation: null as ValidationResponse | null,
+  operatingConstraints: {
+    private_vehicle_limit: 4,
+    max_route_minutes: 600,
+    max_stops_per_route: 8,
+    allow_overtime: true,
+  },
+  transportationChoices: {
+    allow_private_fleet: true,
+    allow_carrier: false,
+    carrier_name: 'Great Lakes Logistics',
+    contract_name: 'GL-Standard-2026',
+    carrier_capacity_stops: 12,
+    rate_per_mile: 4.25,
+    rate_per_stop: 45,
+    minimum_charge: 350,
+    fuel_surcharge_pct: 12,
+  },
 }
 
 function hasCostValues(cost: CostOverride): boolean {
@@ -61,11 +84,17 @@ export const useScenarioDraft = create<ScenarioDraftState>((set, get) => ({
       costOverride: costOverrideEnabled ? state.costOverride : {},
       validation: null,
     })),
+  setOperatingConstraints: (operatingConstraints) =>
+    set({ operatingConstraints, validation: null }),
+  setTransportationChoices: (transportationChoices) =>
+    set({ transportationChoices, validation: null }),
   setValidation: (validation) => set({ validation }),
   buildParameters: () => {
     const state = get()
     const parameters: Record<string, unknown> = {
       changes: state.changes.map(({ clientId: _clientId, ...change }) => change),
+      operating_constraints: state.operatingConstraints,
+      transportation_choices: state.transportationChoices,
     }
     if (state.costOverrideEnabled && hasCostValues(state.costOverride)) {
       parameters.cost = state.costOverride

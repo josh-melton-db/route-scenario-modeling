@@ -32,7 +32,14 @@ def validate_scenario_definition(
         changes = scenario.parameters.get("changes") or []
         if not isinstance(changes, list) or not changes:
             cost = scenario.parameters.get("cost")
-            if not isinstance(cost, dict) or not any(value is not None for value in cost.values()):
+            operating = scenario.parameters.get("operating_constraints")
+            transportation = scenario.parameters.get("transportation_choices")
+            has_cost = isinstance(cost, dict) and any(value is not None for value in cost.values())
+            has_operating = isinstance(operating, dict) and bool(operating)
+            has_transportation = isinstance(transportation, dict) and bool(
+                transportation.get("allow_carrier")
+            )
+            if not (has_cost or has_operating or has_transportation):
                 hard_constraints.append(
                     ValidationIssue(
                         field="changes",
@@ -41,7 +48,40 @@ def validate_scenario_definition(
                         message="Custom scenarios need at least one change or a cost override.",
                     )
                 )
-        else:
+        operating = scenario.parameters.get("operating_constraints")
+        if isinstance(operating, dict):
+            for field in ("private_vehicle_limit", "max_route_minutes", "max_stops_per_route"):
+                if float(operating.get(field, 0)) <= 0:
+                    hard_constraints.append(
+                        ValidationIssue(
+                            field=f"operating_constraints.{field}",
+                            scope="scenario",
+                            severity="hard",
+                            message=f"{field.replace('_', ' ').title()} must be greater than zero.",
+                        )
+                    )
+        transportation = scenario.parameters.get("transportation_choices")
+        if isinstance(transportation, dict) and transportation.get("allow_carrier"):
+            for field in ("carrier_name", "contract_name"):
+                if not transportation.get(field):
+                    hard_constraints.append(
+                        ValidationIssue(
+                            field=f"transportation_choices.{field}",
+                            scope="scenario",
+                            severity="hard",
+                            message=f"Carrier fallback requires {field.replace('_', ' ')}.",
+                        )
+                    )
+            if float(transportation.get("carrier_capacity_stops", 0)) <= 0:
+                hard_constraints.append(
+                    ValidationIssue(
+                        field="transportation_choices.carrier_capacity_stops",
+                        scope="scenario",
+                        severity="hard",
+                        message="Carrier fallback requires positive stop capacity.",
+                    )
+                )
+        if isinstance(changes, list) and changes:
             for index, change in enumerate(changes):
                 if not isinstance(change, dict):
                     hard_constraints.append(

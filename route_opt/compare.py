@@ -40,6 +40,9 @@ def kpi_deltas(
         "overtime_cost",
         "fixed_vehicle_cost",
         "sla_penalty_cost",
+        "carrier_linehaul_cost",
+        "carrier_stop_cost",
+        "fuel_surcharge_cost",
         "total_cost",
     ]
     return {
@@ -131,6 +134,10 @@ def compare_scenario(
 ) -> dict[str, object]:
     baseline_kpis = baseline_result["kpis"]
     scenario_routes = solution.get("routes", [])
+    for route in scenario_routes:
+        if route.get("fulfillment_method") != "carrier" and int(route.get("overtime_minutes", 0)) > 0:
+            route["fulfillment_method"] = "private_overtime"
+            route["decision_reason"] = "Assigned to private fleet using permitted overtime capacity."
     scenario_stops = solution.get("route_stops", [])
     violations = constraint_violations_from_solution(str(scenario["scenario_id"]), solution)
     if violations:
@@ -143,6 +150,38 @@ def compare_scenario(
         status = "succeeded"
     baseline_routes = baseline_result["routes"]
     baseline_stops = baseline_result["route_stops"]
+    impacts = customer_impacts(baseline_stops, scenario_stops)
+    routes_by_id = {str(route["route_id"]): route for route in scenario_routes}
+    for impact in impacts:
+        route = routes_by_id.get(str(impact.get("scenario_route_id")))
+        if route:
+            impact["fulfillment_method"] = route.get("fulfillment_method", "private_fleet")
+            impact["carrier_name"] = route.get("carrier_name")
+            impact["decision_reason"] = route.get("decision_reason")
+    unassigned = solution.get("unassigned_stops", [])
+    customer_names = {
+        str(row["customer_id"]): str(row["customer_name"]) for row in scenario_stops
+    }
+    allocations = _transportation_allocations(scenario_routes, unassigned)
+    decisions = [
+        {
+            "customer_id": str(stop["customer_id"]),
+            "customer_name": str(stop["customer_name"]),
+            "decision": str(route.get("fulfillment_method", "private_fleet")).replace("_", " ").title(),
+            "reason": str(route.get("decision_reason", "Assigned to available private-fleet capacity.")),
+        }
+        for route in scenario_routes
+        for stop in scenario_stops
+        if stop["route_id"] == route["route_id"] and route.get("fulfillment_method") == "carrier"
+    ] + [
+        {
+            "customer_id": str(row["customer_id"]),
+            "customer_name": customer_names.get(str(row["customer_id"]), str(row["customer_id"])),
+            "decision": "Unserved",
+            "reason": str(row.get("reason", "No feasible transportation capacity.")),
+        }
+        for row in unassigned
+    ]
     result = {
         "scenario_id": scenario["scenario_id"],
         "baseline_scenario_id": scenario["baseline_scenario_id"],
@@ -170,7 +209,41 @@ def compare_scenario(
         "baseline_kpis": baseline_kpis,
         "scenario_kpis": scenario_kpis,
         "kpi_deltas": deltas,
-        "customer_impacts": customer_impacts(baseline_stops, scenario_stops),
+        "customer_impacts": impacts,
         "constraint_violations": violations,
+        "transportation_allocation": allocations,
+        "decision_explanations": decisions,
     }
     return result
+
+
+def _transportation_allocations(
+    routes: list[dict[str, object]], unassigned: object
+) -> list[dict[str, object]]:
+    labels = {
+        "private_fleet": "Private fleet",
+        "private_overtime": "Private overtime",
+        "carrier": "Outsourced carrier",
+        "unserved": "Unserved",
+    }
+    rows: list[dict[str, object]] = []
+    for method in ("private_fleet", "private_overtime", "carrier"):
+        selected = [row for row in routes if row.get("fulfillment_method", "private_fleet") == method]
+        rows.append({
+            "fulfillment_method": method,
+            "label": labels[method],
+            "deliveries": sum(int(row.get("stop_count", 0)) for row in selected),
+            "cases": sum(int(row.get("total_cases", 0)) for row in selected),
+            "miles": round(sum(float(row.get("total_miles", 0)) for row in selected), 1),
+            "cost": round(sum(float(row.get("total_cost", 0)) for row in selected), 2),
+        })
+    dropped = unassigned if isinstance(unassigned, list) else []
+    rows.append({
+        "fulfillment_method": "unserved",
+        "label": labels["unserved"],
+        "deliveries": len(dropped),
+        "cases": 0,
+        "miles": 0.0,
+        "cost": 0.0,
+    })
+    return rows

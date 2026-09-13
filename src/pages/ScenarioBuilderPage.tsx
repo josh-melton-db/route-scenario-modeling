@@ -7,6 +7,7 @@ import DepotDayFilter from '@/components/DepotDayFilter'
 import ErrorState from '@/components/ErrorState'
 import ScenarioHistory from '@/components/ScenarioHistory'
 import ScenarioCombobox from '@/components/ScenarioCombobox'
+import TransportationOptionsPanel from '@/components/TransportationOptionsPanel'
 import {
   useBaselineNetwork,
   useCreateScenarioRun,
@@ -71,6 +72,14 @@ export default function ScenarioBuilderPage() {
     draft.setChanges(changes)
     draft.setCostOverride(costOverride)
     draft.setCostOverrideEnabled(Object.keys(costOverride).length > 0)
+    const operating = scenario.parameters.operating_constraints
+    if (operating && typeof operating === 'object' && !Array.isArray(operating)) {
+      draft.setOperatingConstraints({ ...draft.operatingConstraints, ...operating })
+    }
+    const transportation = scenario.parameters.transportation_choices
+    if (transportation && typeof transportation === 'object' && !Array.isArray(transportation)) {
+      draft.setTransportationChoices({ ...draft.transportationChoices, ...transportation })
+    }
     draft.setValidation(null)
   }
 
@@ -221,6 +230,12 @@ export default function ScenarioBuilderPage() {
                 onChangesChange={draft.setChanges}
                 onCostChange={draft.setCostOverride}
                 onCostEnabledChange={draft.setCostOverrideEnabled}
+              />
+              <TransportationOptionsPanel
+                constraints={draft.operatingConstraints}
+                choices={draft.transportationChoices}
+                onConstraintsChange={draft.setOperatingConstraints}
+                onChoicesChange={draft.setTransportationChoices}
               />
             </div>
             <div className="flex flex-col gap-4">

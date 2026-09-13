@@ -31,6 +31,7 @@ class SolverProblem:
     vehicle_capacities: list[int]
     vehicle_max_route_minutes: list[int]
     vehicle_fixed_costs: list[float]
+    vehicle_max_stops: list[int]
     route_start_minutes: int = DEFAULT_ROUTE_START_MINUTES
 
     @property
@@ -91,7 +92,10 @@ def build_solver_problem(
         service_minutes=[0, *[int(stop["service_minutes"]) for stop in stops]],
         window_starts=[DEFAULT_ROUTE_START_MINUTES, *[_hhmm_to_minutes(str(stop["receiving_window_start"])) for stop in stops]],
         window_ends=[
-            DEFAULT_ROUTE_START_MINUTES + max(_vehicle_max_route_minutes(vehicle, params) for vehicle in fleet),
+            DEFAULT_ROUTE_START_MINUTES + max(
+                [_vehicle_max_route_minutes(vehicle, params) for vehicle in fleet]
+                or [params.max_route_minutes]
+            ),
             *[_hhmm_to_minutes(str(stop["receiving_window_end"])) for stop in stops],
         ],
         hard_windows=[True, *[_has_hard_window(stop) for stop in stops]],
@@ -99,6 +103,7 @@ def build_solver_problem(
         vehicle_capacities=[int(row.get("capacity_cases", DEFAULT_CAPACITY_CASES)) for row in fleet],
         vehicle_max_route_minutes=[_vehicle_max_route_minutes(row, params) for row in fleet],
         vehicle_fixed_costs=[float(row.get("fixed_truck_daily_cost", params.fixed_truck_daily_cost)) for row in fleet],
+        vehicle_max_stops=[int(row.get("max_stops_per_route", 999)) for row in fleet],
     )
 
 

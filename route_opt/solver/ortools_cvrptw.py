@@ -82,6 +82,17 @@ def solve_scenario_partition(
         "Cases",
     )
 
+    stop_callback_index = routing.RegisterUnaryTransitCallback(
+        lambda from_index: 0 if manager.IndexToNode(from_index) == 0 else 1
+    )
+    routing.AddDimensionWithVehicleCapacity(
+        stop_callback_index,
+        0,
+        problem.vehicle_max_stops,
+        True,
+        "Stops",
+    )
+
     time_callback_index = routing.RegisterTransitCallback(
         lambda from_index, to_index: _transit_minutes(
             problem,

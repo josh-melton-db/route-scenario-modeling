@@ -19,6 +19,7 @@ from route_opt.overrides import (
 from route_opt.solver import solve_scenario_partition
 from route_opt.solver.payload import INPUT_SCHEMA, make_input_row
 from route_opt.synthetic import generate_all
+from route_opt.transportation import add_carrier_fallback, apply_operating_constraints
 
 
 def _generated():
@@ -208,6 +209,63 @@ def test_cost_parameter_merge_raises_mileage_cost() -> None:
     assert total_cost_is_consistent(raised_cost)
     assert raised.cost_per_mile == 4.5
     assert raised.labor_regular_hour == base.labor_regular_hour
+
+
+def test_private_capacity_overflow_can_use_contracted_carrier() -> None:
+    data = _generated()
+    scenario_id = "scn_carrier_overflow"
+    scenario = {
+        "scenario_id": scenario_id,
+        "scenario_type": "custom",
+        "depot_id": "DPT_NORTH",
+        "delivery_day": "Tuesday",
+    }
+    planning = apply_overrides(
+        scenario=scenario,
+        customers=data["location_data"],
+        depots=data["depot_master"],
+        fleet=data["fleet_assets"],
+        orders=data["fact_delivery_orders"],
+        override_tables={},
+    )
+    parameters = {
+        "operating_constraints": {
+            "private_vehicle_limit": 1,
+            "max_route_minutes": 600,
+            "max_stops_per_route": 6,
+        },
+        "transportation_choices": {
+            "allow_carrier": True,
+            "carrier_capacity_stops": 24,
+            "carrier_name": "Test Carrier",
+        },
+    }
+    fleet = apply_operating_constraints(planning["scenario_planning_fleet"], parameters)
+    solution = solve_scenario_partition(
+        scenario_id=scenario_id,
+        depot_id="DPT_NORTH",
+        delivery_day="Tuesday",
+        planning_depots=planning["scenario_planning_depots"],
+        planning_customers=planning["scenario_planning_customers"],
+        planning_fleet=fleet,
+        planning_stops=planning["scenario_planning_stops"],
+    )
+    assert solution["unassigned_stops"]
+    add_carrier_fallback(
+        solution=solution,
+        scenario_id=scenario_id,
+        depot=planning["scenario_planning_depots"][0],
+        customers=planning["scenario_planning_customers"],
+        planning_stops=planning["scenario_planning_stops"],
+        delivery_day="Tuesday",
+        parameters=parameters,
+        cost_parameters=CostParameters(),
+    )
+    carrier_routes = [row for row in solution["routes"] if row.get("fulfillment_method") == "carrier"]
+    assert carrier_routes
+    assert carrier_routes[0]["carrier_name"] == "Test Carrier"
+    assert carrier_routes[0]["carrier_linehaul_cost"] > 0
+    assert not solution["unassigned_stops"]
 
 
 def test_make_input_row_includes_cost_parameters() -> None:

@@ -238,6 +238,9 @@ function calculateKpiDeltas(baseline: Kpis, scenario: Kpis): KpiDeltas {
     overtime_cost: scenario.cost_breakdown.overtime_cost - baseline.cost_breakdown.overtime_cost,
     fixed_vehicle_cost: scenario.cost_breakdown.fixed_vehicle_cost - baseline.cost_breakdown.fixed_vehicle_cost,
     sla_penalty_cost: scenario.cost_breakdown.sla_penalty_cost - baseline.cost_breakdown.sla_penalty_cost,
+    carrier_linehaul_cost: (scenario.cost_breakdown.carrier_linehaul_cost ?? 0) - (baseline.cost_breakdown.carrier_linehaul_cost ?? 0),
+    carrier_stop_cost: (scenario.cost_breakdown.carrier_stop_cost ?? 0) - (baseline.cost_breakdown.carrier_stop_cost ?? 0),
+    fuel_surcharge_cost: (scenario.cost_breakdown.fuel_surcharge_cost ?? 0) - (baseline.cost_breakdown.fuel_surcharge_cost ?? 0),
     total_cost: scenario.cost_breakdown.total_cost - baseline.cost_breakdown.total_cost,
   }
 }

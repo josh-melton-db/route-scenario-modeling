@@ -19,6 +19,7 @@ interface PathDatum {
   route_name: string
   path: [number, number][]
   color: [number, number, number]
+  fulfillment_method: Route['fulfillment_method']
 }
 
 interface StopDatum extends Stop {
@@ -91,6 +92,7 @@ export default function MapView({
         route_name: route.route_name,
         path: route.path.map((point) => [point.lng, point.lat] as [number, number]),
         color: routeColor(index),
+        fulfillment_method: route.fulfillment_method,
       })),
     [routes],
   )
@@ -126,10 +128,10 @@ export default function MapView({
         id: 'route-paths',
         data: paths,
         getPath: (datum) => datum.path,
-        getColor: (datum) =>
-          isSelected(datum.route_id)
-            ? [...datum.color, 230]
-            : [...datum.color, 60],
+        getColor: (datum) => {
+          const color: [number, number, number] = datum.fulfillment_method === 'carrier' ? [249, 115, 22] : datum.color
+          return isSelected(datum.route_id) ? [...color, 230] as [number, number, number, number] : [...color, 60] as [number, number, number, number]
+        },
         widthMinPixels: 3,
         widthMaxPixels: 7,
         getWidth: (datum) => (isSelected(datum.route_id) ? 5 : 3),

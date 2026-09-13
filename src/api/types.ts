@@ -93,6 +93,10 @@ export interface Route {
   missed_windows: number
   late_minutes: number
   total_cost: number
+  fulfillment_method: 'private_fleet' | 'private_overtime' | 'carrier'
+  carrier_name: string | null
+  contract_name: string | null
+  decision_reason: string
 }
 
 export interface CostBreakdown {
@@ -101,6 +105,9 @@ export interface CostBreakdown {
   overtime_cost: number
   fixed_vehicle_cost: number
   sla_penalty_cost: number
+  carrier_linehaul_cost: number
+  carrier_stop_cost: number
+  fuel_surcharge_cost: number
   total_cost: number
 }
 
@@ -140,6 +147,9 @@ export interface KpiDeltas {
   overtime_cost: number
   fixed_vehicle_cost: number
   sla_penalty_cost: number
+  carrier_linehaul_cost: number
+  carrier_stop_cost: number
+  fuel_surcharge_cost: number
   total_cost: number
 }
 
@@ -158,6 +168,25 @@ export interface CustomerImpact {
   window_risk: WindowRisk
   disruption_score: number
   summary: string
+  fulfillment_method: 'private_fleet' | 'private_overtime' | 'carrier' | 'unserved'
+  carrier_name: string | null
+  decision_reason: string | null
+}
+
+export interface TransportationAllocation {
+  fulfillment_method: 'private_fleet' | 'private_overtime' | 'carrier' | 'unserved'
+  label: string
+  deliveries: number
+  cases: number
+  miles: number
+  cost: number
+}
+
+export interface DecisionExplanation {
+  customer_id: string
+  customer_name: string
+  decision: string
+  reason: string
 }
 
 export interface ConstraintViolation {
@@ -377,6 +406,27 @@ export interface ComparisonResult {
   kpi_deltas: KpiDeltas | null
   customer_impacts: CustomerImpact[]
   constraint_violations: ConstraintViolation[]
+  transportation_allocation: TransportationAllocation[]
+  decision_explanations: DecisionExplanation[]
+}
+
+export interface OperatingConstraints {
+  private_vehicle_limit: number
+  max_route_minutes: number
+  max_stops_per_route: number
+  allow_overtime: boolean
+}
+
+export interface TransportationChoices {
+  allow_private_fleet: boolean
+  allow_carrier: boolean
+  carrier_name: string
+  contract_name: string
+  carrier_capacity_stops: number
+  rate_per_mile: number
+  rate_per_stop: number
+  minimum_charge: number
+  fuel_surcharge_pct: number
 }
 
 export type EditorEntityType =

@@ -109,6 +109,10 @@ class Route(StrictModel):
     missed_windows: int
     late_minutes: int
     total_cost: float
+    fulfillment_method: Literal["private_fleet", "private_overtime", "carrier"] = "private_fleet"
+    carrier_name: str | None = None
+    contract_name: str | None = None
+    decision_reason: str = "Assigned to available private-fleet capacity."
 
 
 class CostBreakdown(StrictModel):
@@ -117,6 +121,9 @@ class CostBreakdown(StrictModel):
     overtime_cost: float
     fixed_vehicle_cost: float
     sla_penalty_cost: float
+    carrier_linehaul_cost: float = 0
+    carrier_stop_cost: float = 0
+    fuel_surcharge_cost: float = 0
     total_cost: float
 
 
@@ -156,6 +163,9 @@ class KpiDeltas(StrictModel):
     overtime_cost: float
     fixed_vehicle_cost: float
     sla_penalty_cost: float
+    carrier_linehaul_cost: float = 0
+    carrier_stop_cost: float = 0
+    fuel_surcharge_cost: float = 0
     total_cost: float
 
 
@@ -174,6 +184,25 @@ class CustomerImpact(StrictModel):
     window_risk: WindowRisk
     disruption_score: float
     summary: str
+    fulfillment_method: Literal["private_fleet", "private_overtime", "carrier", "unserved"] = "private_fleet"
+    carrier_name: str | None = None
+    decision_reason: str | None = None
+
+
+class TransportationAllocation(StrictModel):
+    fulfillment_method: Literal["private_fleet", "private_overtime", "carrier", "unserved"]
+    label: str
+    deliveries: int
+    cases: int
+    miles: float
+    cost: float
+
+
+class DecisionExplanation(StrictModel):
+    customer_id: str
+    customer_name: str
+    decision: str
+    reason: str
 
 
 class ConstraintViolation(StrictModel):
@@ -368,6 +397,8 @@ class ComparisonResult(StrictModel):
     kpi_deltas: KpiDeltas | None
     customer_impacts: list[CustomerImpact]
     constraint_violations: list[ConstraintViolation]
+    transportation_allocation: list[TransportationAllocation] = Field(default_factory=list)
+    decision_explanations: list[DecisionExplanation] = Field(default_factory=list)
 
 
 class EditorSession(StrictModel):
