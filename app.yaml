@@ -27,4 +27,4 @@ env:
   - name: VALHALLA_COSTING
     value: truck
   - name: VALHALLA_ALLOW_HAVERSINE_FALLBACK
-    value: "false"
+    value: "true"

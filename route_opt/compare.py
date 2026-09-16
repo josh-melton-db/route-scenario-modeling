@@ -35,6 +35,8 @@ def kpi_deltas(
         "overtime_minutes",
         "missed_windows",
         "late_minutes",
+        "total_revenue",
+        "profit",
         "mileage_cost",
         "labor_cost",
         "overtime_cost",

@@ -144,6 +144,16 @@ export const dataEditorTables: Record<EditorEntityType, EditorTableDefinition> =
       { key: 'active', label: 'Active', input: 'text', required: true },
     ],
   },
+  revenue_parameters: {
+    label: 'Revenue parameters',
+    singularLabel: 'revenue parameter',
+    description: 'Revenue earned per delivered case, by product family.',
+    columns: [
+      { key: 'product_family', label: 'Product family', input: 'text', required: true },
+      { key: 'revenue_per_case', label: 'Revenue / case', input: 'number', required: true, step: '0.01' },
+      { key: 'active', label: 'Active', input: 'text', required: true },
+    ],
+  },
 }
 
 type DraftRow = Record<string, string>

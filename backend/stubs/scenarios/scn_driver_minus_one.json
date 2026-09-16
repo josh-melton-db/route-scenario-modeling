@@ -28,6 +28,8 @@
     "overtime_minutes": 118,
     "missed_windows": 0,
     "late_minutes": 0,
+    "total_revenue": 17750,
+    "profit": 12944,
     "cost_breakdown": {
       "mileage_cost": 903,
       "labor_cost": 2470,
@@ -51,6 +53,8 @@
     "overtime_minutes": 83,
     "missed_windows": 0,
     "late_minutes": 0,
+    "total_revenue": 0,
+    "profit": 114,
     "mileage_cost": 45,
     "labor_cost": -110,
     "overtime_cost": 291,

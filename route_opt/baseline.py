@@ -219,6 +219,8 @@ def summarize_kpis(routes: list[dict[str, object]]) -> dict[str, object]:
             "overtime_minutes": 0,
             "missed_windows": 0,
             "late_minutes": 0,
+            "total_revenue": 0.0,
+            "profit": 0.0,
             "cost_breakdown": {
                 "mileage_cost": 0.0,
                 "labor_cost": 0.0,
@@ -243,6 +245,8 @@ def summarize_kpis(routes: list[dict[str, object]]) -> dict[str, object]:
         "total_cost",
     ]
     route_count = len(routes)
+    total_revenue = round(sum(float(row.get("total_revenue", 0)) for row in routes), 2)
+    total_cost = round(sum(float(row.get("total_cost", 0)) for row in routes), 2)
     return {
         "route_count": route_count,
         "driver_count": len({row["driver_id"] for row in routes}),
@@ -257,6 +261,8 @@ def summarize_kpis(routes: list[dict[str, object]]) -> dict[str, object]:
         "overtime_minutes": sum(int(row["overtime_minutes"]) for row in routes),
         "missed_windows": sum(int(row["missed_windows"]) for row in routes),
         "late_minutes": sum(int(row["late_minutes"]) for row in routes),
+        "total_revenue": total_revenue,
+        "profit": round(total_revenue - total_cost, 2),
         "cost_breakdown": {
             key: round(sum(float(row.get(key, 0)) for row in routes), 2)
             for key in cost_keys
@@ -273,6 +279,7 @@ def reconstruct_baseline(
     delivery_day: str = "Tuesday",
     params: CostParameters | None = None,
     scenario_id: str = BASELINE_SCENARIO_ID,
+    revenue_parameters: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     params = params or CostParameters()
     depot = next(row for row in depots if row["depot_id"] == depot_id)
@@ -296,6 +303,26 @@ def reconstruct_baseline(
         )
         routes.append(route)
         route_stops.extend(sequence_rows)
+    rates = {
+        str(row["product_family"]): float(row["revenue_per_case"])
+        for row in (revenue_parameters or [])
+        if bool(row.get("active", True))
+    }
+    default_rate = rates.get("cartons", next(iter(rates.values()), 0.0))
+    family_by_customer = {
+        str(order["customer_id"]): str(order.get("product_family") or "cartons")
+        for order in orders
+        if order["depot_id"] == depot_id and order["delivery_day"] == delivery_day
+    }
+    route_by_id = {str(route["route_id"]): route for route in routes}
+    for stop in route_stops:
+        route = route_by_id[str(stop["route_id"])]
+        family = family_by_customer.get(str(stop["customer_id"]), "cartons")
+        route["total_revenue"] = float(route.get("total_revenue", 0)) + (
+            int(stop["demand_cases"]) * rates.get(family, default_rate)
+        )
+    for route in routes:
+        route["total_revenue"] = round(float(route.get("total_revenue", 0)), 2)
     kpis = summarize_kpis(routes)
     return {
         "network": {

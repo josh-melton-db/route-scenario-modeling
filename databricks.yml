@@ -51,7 +51,7 @@ variables:
     default: route-solver
   valhalla_app_name:
     description: Databricks App providing the directed road travel matrix
-    default: valhalla-poc
+    default: valhalla-api-poc
   lakebase_project_id:
     description: Lakebase Autoscaling project for interactive scenario state
     default: route-scenario-modeling-lakebase
@@ -146,7 +146,7 @@ resources:
           - name: VALHALLA_COSTING
             value: truck
           - name: VALHALLA_ALLOW_HAVERSINE_FALLBACK
-            value: "false"
+            value: "true"
       resources:
         - name: lakebase
           postgres:

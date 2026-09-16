@@ -234,4 +234,7 @@ def generate_all(seed: int = 42, customer_count: int = 250) -> dict[str, list[di
         "fact_customer_product_demand": demand,
         "fact_delivery_orders": orders,
         "cost_parameters": [CostParameters().as_row(GENERATED_RUN_ID)],
+        "revenue_parameters": [
+            {"product_family": "cartons", "revenue_per_case": 6.25, "active": True}
+        ],
     }

@@ -16,6 +16,7 @@ const LOWER_IS_BETTER = new Set([
 
 export function deltaTone(metric: string, value: number): DeltaTone {
   if (value === 0) return 'neutral'
+  if (metric === 'total_revenue' || metric === 'profit') return value > 0 ? 'good' : 'bad'
   if (!LOWER_IS_BETTER.has(metric)) return 'neutral'
   return value < 0 ? 'good' : 'bad'
 }

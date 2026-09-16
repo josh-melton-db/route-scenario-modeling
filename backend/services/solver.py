@@ -58,6 +58,7 @@ class ScenarioInputs:
     carriers: list[dict[str, object]]
     carrier_contracts: list[dict[str, object]]
     operating_parameters: list[dict[str, object]]
+    revenue_parameters: list[dict[str, object]]
     override_tables: dict[str, list[dict[str, object]]]
 
 
@@ -137,6 +138,7 @@ class SolverService:
             carriers=base.get("carriers") or [],
             carrier_contracts=base.get("carrier_contracts") or [],
             operating_parameters=operating_parameters,
+            revenue_parameters=base.get("revenue_parameters") or [],
             override_tables=override_tables,
         )
 
@@ -223,7 +225,20 @@ class SolverService:
             parameters=resolved_parameters,
             cost_parameters=inputs.cost_parameters,
         )
+        _apply_route_revenue(
+            solution,
+            inputs.orders,
+            inputs.revenue_parameters,
+            scenario.delivery_day,
+        )
         baseline = self._optimized_baseline_result(scenario, inputs, cost_payload)
+        _apply_route_revenue(
+            baseline,
+            inputs.orders,
+            inputs.revenue_parameters,
+            scenario.delivery_day,
+        )
+        baseline["kpis"] = summarize_kpis(baseline.get("routes", []))  # type: ignore[arg-type]
         return SolvedScenario(inputs=inputs, solution=solution, baseline=baseline)
 
     def compare_prepared_scenario(
@@ -447,6 +462,39 @@ def _first_prediction(response: object) -> dict[str, object]:
 
 
 solver_service = SolverService()
+
+
+def _apply_route_revenue(
+    result: dict[str, object],
+    orders: list[dict[str, object]],
+    revenue_parameters: list[dict[str, object]],
+    delivery_day: str,
+) -> None:
+    """Attach revenue to routes from editable per-case product-family rates."""
+    rates = {
+        str(row["product_family"]): float(row["revenue_per_case"])
+        for row in revenue_parameters
+        if bool(row.get("active", True))
+    }
+    default_rate = rates.get("cartons", next(iter(rates.values()), 0.0))
+    family_by_customer = {
+        str(row["customer_id"]): str(row.get("product_family") or "cartons")
+        for row in orders
+        if str(row.get("delivery_day")) == delivery_day
+    }
+    stops_by_route: dict[str, list[dict[str, object]]] = {}
+    for stop in result.get("route_stops", []):  # type: ignore[union-attr]
+        stops_by_route.setdefault(str(stop["route_id"]), []).append(stop)
+    for route in result.get("routes", []):  # type: ignore[union-attr]
+        revenue = sum(
+            int(stop.get("demand_cases", 0))
+            * rates.get(family_by_customer.get(str(stop["customer_id"]), "cartons"), default_rate)
+            for stop in stops_by_route.get(str(route["route_id"]), [])
+        )
+        # Carrier fallback stops are included above; this fallback protects older solver payloads.
+        if not stops_by_route.get(str(route["route_id"])):
+            revenue = int(route.get("total_cases", 0)) * default_rate
+        route["total_revenue"] = round(revenue, 2)
 
 
 def _matrix_source(rows: list[dict[str, object]]) -> str:

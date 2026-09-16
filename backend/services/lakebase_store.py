@@ -542,6 +542,7 @@ class LakebaseStore:
             "carriers": ("carriers", "carrier_id"),
             "carrier_contracts": ("carrier_contracts", "contract_id"),
             "operating_parameters": ("operating_parameters", "parameter_set_id"),
+            "revenue_parameters": ("revenue_parameters", "product_family"),
         }
         return {
             key: [
@@ -632,11 +633,11 @@ class LakebaseStore:
                         scenario_id, scenario_type, depot_id, delivery_day, route_count, driver_count,
                         vehicle_count, total_miles, drive_minutes, service_minutes, total_cases,
                         avg_stops_per_route, avg_capacity_utilization_pct, avg_driver_utilization_pct,
-                        overtime_minutes, missed_windows, late_minutes, mileage_cost, labor_cost,
+                        overtime_minutes, missed_windows, late_minutes, total_revenue, profit, mileage_cost, labor_cost,
                         overtime_cost, fixed_vehicle_cost, sla_penalty_cost, total_cost
                     ) VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                     """,
                     (
@@ -657,6 +658,8 @@ class LakebaseStore:
                         kpis["overtime_minutes"],
                         kpis["missed_windows"],
                         kpis["late_minutes"],
+                        kpis["total_revenue"],
+                        kpis["profit"],
                         cost_breakdown["mileage_cost"],
                         cost_breakdown["labor_cost"],
                         cost_breakdown["overtime_cost"],

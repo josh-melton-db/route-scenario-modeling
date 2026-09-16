@@ -3,7 +3,7 @@ import DeckGL from '@deck.gl/react'
 import { IconLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers'
 import { Map as MapLibreMap } from 'react-map-gl/maplibre'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import type { DeliveryDraft, Depot, Route, Stop } from '@/api/types'
+import type { DeliveryDraft, Depot, LatLng, Route, Stop } from '@/api/types'
 import { routeColor } from '@/lib/routeColors'
 
 interface ViewState {
@@ -44,6 +44,8 @@ interface MapViewProps {
   selectedDraftIndex?: number | null
   onMapClick?: (lngLat: { lat: number; lng: number }) => void
   onSelectDraftStop?: (index: number | null) => void
+  proposedDepotLocation?: LatLng | null
+  editInstruction?: string
 }
 
 function initialView(depot: Depot, routes: Route[], draftStops: DeliveryDraft[]): ViewState {
@@ -77,6 +79,8 @@ export default function MapView({
   selectedDraftIndex = null,
   onMapClick,
   onSelectDraftStop,
+  proposedDepotLocation = null,
+  editInstruction = 'Click the map to drop a delivery pin',
 }: MapViewProps) {
   const fallbackInitialView = useMemo(
     () => initialView(depot, routes, draftStops),
@@ -210,14 +214,36 @@ export default function MapView({
           getRadius: [selectedDraftIndex],
         },
       }),
+      ...(proposedDepotLocation
+        ? [
+            new IconLayer<LatLng>({
+              id: 'proposed-depot',
+              data: [proposedDepotLocation],
+              getPosition: (datum) => [datum.lng, datum.lat],
+              getIcon: () => ({
+                url:
+                  'data:image/svg+xml;utf8,' +
+                  encodeURIComponent(
+                    `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" fill="hsl(45 93% 47%)"/><path d="M3 21h18"/><path d="M6 21V9l6-4 6 4v12"/><path d="M9 21v-6h6v6"/></svg>`,
+                  ),
+                width: 48,
+                height: 48,
+                anchorY: 24,
+              }),
+              sizeUnits: 'pixels',
+              getSize: 38,
+              pickable: true,
+            }),
+          ]
+        : []),
     ]
-  }, [depot, draftData, editable, paths, selectedDraftIndex, selectedRouteId, stops])
+  }, [depot, draftData, editable, paths, proposedDepotLocation, selectedDraftIndex, selectedRouteId, stops])
 
   return (
     <div className="relative h-full w-full overflow-hidden rounded-lg border border-border bg-card">
       {editable && (
         <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-md border border-border/70 bg-background/80 px-2 py-1 text-[11px] text-muted-foreground backdrop-blur">
-          Click the map to drop a delivery pin
+          {editInstruction}
         </div>
       )}
       <DeckGL
@@ -277,6 +303,12 @@ export default function MapView({
                 <div style="font-weight:600">${draft.customer_name}</div>
                 <div style="font-size:11px;opacity:0.8">${draft.demand_cases} cases · ${draft.lat.toFixed(4)}, ${draft.lng.toFixed(4)}</div>
               </div>`,
+              style: { backgroundColor: 'transparent', padding: '0' },
+            }
+          }
+          if ('lat' in object && 'lng' in object && proposedDepotLocation) {
+            return {
+              html: `<div class="deck-tooltip"><strong>Proposed distribution center</strong><div style="font-size:11px;opacity:0.8">${proposedDepotLocation.lat.toFixed(4)}, ${proposedDepotLocation.lng.toFixed(4)}</div></div>`,
               style: { backgroundColor: 'transparent', padding: '0' },
             }
           }

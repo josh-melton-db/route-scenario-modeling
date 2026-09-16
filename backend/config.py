@@ -58,7 +58,15 @@ def get_route_solver_endpoint() -> str:
 
 def get_valhalla_app_url() -> str | None:
     value = os.getenv("VALHALLA_APP_URL", "").strip()
-    return value.rstrip("/") or None
+    if not value:
+        return None
+    if value.startswith(("http://", "https://")):
+        return value.rstrip("/")
+    app = get_workspace_client().apps.get(name=value)
+    resolved = str(app.url or "").strip()
+    if not resolved.startswith(("http://", "https://")):
+        raise RuntimeError(f"Databricks app {value!r} did not return a valid HTTPS URL.")
+    return resolved.rstrip("/")
 
 
 def get_valhalla_costing() -> str:

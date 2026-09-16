@@ -233,6 +233,8 @@ function calculateKpiDeltas(baseline: Kpis, scenario: Kpis): KpiDeltas {
     overtime_minutes: scenario.overtime_minutes - baseline.overtime_minutes,
     missed_windows: scenario.missed_windows - baseline.missed_windows,
     late_minutes: scenario.late_minutes - baseline.late_minutes,
+    total_revenue: scenario.total_revenue - baseline.total_revenue,
+    profit: scenario.profit - baseline.profit,
     mileage_cost: scenario.cost_breakdown.mileage_cost - baseline.cost_breakdown.mileage_cost,
     labor_cost: scenario.cost_breakdown.labor_cost - baseline.cost_breakdown.labor_cost,
     overtime_cost: scenario.cost_breakdown.overtime_cost - baseline.cost_breakdown.overtime_cost,

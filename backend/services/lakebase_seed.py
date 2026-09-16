@@ -140,6 +140,7 @@ class LakebaseSeedService:
         fleet = dataset["fleet_assets"]
         orders = dataset["fact_delivery_orders"]
         costs = dataset["cost_parameters"]
+        revenue_parameters = dataset.get("revenue_parameters", [])
         self._assert_unique(depots, "depot_id", "depots")
         self._assert_unique(customers, "customer_id", "customers")
         self._assert_unique(fleet, "vehicle_id", "fleet")
@@ -590,6 +591,7 @@ class LakebaseSeedService:
                     depot_id=depot_id,
                     delivery_day=delivery_day,
                     params=params,
+                    revenue_parameters=revenue_parameters,
                 )
                 self.postgres.execute(
                     f"""

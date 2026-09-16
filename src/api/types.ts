@@ -162,6 +162,8 @@ export interface Kpis {
   overtime_minutes: number
   missed_windows: number
   late_minutes: number
+  total_revenue: number
+  profit: number
   cost_breakdown: CostBreakdown
 }
 
@@ -179,6 +181,8 @@ export interface KpiDeltas {
   overtime_minutes: number
   missed_windows: number
   late_minutes: number
+  total_revenue: number
+  profit: number
   mileage_cost: number
   labor_cost: number
   overtime_cost: number
@@ -471,6 +475,7 @@ export type EditorEntityType =
   | 'carriers'
   | 'carrier_contracts'
   | 'operating_parameters'
+  | 'revenue_parameters'
 
 export type EditorSessionStatus =
   | 'open'

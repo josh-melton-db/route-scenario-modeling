@@ -6,7 +6,7 @@ from typing import Iterable
 
 from .postgres import PostgresService
 
-MIGRATION_VERSION = "2026_09_13_operating_parameter_sets_v4"
+MIGRATION_VERSION = "2026_09_13_revenue_parameters_v5"
 
 
 def _statements(postgres: PostgresService) -> Iterable[str]:
@@ -163,6 +163,20 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("revenue_parameters")} (
+            product_family TEXT PRIMARY KEY,
+            revenue_per_case DOUBLE PRECISION NOT NULL CHECK (revenue_per_case >= 0),
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            row_version INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    yield f"""INSERT INTO {table("revenue_parameters")} (product_family, revenue_per_case)
+        VALUES ('cartons', 6.25)
+        ON CONFLICT (product_family) DO NOTHING
+    """
     yield f"""INSERT INTO {table("carriers")} (carrier_id, carrier_name) VALUES
         ('GL_LOGISTICS', 'Great Lakes Logistics'),
         ('MIDWEST_EXPRESS', 'Midwest Express')
@@ -313,6 +327,8 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             overtime_minutes INTEGER NOT NULL,
             missed_windows INTEGER NOT NULL,
             late_minutes INTEGER NOT NULL,
+            total_revenue DOUBLE PRECISION NOT NULL DEFAULT 0,
+            profit DOUBLE PRECISION NOT NULL DEFAULT 0,
             mileage_cost DOUBLE PRECISION NOT NULL,
             labor_cost DOUBLE PRECISION NOT NULL,
             overtime_cost DOUBLE PRECISION NOT NULL,
@@ -392,10 +408,12 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
         )
     """
     yield f"ALTER TABLE {table('solve_runs')} ADD COLUMN IF NOT EXISTS validation_payload JSONB"
+    yield f"ALTER TABLE {table('scenario_kpis')} ADD COLUMN IF NOT EXISTS total_revenue DOUBLE PRECISION NOT NULL DEFAULT 0"
+    yield f"ALTER TABLE {table('scenario_kpis')} ADD COLUMN IF NOT EXISTS profit DOUBLE PRECISION NOT NULL DEFAULT 0"
     yield f"ALTER TABLE {table('solve_runs')} ADD COLUMN IF NOT EXISTS create_duration_ms INTEGER"
     yield f"ALTER TABLE {table('solve_runs')} ADD COLUMN IF NOT EXISTS worker_id TEXT"
     yield f"ALTER TABLE {table('solve_runs')} ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ"
-    for table_name in ("depots", "customers", "fleet", "orders", "cost_parameters", "carriers", "carrier_contracts", "operating_parameters"):
+    for table_name in ("depots", "customers", "fleet", "orders", "cost_parameters", "carriers", "carrier_contracts", "operating_parameters", "revenue_parameters"):
         yield f"ALTER TABLE {table(table_name)} ADD COLUMN IF NOT EXISTS row_version INTEGER NOT NULL DEFAULT 1"
     yield f"""
         CREATE TABLE IF NOT EXISTS {table("editor_sessions")} (

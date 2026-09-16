@@ -3,6 +3,7 @@ import { Plus, Trash2 } from 'lucide-react'
 import CostParameterForm from '@/components/CostParameterForm'
 import DeliveryMapEditor from '@/components/DeliveryMapEditor'
 import DeliveryUploadPanel from '@/components/DeliveryUploadPanel'
+import FacilityMapEditor from '@/components/FacilityMapEditor'
 import type {
   CostOverride,
   CostParameterSet,
@@ -34,7 +35,7 @@ const CHANGE_OPTIONS: Array<{ kind: ScenarioChangeKind; label: string }> = [
   { kind: 'add_deliveries', label: 'Add deliveries (map / upload)' },
   { kind: 'driver_count_change', label: 'Driver / truck count change' },
   { kind: 'delivery_frequency_day_change', label: 'Delivery day change' },
-  { kind: 'facility_move', label: 'Facility / warehouse move' },
+  { kind: 'facility_move', label: 'Move / add distribution center' },
 ]
 
 let nextClientId = 0
@@ -287,42 +288,24 @@ export default function CustomScenarioBuilder({
             </div>
           )}
 
-          {change.kind === 'facility_move' && (
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="flex flex-col gap-1.5 text-sm">
-                <span className="font-medium">New depot lat</span>
-                <input
-                  type="number"
-                  step={0.0001}
-                  value={change.new_depot_location?.lat ?? depotLocation.lat}
-                  onChange={(event) =>
-                    updateChange(change.clientId, {
-                      new_depot_location: {
-                        lat: Number.parseFloat(event.target.value),
-                        lng: change.new_depot_location?.lng ?? depotLocation.lng,
-                      },
-                    })
-                  }
-                  className="rounded-md border border-border bg-background px-3 py-2"
-                />
-              </label>
-              <label className="flex flex-col gap-1.5 text-sm">
-                <span className="font-medium">New depot lng</span>
-                <input
-                  type="number"
-                  step={0.0001}
-                  value={change.new_depot_location?.lng ?? depotLocation.lng}
-                  onChange={(event) =>
-                    updateChange(change.clientId, {
-                      new_depot_location: {
-                        lat: change.new_depot_location?.lat ?? depotLocation.lat,
-                        lng: Number.parseFloat(event.target.value),
-                      },
-                    })
-                  }
-                  className="rounded-md border border-border bg-background px-3 py-2"
-                />
-              </label>
+          {change.kind === 'facility_move' && depot && (
+            <FacilityMapEditor
+              depot={depot}
+              baselineRoutes={baselineRoutes}
+              location={change.new_depot_location ?? depotLocation}
+              preserveServiceWindows={change.preserve_service_windows ?? true}
+              onLocationChange={(new_depot_location) =>
+                updateChange(change.clientId, { new_depot_location })
+              }
+              onPreserveServiceWindowsChange={(preserve_service_windows) =>
+                updateChange(change.clientId, { preserve_service_windows })
+              }
+            />
+          )}
+
+          {change.kind === 'facility_move' && !depot && (
+            <div className="text-sm text-muted-foreground">
+              Loading distribution center map…
             </div>
           )}
         </div>

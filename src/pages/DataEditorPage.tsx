@@ -42,6 +42,7 @@ const editorEntities: EditorEntityType[] = [
   'carriers',
   'carrier_contracts',
   'operating_parameters',
+  'revenue_parameters',
 ]
 
 function messageFor(error: unknown): string {

@@ -46,6 +46,7 @@ EditorEntityType = Literal[
     "carriers",
     "carrier_contracts",
     "operating_parameters",
+    "revenue_parameters",
 ]
 EditorSessionStatus = Literal["open", "committed", "discarded", "expired"]
 EditorRowState = Literal["unchanged", "inserted", "updated"]
@@ -115,6 +116,12 @@ class CostParameterSet(StrictModel):
     missed_delivery_penalty: float
     avg_speed_mph: float
     circuity: float
+
+
+class RevenueParameterSet(StrictModel):
+    product_family: str
+    revenue_per_case: float
+    active: bool = True
 
 
 class Stop(StrictModel):
@@ -188,6 +195,8 @@ class Kpis(StrictModel):
     overtime_minutes: int
     missed_windows: int
     late_minutes: int
+    total_revenue: float = 0
+    profit: float = 0
     cost_breakdown: CostBreakdown
 
 
@@ -205,6 +214,8 @@ class KpiDeltas(StrictModel):
     overtime_minutes: int
     missed_windows: int
     late_minutes: int
+    total_revenue: float = 0
+    profit: float = 0
     mileage_cost: float
     labor_cost: float
     overtime_cost: float

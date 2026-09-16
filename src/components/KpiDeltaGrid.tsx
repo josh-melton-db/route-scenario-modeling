@@ -18,8 +18,8 @@ interface MetricConfig {
 
 const metrics: MetricConfig[] = [
   { key: 'route_count', label: 'Routes', value: (k) => formatNumber(k.route_count) },
-  { key: 'driver_count', label: 'Drivers', value: (k) => formatNumber(k.driver_count) },
-  { key: 'vehicle_count', label: 'Vehicles', value: (k) => formatNumber(k.vehicle_count) },
+  { key: 'total_revenue', label: 'Revenue', value: (k) => formatCurrency(k.total_revenue) },
+  { key: 'profit', label: 'Profit', value: (k) => formatCurrency(k.profit) },
   { key: 'total_miles', label: 'Total miles', value: (k) => formatNumber(k.total_miles, 1), deltaSuffix: ' mi' },
   { key: 'drive_minutes', label: 'Drive time', value: (k) => formatMinutes(k.drive_minutes), deltaSuffix: 'm' },
   { key: 'service_minutes', label: 'Service time', value: (k) => formatMinutes(k.service_minutes), deltaSuffix: 'm' },

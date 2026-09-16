@@ -54,6 +54,7 @@ _ENTITY_TYPES: tuple[EditorEntityType, ...] = (
     "carriers",
     "carrier_contracts",
     "operating_parameters",
+    "revenue_parameters",
 )
 _DELETE_PROMOTION_ORDER: tuple[EditorEntityType, ...] = (
     "carrier_contracts",
@@ -64,6 +65,7 @@ _DELETE_PROMOTION_ORDER: tuple[EditorEntityType, ...] = (
     "cost_parameters",
     "carriers",
     "operating_parameters",
+    "revenue_parameters",
 )
 _WRITE_PROMOTION_ORDER: tuple[EditorEntityType, ...] = (
     "carriers",
@@ -74,6 +76,7 @@ _WRITE_PROMOTION_ORDER: tuple[EditorEntityType, ...] = (
     "orders",
     "carrier_contracts",
     "operating_parameters",
+    "revenue_parameters",
 )
 _TIME_PATTERN = re.compile(r"^(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)$")
 
@@ -167,6 +170,12 @@ class _OperatingParametersInput(StrictModel):
     max_route_minutes: int
     max_stops_per_route: int
     allow_overtime: bool = True
+    active: bool = True
+
+
+class _RevenueParametersInput(StrictModel):
+    product_family: str
+    revenue_per_case: float
     active: bool = True
 
 
@@ -305,6 +314,14 @@ _ENTITY_SPECS: dict[EditorEntityType, _EntitySpec] = {
         columns=("parameter_set_id", "parameter_set_name", "private_vehicle_limit", "max_route_minutes", "max_stops_per_route", "allow_overtime", "active"),
         model=_OperatingParametersInput,
         required_text_fields=("parameter_set_id", "parameter_set_name"),
+    ),
+    "revenue_parameters": _EntitySpec(
+        entity_type="revenue_parameters",
+        table_name="revenue_parameters",
+        id_column="product_family",
+        columns=("product_family", "revenue_per_case", "active"),
+        model=_RevenueParametersInput,
+        required_text_fields=("product_family",),
     ),
 }
 
@@ -1280,6 +1297,7 @@ class GroundTruthStore:
                     fleet = [row["row_data"] for row in rows["fleet"]]
                     orders = [row["row_data"] for row in rows["orders"]]
                     costs = [row["row_data"] for row in rows["cost_parameters"]]
+                    revenue_parameters = [row["row_data"] for row in rows["revenue_parameters"]]
                     if payload.depot_id not in {str(row["depot_id"]) for row in depots}:
                         validation_issues.append(
                             EditorValidationIssue(
@@ -1299,6 +1317,7 @@ class GroundTruthStore:
                             depot_id=payload.depot_id,
                             delivery_day=payload.delivery_day,
                             params=CostParameters.from_row(costs[0] if costs else None),
+                            revenue_parameters=revenue_parameters,
                         )
                         session = self._touch_session(session_id, connection)
                         self._record_audit(
@@ -1491,6 +1510,7 @@ class GroundTruthStore:
                 depot_id=depot_id,
                 delivery_day=delivery_day,
                 params=parameters,
+                revenue_parameters=master_rows["revenue_parameters"],
             )
             self.postgres.execute(
                 f"""

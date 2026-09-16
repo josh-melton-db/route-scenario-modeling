@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from backend.services.valhalla import KM_TO_MILES, ValhallaMatrixClient, ValhallaMatrixError
+from backend import config
 
 
 def _request_handler(request: httpx.Request) -> httpx.Response:
@@ -69,3 +70,20 @@ def test_valhalla_matrix_rejects_unreachable_cells() -> None:
             stops=[{"customer_id": "C1", "lat": 42.1, "lng": -83.1}],
             delivery_day="Tuesday",
         )
+
+
+def test_valhalla_url_accepts_explicit_url(monkeypatch) -> None:
+    monkeypatch.setenv("VALHALLA_APP_URL", "https://valhalla.example/")
+    assert config.get_valhalla_app_url() == "https://valhalla.example"
+
+
+def test_valhalla_url_resolves_app_resource_name(monkeypatch) -> None:
+    class Apps:
+        @staticmethod
+        def get(*, name: str):
+            assert name == "valhalla-api-poc"
+            return type("App", (), {"url": "https://valhalla.apps.example/"})()
+
+    monkeypatch.setenv("VALHALLA_APP_URL", "valhalla-api-poc")
+    monkeypatch.setattr(config, "get_workspace_client", lambda: type("Client", (), {"apps": Apps()})())
+    assert config.get_valhalla_app_url() == "https://valhalla.apps.example"
