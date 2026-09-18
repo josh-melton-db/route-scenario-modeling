@@ -133,8 +133,13 @@ function calculateKpiDeltas(baseline: Kpis, scenario: Kpis): KpiDeltas {
     fixed_vehicle_cost: scenario.cost_breakdown.fixed_vehicle_cost - baseline.cost_breakdown.fixed_vehicle_cost,
     sla_penalty_cost: scenario.cost_breakdown.sla_penalty_cost - baseline.cost_breakdown.sla_penalty_cost,
     carrier_linehaul_cost: (scenario.cost_breakdown.carrier_linehaul_cost ?? 0) - (baseline.cost_breakdown.carrier_linehaul_cost ?? 0),
+    carrier_lane_cost: (scenario.cost_breakdown.carrier_lane_cost ?? 0) - (baseline.cost_breakdown.carrier_lane_cost ?? 0),
     carrier_stop_cost: (scenario.cost_breakdown.carrier_stop_cost ?? 0) - (baseline.cost_breakdown.carrier_stop_cost ?? 0),
+    carrier_minimum_adjustment: (scenario.cost_breakdown.carrier_minimum_adjustment ?? 0) - (baseline.cost_breakdown.carrier_minimum_adjustment ?? 0),
     fuel_surcharge_cost: (scenario.cost_breakdown.fuel_surcharge_cost ?? 0) - (baseline.cost_breakdown.fuel_surcharge_cost ?? 0),
+    accessorial_cost: (scenario.cost_breakdown.accessorial_cost ?? 0) - (baseline.cost_breakdown.accessorial_cost ?? 0),
+    volume_tier_adjustment: (scenario.cost_breakdown.volume_tier_adjustment ?? 0) - (baseline.cost_breakdown.volume_tier_adjustment ?? 0),
+    commitment_adjustment: (scenario.cost_breakdown.commitment_adjustment ?? 0) - (baseline.cost_breakdown.commitment_adjustment ?? 0),
     total_cost: scenario.cost_breakdown.total_cost - baseline.cost_breakdown.total_cost,
   }
 }

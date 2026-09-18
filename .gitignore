@@ -5,6 +5,7 @@ dist/
 __pycache__/
 *.pyc
 .pytest_cache/
+mlruns/
 .DS_Store
 .env
 .env.local

@@ -15,12 +15,13 @@ import {
   useCarrierContracts,
   useOperatingParameters,
   useCostParameters,
+  useRateContracts,
   useDeleteScenario,
   useDays,
   useDepots,
   useRecentScenarios,
 } from '@/api/queries'
-import type { CostOverride, DraftScenarioChange, ScenarioHistoryItem } from '@/api/types'
+import type { CostOverride, DraftScenarioChange, PricingContext, ScenarioHistoryItem } from '@/api/types'
 import { useScenarioDraft } from '@/state/useScenarioDraft'
 
 export default function ScenarioBuilderPage() {
@@ -38,6 +39,7 @@ export default function ScenarioBuilderPage() {
   const deleteScenario = useDeleteScenario()
   const scenarios = useRecentScenarios(50)
   const draft = useScenarioDraft()
+  const rateContracts = useRateContracts(draft.pricingContext.service_date)
   const baselineNetwork = useBaselineNetwork(draft.depot_id, draft.delivery_day)
 
   useEffect(() => {
@@ -64,7 +66,7 @@ export default function ScenarioBuilderPage() {
     [baselineNetwork.data?.depot, depots.data, draft.depot_id],
   )
 
-  const error = depots.error ?? days.error ?? scenarios.error ?? carriers.error ?? contracts.error ?? operatingParameters.error ?? costParameters.error
+  const error = depots.error ?? days.error ?? scenarios.error ?? carriers.error ?? contracts.error ?? rateContracts.error ?? operatingParameters.error ?? costParameters.error
   if (error) return <ErrorState title="Could not load scenario builder" error={error} />
 
   const loading = depots.isLoading || days.isLoading
@@ -101,6 +103,10 @@ export default function ScenarioBuilderPage() {
     if (transportation && typeof transportation === 'object' && !Array.isArray(transportation)) {
       draft.setTransportationChoices({ ...draft.transportationChoices, ...transportation })
       draft.setTransportationChoicesEnabled(true)
+    }
+    const pricingContext = scenario.parameters.pricing_context
+    if (pricingContext && typeof pricingContext === 'object' && !Array.isArray(pricingContext)) {
+      draft.setPricingContext({ ...draft.pricingContext, ...pricingContext } as PricingContext)
     }
     draft.setValidation(null)
   }
@@ -261,12 +267,15 @@ export default function ScenarioBuilderPage() {
               {(draft.operatingConstraintsEnabled || draft.transportationChoicesEnabled) && <TransportationOptionsPanel
                 constraints={draft.operatingConstraints}
                 choices={draft.transportationChoices}
+                pricingContext={draft.pricingContext}
                 onConstraintsChange={draft.setOperatingConstraints}
                 onChoicesChange={draft.setTransportationChoices}
+                onPricingContextChange={draft.setPricingContext}
                 carriers={carriers.data ?? []}
                 contracts={contracts.data ?? []}
+                rateContracts={rateContracts.data ?? []}
                 parameterSets={operatingParameters.data ?? []}
-                loading={carriers.isLoading || contracts.isLoading || operatingParameters.isLoading}
+                loading={carriers.isLoading || contracts.isLoading || rateContracts.isLoading || operatingParameters.isLoading}
                 showOperating={draft.operatingConstraintsEnabled}
                 showTransportation={draft.transportationChoicesEnabled}
                 onRemoveOperating={() => draft.setOperatingConstraintsEnabled(false)}

@@ -115,6 +115,12 @@ class RunSimulator:
                 message="Prioritize service windows, then cost.",
             ),
             RunStage(
+                stage_id="rate",
+                label="Rate carrier routes",
+                status=_stage_status(elapsed, queued_duration + 3.0, terminal_after, terminal, failed),
+                message="Resolve effective lane, surcharge, tier, and commitment rules.",
+            ),
+            RunStage(
                 stage_id="compare",
                 label="Compare KPIs",
                 status=(

@@ -240,8 +240,13 @@ def summarize_kpis(routes: list[dict[str, object]]) -> dict[str, object]:
         "fixed_vehicle_cost",
         "sla_penalty_cost",
         "carrier_linehaul_cost",
+        "carrier_lane_cost",
         "carrier_stop_cost",
+        "carrier_minimum_adjustment",
         "fuel_surcharge_cost",
+        "accessorial_cost",
+        "volume_tier_adjustment",
+        "commitment_adjustment",
         "total_cost",
     ]
     route_count = len(routes)
@@ -391,5 +396,10 @@ def _route_contract(route: dict[str, object], all_stops: list[dict[str, object]]
         "fulfillment_method": route.get("fulfillment_method", "private_fleet"),
         "carrier_name": route.get("carrier_name"),
         "contract_name": route.get("contract_name"),
+        "contract_version_id": route.get("contract_version_id"),
+        "rated_service_date": route.get("rated_service_date"),
+        "rate_lane": route.get("rate_lane"),
+        "rate_book_snapshot_id": route.get("rate_book_snapshot_id"),
+        "carrier_charge_lines": route.get("carrier_charge_lines", []),
         "decision_reason": route.get("decision_reason", "Assigned to available private-fleet capacity."),
     }

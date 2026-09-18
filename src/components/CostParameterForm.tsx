@@ -98,7 +98,7 @@ export default function CostParameterForm({
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold">Cost assumptions</div>
+          <div className="text-sm font-semibold">Private-fleet cost assumptions</div>
           <p className="mt-1 text-xs text-muted-foreground">
             Overrides apply to both baseline and scenario costing so before/after
             deltas stay comparable.

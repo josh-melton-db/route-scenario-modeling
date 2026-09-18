@@ -57,6 +57,7 @@ class ScenarioInputs:
     cost_parameters: CostParameters
     carriers: list[dict[str, object]]
     carrier_contracts: list[dict[str, object]]
+    rate_contract_details: list[dict[str, object]]
     operating_parameters: list[dict[str, object]]
     revenue_parameters: list[dict[str, object]]
     override_tables: dict[str, list[dict[str, object]]]
@@ -137,6 +138,7 @@ class SolverService:
             cost_parameters=cost_parameters,
             carriers=base.get("carriers") or [],
             carrier_contracts=base.get("carrier_contracts") or [],
+            rate_contract_details=base.get("rate_contract_details") or [],
             operating_parameters=operating_parameters,
             revenue_parameters=base.get("revenue_parameters") or [],
             override_tables=override_tables,
@@ -212,7 +214,10 @@ class SolverService:
         resolved_parameters = {
             **scenario.parameters,
             "transportation_choices": resolve_transportation_choices(
-                scenario.parameters, inputs.carriers, inputs.carrier_contracts
+                scenario.parameters,
+                inputs.carriers,
+                inputs.carrier_contracts,
+                inputs.rate_contract_details,
             ),
         }
         add_carrier_fallback(
@@ -431,6 +436,14 @@ class SolverService:
         if not callable(loader):
             raise RuntimeError("Selected data backend cannot load solver inputs.")
         base = loader()
+        rate_loader = getattr(store, "list_rate_contract_details", None)
+        if callable(rate_loader):
+            base["rate_contract_details"] = [
+                row.model_dump(mode="json")
+                if hasattr(row, "model_dump")
+                else dict(row)
+                for row in rate_loader()
+            ]
         self._base_cache = (now, store_identity, base)
         return base
 

@@ -4,6 +4,8 @@ import BaselinePage from './pages/BaselinePage'
 import DataEditorPage from './pages/DataEditorPage'
 import OptimizationRunsPage from './pages/OptimizationRunsPage'
 import ScenarioBuilderPage from './pages/ScenarioBuilderPage'
+import RatesPage from './pages/RatesPage'
+import ContractDetailPage from './pages/ContractDetailPage'
 
 export default function App() {
   return (
@@ -14,6 +16,8 @@ export default function App() {
           <Route path="/analyze" element={<BaselinePage />} />
           <Route path="/baseline" element={<Navigate to="/analyze" replace />} />
           <Route path="/scenario" element={<ScenarioBuilderPage />} />
+          <Route path="/rates" element={<RatesPage />} />
+          <Route path="/rates/contracts/:contractId/versions/:versionId/:tab?" element={<ContractDetailPage />} />
           <Route path="/data-editor" element={<DataEditorPage />} />
           <Route path="/runs/:runId" element={<OptimizationRunsPage />} />
           <Route path="/comparison/:scenarioId" element={<LegacyComparisonRedirect />} />

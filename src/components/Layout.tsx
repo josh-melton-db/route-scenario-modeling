@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { BarChart3, MapPinned, PlayCircle, Route, Table2 } from 'lucide-react'
+import { MapPinned, PlayCircle, Route, ScrollText, Table2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
@@ -12,13 +12,19 @@ const navItems = [
   },
   {
     path: '/scenario',
-    label: 'Scenario Builder',
+    label: 'Scenarios',
     icon: PlayCircle,
     activePrefixes: ['/scenario', '/runs'],
   },
   {
+    path: '/rates',
+    label: 'Rates',
+    icon: ScrollText,
+    activePrefixes: ['/rates'],
+  },
+  {
     path: '/data-editor',
-    label: 'Data editor',
+    label: 'Inputs',
     icon: Table2,
     activePrefixes: ['/data-editor'],
   },
@@ -70,13 +76,13 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
 
           <div className="flex min-w-0 items-center justify-self-end gap-2 text-xs text-muted-foreground">
-            <BarChart3 className="h-3.5 w-3.5" />
             <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse-dot" />
-            <span className="hidden 2xl:inline">
-              Scenario planning ·{' '}
+            <span className="hidden lg:inline">
+              As of{' '}
               {new Date().toLocaleDateString(undefined, {
                 month: 'short',
                 day: 'numeric',
+                year: 'numeric',
               })}
             </span>
           </div>

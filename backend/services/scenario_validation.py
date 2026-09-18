@@ -62,7 +62,8 @@ def validate_scenario_definition(
                     )
         transportation = scenario.parameters.get("transportation_choices")
         if isinstance(transportation, dict) and transportation.get("allow_carrier"):
-            for field in ("carrier_id", "contract_id"):
+            selection = str(transportation.get("contract_selection", "locked"))
+            for field in (("carrier_id", "contract_id") if selection == "locked" else ()):
                 if not transportation.get(field):
                     hard_constraints.append(
                         ValidationIssue(
@@ -72,6 +73,16 @@ def validate_scenario_definition(
                             message=f"Carrier fallback requires {field.replace('_', ' ')}.",
                         )
                     )
+            pricing = scenario.parameters.get("pricing_context")
+            if not isinstance(pricing, dict) or not pricing.get("service_date"):
+                hard_constraints.append(
+                    ValidationIssue(
+                        field="pricing_context.service_date",
+                        scope="scenario",
+                        severity="hard",
+                        message="Carrier pricing requires a service date for effective-contract resolution.",
+                    )
+                )
         if isinstance(changes, list) and changes:
             for index, change in enumerate(changes):
                 if not isinstance(change, dict):

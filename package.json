@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:backend": "uvicorn backend.main:app --reload --host 0.0.0.0 --port 8001",
+    "dev:backend": "uvicorn backend.main:app --reload --host 0.0.0.0 --port 8002",
     "dev:all": "npm run dev:backend & npm run dev",
     "dev:lakebase": "bash scripts/dev-lakebase.sh",
     "setup:python": "python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt",

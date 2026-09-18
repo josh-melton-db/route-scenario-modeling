@@ -4,6 +4,7 @@ import type {
   DraftScenarioChange,
   ValidationResponse,
   OperatingConstraints,
+  PricingContext,
   TransportationChoices,
 } from '@/api/types'
 
@@ -16,6 +17,7 @@ export interface ScenarioDraftState {
   costOverrideEnabled: boolean
   operatingConstraints: OperatingConstraints
   transportationChoices: TransportationChoices
+  pricingContext: PricingContext
   operatingConstraintsEnabled: boolean
   transportationChoicesEnabled: boolean
   validation: ValidationResponse | null
@@ -26,6 +28,7 @@ export interface ScenarioDraftState {
   setCostOverrideEnabled: (enabled: boolean) => void
   setOperatingConstraints: (value: OperatingConstraints) => void
   setTransportationChoices: (value: TransportationChoices) => void
+  setPricingContext: (value: PricingContext) => void
   setOperatingConstraintsEnabled: (enabled: boolean) => void
   setTransportationChoicesEnabled: (enabled: boolean) => void
   setValidation: (validation: ValidationResponse | null) => void
@@ -53,6 +56,15 @@ const initialState = {
     allow_carrier: false,
     carrier_id: 'GL_LOGISTICS',
     contract_id: 'GL_STANDARD_2026',
+    contract_selection: 'automatic' as const,
+    eligible_carrier_ids: ['GL_LOGISTICS', 'MIDWEST_EXPRESS'],
+    commitment_policy: 'honor' as const,
+    accessorial_codes: [] as string[],
+  },
+  pricingContext: {
+    service_date: new Date().toISOString().slice(0, 10),
+    horizon_end: new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10),
+    projected_period_stops: 54,
   },
   operatingConstraintsEnabled: false,
   transportationChoicesEnabled: false,
@@ -90,6 +102,8 @@ export const useScenarioDraft = create<ScenarioDraftState>((set, get) => ({
     set({ operatingConstraints, validation: null }),
   setTransportationChoices: (transportationChoices) =>
     set({ transportationChoices, validation: null }),
+  setPricingContext: (pricingContext) =>
+    set({ pricingContext, validation: null }),
   setOperatingConstraintsEnabled: (operatingConstraintsEnabled) =>
     set({ operatingConstraintsEnabled, validation: null }),
   setTransportationChoicesEnabled: (transportationChoicesEnabled) =>
@@ -101,7 +115,10 @@ export const useScenarioDraft = create<ScenarioDraftState>((set, get) => ({
       changes: state.changes.map(({ clientId: _clientId, ...change }) => change),
     }
     if (state.operatingConstraintsEnabled) parameters.operating_constraints = state.operatingConstraints
-    if (state.transportationChoicesEnabled) parameters.transportation_choices = state.transportationChoices
+    if (state.transportationChoicesEnabled) {
+      parameters.transportation_choices = state.transportationChoices
+      parameters.pricing_context = state.pricingContext
+    }
     if (state.costOverrideEnabled && hasCostValues(state.costOverride)) {
       parameters.cost = state.costOverride
     }

@@ -7,6 +7,11 @@ import type {
   EditorInsertRequest,
   EditorPatchRequest,
   EditorPreviewRequest,
+  RateContractCreateRequest,
+  RateDraftUpdateRequest,
+  RatePublishRequest,
+  RateQuoteRequest,
+  RateVersionCreateRequest,
   RunStartResponse,
   RunStatusResponse,
   ScenarioCreateRequest,
@@ -23,6 +28,10 @@ export const queryKeys = {
   carrierContracts: ['carrier-contracts'] as const,
   operatingParameters: ['operating-parameters'] as const,
   costParameters: ['cost-parameters'] as const,
+  rateAuthoringOptions: ['rate-authoring-options'] as const,
+  rateContracts: (serviceDate: string) => ['rate-contracts', serviceDate] as const,
+  rateContractDetail: (contractId: string, versionId: string) =>
+    ['rate-contract-detail', contractId, versionId] as const,
   scenarioTypes: ['scenario-types'] as const,
   recentScenarios: (limit: number) => ['recent-scenarios', limit] as const,
   baselineNetwork: (depotId: string, deliveryDay: string) =>
@@ -63,6 +72,103 @@ export function useOperatingParameters() {
 
 export function useCostParameters() {
   return useQuery({ queryKey: queryKeys.costParameters, queryFn: api.costParameters })
+}
+
+export function useRateContracts(serviceDate: string) {
+  return useQuery({
+    queryKey: queryKeys.rateContracts(serviceDate),
+    queryFn: () => api.rateContracts(serviceDate),
+    enabled: Boolean(serviceDate),
+  })
+}
+
+export function useRateAuthoringOptions() {
+  return useQuery({
+    queryKey: queryKeys.rateAuthoringOptions,
+    queryFn: api.rateAuthoringOptions,
+  })
+}
+
+export function useRateContractDetail(contractId: string, versionId: string) {
+  return useQuery({
+    queryKey: queryKeys.rateContractDetail(contractId, versionId),
+    queryFn: () => api.rateContractDetail(contractId, versionId),
+    enabled: Boolean(contractId && versionId),
+  })
+}
+
+export function usePreviewRateQuote() {
+  return useMutation({
+    mutationFn: (payload: RateQuoteRequest) => api.previewRateQuote(payload),
+  })
+}
+
+function useInvalidateRates() {
+  const queryClient = useQueryClient()
+  return () => queryClient.invalidateQueries({ queryKey: ['rate-contracts'] })
+}
+
+export function useCreateRateContract() {
+  const invalidate = useInvalidateRates()
+  return useMutation({
+    mutationFn: (payload: RateContractCreateRequest) => api.createRateContract(payload),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateRateVersion() {
+  const invalidate = useInvalidateRates()
+  return useMutation({
+    mutationFn: ({ contractId, payload }: { contractId: string; payload: RateVersionCreateRequest }) =>
+      api.createRateVersion(contractId, payload),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSaveRateDraft() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ contractId, versionId, payload }: { contractId: string; versionId: string; payload: RateDraftUpdateRequest }) =>
+      api.saveRateDraft(contractId, versionId, payload),
+    onSuccess: (detail) => {
+      queryClient.setQueryData(
+        queryKeys.rateContractDetail(detail.contract_id, detail.version.version_id),
+        detail,
+      )
+      void queryClient.invalidateQueries({ queryKey: ['rate-contracts'] })
+    },
+  })
+}
+
+export function useValidateRateDraft() {
+  return useMutation({
+    mutationFn: ({ contractId, versionId }: { contractId: string; versionId: string }) =>
+      api.validateRateDraft(contractId, versionId),
+  })
+}
+
+export function usePublishRateDraft() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ contractId, versionId, payload }: { contractId: string; versionId: string; payload: RatePublishRequest }) =>
+      api.publishRateDraft(contractId, versionId, payload),
+    onSuccess: (detail) => {
+      queryClient.setQueryData(
+        queryKeys.rateContractDetail(detail.contract_id, detail.version.version_id),
+        detail,
+      )
+      void queryClient.invalidateQueries({ queryKey: ['rate-contracts'] })
+    },
+  })
+}
+
+export function useDiscardRateDraft() {
+  const invalidate = useInvalidateRates()
+  return useMutation({
+    mutationFn: ({ contractId, versionId }: { contractId: string; versionId: string }) =>
+      api.discardRateDraft(contractId, versionId),
+    onSuccess: invalidate,
+  })
 }
 
 export function useScenarioTypes() {

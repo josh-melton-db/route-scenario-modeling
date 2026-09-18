@@ -37,6 +37,11 @@ ConstraintSeverity = Literal["hard", "soft"]
 ConstraintScope = Literal["route", "depot", "customer", "scenario"]
 WindowRisk = Literal["none", "at_risk", "missed"]
 MatrixSource = Literal["haversine_circuity", "valhalla"]
+RateContractStatus = Literal["draft", "published", "expired"]
+MileageRounding = Literal["exact", "nearest_mile", "up_to_mile"]
+FuelBasis = Literal["linehaul", "linehaul_and_minimum", "transportation_subtotal"]
+AccessorialChargeType = Literal["flat", "per_stop", "per_hour", "per_case"]
+VolumePeriod = Literal["route", "week", "month", "quarter"]
 EditorEntityType = Literal[
     "orders",
     "customers",
@@ -92,6 +97,227 @@ class CarrierContract(StrictModel):
     effective_start: str | None = None
     effective_end: str | None = None
     active: bool = True
+
+
+class ContractVersion(StrictModel):
+    version_id: str
+    version_number: int
+    status: RateContractStatus
+    currency: str = "USD"
+    effective_start: str | None = None
+    effective_end: str | None = None
+    published_at: str | None = None
+    published_by: str | None = None
+    change_reason: str | None = None
+
+
+class LaneRateRule(StrictModel):
+    rule_id: str
+    lane_name: str
+    origin: str
+    destination: str
+    priority: int = 100
+    flat_rate: float = 0
+    rate_per_mile: float = 0
+    rate_per_stop: float = 0
+    included_stops: int = 0
+    minimum_charge: float = 0
+    mileage_rounding: MileageRounding = "exact"
+
+
+class FuelSurchargeRule(StrictModel):
+    rule_id: str
+    name: str
+    rate_pct: float
+    basis: FuelBasis = "linehaul_and_minimum"
+    effective_start: str | None = None
+    effective_end: str | None = None
+
+
+class AccessorialRule(StrictModel):
+    rule_id: str
+    code: str
+    name: str
+    charge_type: AccessorialChargeType
+    rate: float
+    description: str
+
+
+class VolumeTierRule(StrictModel):
+    rule_id: str
+    name: str
+    period: VolumePeriod
+    unit: Literal["stops", "routes", "cases", "miles"]
+    min_volume: float
+    max_volume: float | None = None
+    discount_pct: float = 0
+
+
+class CapacityCommitmentRule(StrictModel):
+    rule_id: str
+    name: str
+    period: VolumePeriod
+    unit: Literal["stops", "routes", "cases", "miles"]
+    committed_quantity: float
+    capacity_quantity: float
+    current_utilization: float = 0
+    shortfall_rate: float = 0
+    overage_rate: float = 0
+
+
+class RateContractSummary(StrictModel):
+    contract_id: str
+    carrier_id: str
+    carrier_name: str
+    contract_name: str
+    version: ContractVersion
+    draft_version: ContractVersion | None = None
+    status: RateContractStatus
+    lane_count: int
+    accessorial_count: int
+    volume_tier_count: int
+    committed_quantity: float
+    capacity_quantity: float
+    current_utilization: float
+    coverage_status: Literal["covered", "partial", "unavailable"]
+    freshness_at: str
+
+
+class RateContractDetail(StrictModel):
+    contract_id: str
+    carrier_id: str
+    carrier_name: str
+    contract_name: str
+    version: ContractVersion
+    lane_rates: list[LaneRateRule]
+    fuel_surcharges: list[FuelSurchargeRule]
+    accessorials: list[AccessorialRule]
+    volume_tiers: list[VolumeTierRule]
+    capacity_commitments: list[CapacityCommitmentRule]
+    version_history: list[ContractVersion] = Field(default_factory=list)
+    source: str = "Lakebase rate book"
+    freshness_at: str
+
+
+class RateAccessorialTemplate(StrictModel):
+    code: str
+    name: str
+    charge_type: AccessorialChargeType
+    rate: float
+    description: str
+
+
+class RateAuthoringOptions(StrictModel):
+    destinations: list[str] = Field(default_factory=list)
+    accessorials: list[RateAccessorialTemplate] = Field(default_factory=list)
+
+
+class RateContractCreateRequest(StrictModel):
+    carrier_id: str
+    contract_name: str
+    currency: str = "USD"
+    effective_start: str
+    effective_end: str
+
+
+class RateVersionCreateRequest(StrictModel):
+    source_version_id: str | None = None
+    effective_start: str
+    effective_end: str
+    change_reason: str = ""
+
+
+class RateDraftUpdateRequest(StrictModel):
+    contract_name: str
+    currency: str = "USD"
+    effective_start: str
+    effective_end: str
+    change_reason: str = ""
+    lane_rates: list[LaneRateRule] = Field(default_factory=list)
+    fuel_surcharges: list[FuelSurchargeRule] = Field(default_factory=list)
+    accessorials: list[AccessorialRule] = Field(default_factory=list)
+    volume_tiers: list[VolumeTierRule] = Field(default_factory=list)
+    capacity_commitments: list[CapacityCommitmentRule] = Field(default_factory=list)
+
+
+class RateValidationIssue(StrictModel):
+    severity: Literal["error", "warning"]
+    code: str
+    field: str
+    message: str
+
+
+class RateValidationResponse(StrictModel):
+    contract_id: str
+    version_id: str
+    valid: bool
+    issues: list[RateValidationIssue] = Field(default_factory=list)
+    summary: str
+
+
+class RatePublishRequest(StrictModel):
+    published_by: str = "Rate manager"
+    change_reason: str = ""
+
+
+class RateQuoteRequest(StrictModel):
+    contract_id: str
+    version_id: str | None = None
+    service_date: str
+    origin: str
+    destination: str
+    miles: float = Field(ge=0)
+    stops: int = Field(ge=0)
+    cases: int = Field(default=0, ge=0)
+    period_volume: float = Field(default=0, ge=0)
+    accessorial_codes: list[str] = Field(default_factory=list)
+    accessorial_quantities: dict[str, float] = Field(default_factory=dict)
+    period_close: bool = False
+    commitment_policy: Literal["honor", "ignore"] = "honor"
+
+
+class RateChargeLine(StrictModel):
+    category: Literal[
+        "lane",
+        "mileage",
+        "stops",
+        "volume_tier",
+        "minimum",
+        "fuel",
+        "accessorial",
+        "commitment",
+    ]
+    label: str
+    formula: str
+    quantity: float
+    unit: str
+    rate: float
+    amount: float
+    rule_id: str
+
+
+class RateQuote(StrictModel):
+    quote_id: str
+    contract_id: str
+    contract_name: str
+    carrier_id: str
+    carrier_name: str
+    contract_version_id: str
+    service_date: str
+    origin: str
+    destination: str
+    matched_lane: str | None = None
+    matched_lane_rule_id: str | None = None
+    matched_volume_tier: str | None = None
+    eligible: bool
+    eligibility_message: str
+    charge_lines: list[RateChargeLine] = Field(default_factory=list)
+    transportation_subtotal: float = 0
+    total_cost: float = 0
+    commitment_remaining: float = 0
+    capacity_remaining: float = 0
+    rate_book_snapshot_id: str
+    warnings: list[str] = Field(default_factory=list)
 
 
 class OperatingParameterSet(StrictModel):
@@ -166,6 +392,11 @@ class Route(StrictModel):
     fulfillment_method: Literal["private_fleet", "private_overtime", "carrier"] = "private_fleet"
     carrier_name: str | None = None
     contract_name: str | None = None
+    contract_version_id: str | None = None
+    rated_service_date: str | None = None
+    rate_lane: str | None = None
+    rate_book_snapshot_id: str | None = None
+    carrier_charge_lines: list[RateChargeLine] = Field(default_factory=list)
     decision_reason: str = "Assigned to available private-fleet capacity."
 
 
@@ -176,8 +407,13 @@ class CostBreakdown(StrictModel):
     fixed_vehicle_cost: float
     sla_penalty_cost: float
     carrier_linehaul_cost: float = 0
+    carrier_lane_cost: float = 0
     carrier_stop_cost: float = 0
+    carrier_minimum_adjustment: float = 0
     fuel_surcharge_cost: float = 0
+    accessorial_cost: float = 0
+    volume_tier_adjustment: float = 0
+    commitment_adjustment: float = 0
     total_cost: float
 
 
@@ -222,8 +458,13 @@ class KpiDeltas(StrictModel):
     fixed_vehicle_cost: float
     sla_penalty_cost: float
     carrier_linehaul_cost: float = 0
+    carrier_lane_cost: float = 0
     carrier_stop_cost: float = 0
+    carrier_minimum_adjustment: float = 0
     fuel_surcharge_cost: float = 0
+    accessorial_cost: float = 0
+    volume_tier_adjustment: float = 0
+    commitment_adjustment: float = 0
     total_cost: float
 
 
@@ -457,6 +698,7 @@ class ComparisonResult(StrictModel):
     constraint_violations: list[ConstraintViolation]
     transportation_allocation: list[TransportationAllocation] = Field(default_factory=list)
     decision_explanations: list[DecisionExplanation] = Field(default_factory=list)
+    rate_book_snapshot_id: str | None = None
 
 
 class EditorSession(StrictModel):

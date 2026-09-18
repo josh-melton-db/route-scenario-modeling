@@ -8,6 +8,16 @@ import type {
   CarrierContract,
   OperatingParameterSet,
   CostParameterSet,
+  RateContractDetail,
+  RateAuthoringOptions,
+  RateContractCreateRequest,
+  RateContractSummary,
+  RateDraftUpdateRequest,
+  RatePublishRequest,
+  RateQuote,
+  RateQuoteRequest,
+  RateValidationResponse,
+  RateVersionCreateRequest,
   EditorCommitResponse,
   EditorDeleteRequest,
   EditorEntityType,
@@ -58,6 +68,67 @@ export const api = {
   carrierContracts: () => requestJSON<CarrierContract[]>('/api/meta/carrier-contracts'),
   operatingParameters: () => requestJSON<OperatingParameterSet[]>('/api/meta/operating-parameters'),
   costParameters: () => requestJSON<CostParameterSet[]>('/api/meta/cost-parameters'),
+  rateContracts: (serviceDate: string) =>
+    requestJSON<RateContractSummary[]>(
+      `/api/rates/contracts?${qs({ service_date: serviceDate })}`,
+    ),
+  rateAuthoringOptions: () =>
+    requestJSON<RateAuthoringOptions>('/api/rates/authoring-options'),
+  rateContractDetail: (contractId: string, versionId: string) =>
+    requestJSON<RateContractDetail>(
+      `/api/rates/contracts/${encodeURIComponent(contractId)}/versions/${encodeURIComponent(versionId)}`,
+    ),
+  createRateContract: (payload: RateContractCreateRequest) =>
+    requestJSON<RateContractDetail>('/api/rates/contracts', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  createRateVersion: (
+    contractId: string,
+    payload: RateVersionCreateRequest,
+  ) =>
+    requestJSON<RateContractDetail>(
+      `/api/rates/contracts/${encodeURIComponent(contractId)}/versions`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  saveRateDraft: (
+    contractId: string,
+    versionId: string,
+    payload: RateDraftUpdateRequest,
+  ) =>
+    requestJSON<RateContractDetail>(
+      `/api/rates/contracts/${encodeURIComponent(contractId)}/versions/${encodeURIComponent(versionId)}`,
+      { method: 'PUT', body: JSON.stringify(payload) },
+    ),
+  validateRateDraft: (contractId: string, versionId: string) =>
+    requestJSON<RateValidationResponse>(
+      `/api/rates/contracts/${encodeURIComponent(contractId)}/versions/${encodeURIComponent(versionId)}/validate`,
+      { method: 'POST' },
+    ),
+  publishRateDraft: (
+    contractId: string,
+    versionId: string,
+    payload: RatePublishRequest,
+  ) =>
+    requestJSON<RateContractDetail>(
+      `/api/rates/contracts/${encodeURIComponent(contractId)}/versions/${encodeURIComponent(versionId)}/publish`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  discardRateDraft: async (contractId: string, versionId: string) => {
+    const res = await fetch(
+      `/api/rates/contracts/${encodeURIComponent(contractId)}/versions/${encodeURIComponent(versionId)}`,
+      { method: 'DELETE' },
+    )
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`${res.status} ${res.statusText}: ${body}`)
+    }
+  },
+  previewRateQuote: (payload: RateQuoteRequest) =>
+    requestJSON<RateQuote>('/api/rates/quote', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   scenarioTypes: () => requestJSON<ScenarioTypeSpec[]>('/api/meta/scenario-types'),
   recentScenarios: (limit = 10) =>
     requestJSON<ScenarioHistoryItem[]>(

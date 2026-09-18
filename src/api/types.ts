@@ -74,6 +74,234 @@ export interface CarrierContract {
   active: boolean
 }
 
+export type RateContractStatus = 'draft' | 'published' | 'expired'
+export type MileageRounding = 'exact' | 'nearest_mile' | 'up_to_mile'
+export type FuelBasis = 'linehaul' | 'linehaul_and_minimum' | 'transportation_subtotal'
+export type AccessorialChargeType = 'flat' | 'per_stop' | 'per_hour' | 'per_case'
+export type VolumePeriod = 'route' | 'week' | 'month' | 'quarter'
+
+export interface ContractVersion {
+  version_id: string
+  version_number: number
+  status: RateContractStatus
+  currency: string
+  effective_start: string | null
+  effective_end: string | null
+  published_at: string | null
+  published_by: string | null
+  change_reason: string | null
+}
+
+export interface LaneRateRule {
+  rule_id: string
+  lane_name: string
+  origin: string
+  destination: string
+  priority: number
+  flat_rate: number
+  rate_per_mile: number
+  rate_per_stop: number
+  included_stops: number
+  minimum_charge: number
+  mileage_rounding: MileageRounding
+}
+
+export interface FuelSurchargeRule {
+  rule_id: string
+  name: string
+  rate_pct: number
+  basis: FuelBasis
+  effective_start: string | null
+  effective_end: string | null
+}
+
+export interface AccessorialRule {
+  rule_id: string
+  code: string
+  name: string
+  charge_type: AccessorialChargeType
+  rate: number
+  description: string
+}
+
+export interface VolumeTierRule {
+  rule_id: string
+  name: string
+  period: VolumePeriod
+  unit: 'stops' | 'routes' | 'cases' | 'miles'
+  min_volume: number
+  max_volume: number | null
+  discount_pct: number
+}
+
+export interface CapacityCommitmentRule {
+  rule_id: string
+  name: string
+  period: VolumePeriod
+  unit: 'stops' | 'routes' | 'cases' | 'miles'
+  committed_quantity: number
+  capacity_quantity: number
+  current_utilization: number
+  shortfall_rate: number
+  overage_rate: number
+}
+
+export interface RateContractSummary {
+  contract_id: string
+  carrier_id: string
+  carrier_name: string
+  contract_name: string
+  version: ContractVersion
+  draft_version: ContractVersion | null
+  status: RateContractStatus
+  lane_count: number
+  accessorial_count: number
+  volume_tier_count: number
+  committed_quantity: number
+  capacity_quantity: number
+  current_utilization: number
+  coverage_status: 'covered' | 'partial' | 'unavailable'
+  freshness_at: string
+}
+
+export interface RateContractDetail {
+  contract_id: string
+  carrier_id: string
+  carrier_name: string
+  contract_name: string
+  version: ContractVersion
+  lane_rates: LaneRateRule[]
+  fuel_surcharges: FuelSurchargeRule[]
+  accessorials: AccessorialRule[]
+  volume_tiers: VolumeTierRule[]
+  capacity_commitments: CapacityCommitmentRule[]
+  version_history: ContractVersion[]
+  source: string
+  freshness_at: string
+}
+
+export interface RateAccessorialTemplate {
+  code: string
+  name: string
+  charge_type: AccessorialChargeType
+  rate: number
+  description: string
+}
+
+export interface RateAuthoringOptions {
+  destinations: string[]
+  accessorials: RateAccessorialTemplate[]
+}
+
+export interface RateContractCreateRequest {
+  carrier_id: string
+  contract_name: string
+  currency: string
+  effective_start: string
+  effective_end: string
+}
+
+export interface RateVersionCreateRequest {
+  source_version_id?: string | null
+  effective_start: string
+  effective_end: string
+  change_reason: string
+}
+
+export interface RateDraftUpdateRequest {
+  contract_name: string
+  currency: string
+  effective_start: string
+  effective_end: string
+  change_reason: string
+  lane_rates: LaneRateRule[]
+  fuel_surcharges: FuelSurchargeRule[]
+  accessorials: AccessorialRule[]
+  volume_tiers: VolumeTierRule[]
+  capacity_commitments: CapacityCommitmentRule[]
+}
+
+export interface RateValidationIssue {
+  severity: 'error' | 'warning'
+  code: string
+  field: string
+  message: string
+}
+
+export interface RateValidationResponse {
+  contract_id: string
+  version_id: string
+  valid: boolean
+  issues: RateValidationIssue[]
+  summary: string
+}
+
+export interface RatePublishRequest {
+  published_by?: string
+  change_reason?: string
+}
+
+export type RateChargeCategory =
+  | 'lane'
+  | 'mileage'
+  | 'stops'
+  | 'volume_tier'
+  | 'minimum'
+  | 'fuel'
+  | 'accessorial'
+  | 'commitment'
+
+export interface RateChargeLine {
+  category: RateChargeCategory
+  label: string
+  formula: string
+  quantity: number
+  unit: string
+  rate: number
+  amount: number
+  rule_id: string
+}
+
+export interface RateQuoteRequest {
+  contract_id: string
+  version_id?: string | null
+  service_date: string
+  origin: string
+  destination: string
+  miles: number
+  stops: number
+  cases: number
+  period_volume: number
+  accessorial_codes: string[]
+  accessorial_quantities: Record<string, number>
+  period_close?: boolean
+  commitment_policy?: 'honor' | 'ignore'
+}
+
+export interface RateQuote {
+  quote_id: string
+  contract_id: string
+  contract_name: string
+  carrier_id: string
+  carrier_name: string
+  contract_version_id: string
+  service_date: string
+  origin: string
+  destination: string
+  matched_lane: string | null
+  matched_lane_rule_id: string | null
+  matched_volume_tier: string | null
+  eligible: boolean
+  eligibility_message: string
+  charge_lines: RateChargeLine[]
+  transportation_subtotal: number
+  total_cost: number
+  commitment_remaining: number
+  capacity_remaining: number
+  rate_book_snapshot_id: string
+  warnings: string[]
+}
+
 export interface OperatingParameterSet {
   parameter_set_id: string
   parameter_set_name: string
@@ -133,6 +361,11 @@ export interface Route {
   fulfillment_method: 'private_fleet' | 'private_overtime' | 'carrier'
   carrier_name: string | null
   contract_name: string | null
+  contract_version_id: string | null
+  rated_service_date: string | null
+  rate_lane: string | null
+  rate_book_snapshot_id: string | null
+  carrier_charge_lines: RateChargeLine[]
   decision_reason: string
 }
 
@@ -143,8 +376,13 @@ export interface CostBreakdown {
   fixed_vehicle_cost: number
   sla_penalty_cost: number
   carrier_linehaul_cost: number
+  carrier_lane_cost: number
   carrier_stop_cost: number
+  carrier_minimum_adjustment: number
   fuel_surcharge_cost: number
+  accessorial_cost: number
+  volume_tier_adjustment: number
+  commitment_adjustment: number
   total_cost: number
 }
 
@@ -189,8 +427,13 @@ export interface KpiDeltas {
   fixed_vehicle_cost: number
   sla_penalty_cost: number
   carrier_linehaul_cost: number
+  carrier_lane_cost: number
   carrier_stop_cost: number
+  carrier_minimum_adjustment: number
   fuel_surcharge_cost: number
+  accessorial_cost: number
+  volume_tier_adjustment: number
+  commitment_adjustment: number
   total_cost: number
 }
 
@@ -449,6 +692,7 @@ export interface ComparisonResult {
   constraint_violations: ConstraintViolation[]
   transportation_allocation: TransportationAllocation[]
   decision_explanations: DecisionExplanation[]
+  rate_book_snapshot_id?: string | null
 }
 
 export interface OperatingConstraints {
@@ -464,6 +708,16 @@ export interface TransportationChoices {
   allow_carrier: boolean
   carrier_id: string
   contract_id: string
+  contract_selection: 'automatic' | 'locked'
+  eligible_carrier_ids: string[]
+  commitment_policy: 'honor' | 'ignore'
+  accessorial_codes: string[]
+}
+
+export interface PricingContext {
+  service_date: string
+  horizon_end: string
+  projected_period_stops: number
 }
 
 export type EditorEntityType =

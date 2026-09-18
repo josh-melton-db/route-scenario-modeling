@@ -39,8 +39,6 @@ const editorEntities: EditorEntityType[] = [
   'fleet',
   'depots',
   'cost_parameters',
-  'carriers',
-  'carrier_contracts',
   'operating_parameters',
   'revenue_parameters',
 ]
@@ -269,8 +267,8 @@ export default function DataEditorPage() {
             </div>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
               Edits stay in your private Lakebase snapshot until you validate and commit.
-              This editor intentionally includes only solver inputs: delivery orders,
-              customers, fleet, depots, and cost parameters.
+              This editor contains operational solver inputs. Govern carrier pricing
+              separately in Rates & Contracts so versioned rules stay auditable.
             </p>
           </div>
           <div className="text-right text-xs text-muted-foreground">

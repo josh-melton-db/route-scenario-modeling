@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-STAGE_ORDER = ("queued", "precheck", "prepare", "solve", "compare", "persist")
+STAGE_ORDER = ("queued", "precheck", "prepare", "solve", "rate", "compare", "persist")
 TERMINAL_STATUSES = frozenset({"succeeded", "infeasible", "failed"})
 STAGE_DETAILS: dict[str, tuple[str, str]] = {
     "queued": ("Queue solver request", "Run request accepted by the application."),
     "precheck": ("Precheck inputs", "Validate scenario inputs before contacting the solver."),
     "prepare": ("Prepare inputs", "Apply overrides and build the travel matrix."),
     "solve": ("Call solver endpoint", "RouteScenarioSolverModel is solving the CVRPTW."),
+    "rate": ("Rate carrier routes", "Resolve effective contracts and persist transparent charge lines."),
     "compare": ("Compare KPIs", "Compare scenario routes against the baseline."),
     "persist": ("Persist results", "Write scenario comparison outputs to Lakebase."),
 }

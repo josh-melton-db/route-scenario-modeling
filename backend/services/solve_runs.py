@@ -173,6 +173,15 @@ class SolveRunManager:
             solved = solver_service.solve_prepared_scenario(scenario, inputs)
             store.complete_run_stage(run_id, current_stage, worker_id)
 
+            current_stage = "rate"
+            store.start_run_stage(
+                run_id,
+                current_stage,
+                "Resolving effective carrier contracts and charge lines.",
+                worker_id,
+            )
+            store.complete_run_stage(run_id, current_stage, worker_id)
+
             current_stage = "compare"
             store.start_run_stage(
                 run_id,
@@ -227,6 +236,7 @@ class SolveRunManager:
             self._set_stage(run_id, "solve", "Calling the Databricks Model Serving solver endpoint.")
             result = solver_service.solve_and_compare(scenario)
 
+            self._set_stage(run_id, "rate", "Effective carrier rate quotes are attached to route results.")
             self._set_stage(run_id, "compare", "Comparison result is ready for the application.")
             with self._lock:
                 self._runs[run_id].result = result

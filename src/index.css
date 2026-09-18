@@ -27,6 +27,12 @@
   }
 }
 
+@layer components {
+  .input {
+    @apply rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none ring-primary focus:ring-1;
+  }
+}
+
 @layer base {
   * {
     @apply border-border;

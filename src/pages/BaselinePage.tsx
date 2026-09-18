@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import type { KpiDeltas, Kpis } from '@/api/types'
+import CarrierCostAnalysis from '@/components/CarrierCostAnalysis'
 import CostBreakdown from '@/components/CostBreakdown'
 import CustomerImpactTable from '@/components/CustomerImpactTable'
 import DepotDayFilter from '@/components/DepotDayFilter'
@@ -11,6 +12,7 @@ import KpiDeltaGrid from '@/components/KpiDeltaGrid'
 import MapView from '@/components/MapView'
 import RouteSidebar from '@/components/RouteSidebar'
 import ScenarioCombobox from '@/components/ScenarioCombobox'
+import TransportationAllocation from '@/components/TransportationAllocation'
 import {
   useBaselineKpis,
   useBaselineNetwork,
@@ -122,6 +124,14 @@ export default function BaselinePage() {
                 baselineLabel={primaryResult.data.scenario_name}
                 scenarioLabel="Baseline"
               />
+              <TransportationAllocation
+                allocations={primaryResult.data.transportation_allocation ?? []}
+                decisions={primaryResult.data.decision_explanations ?? []}
+              />
+              <CarrierCostAnalysis
+                routes={primaryResult.data.scenario_routes}
+                generatedAt={primaryResult.data.generated_at}
+              />
               <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
                 <CustomerImpactTable impacts={primaryResult.data.customer_impacts} />
                 <CostBreakdown costs={kpis.data.cost_breakdown} />
@@ -150,6 +160,14 @@ export default function BaselinePage() {
                 baselineLabel={scenarioName(primaryScenarioId, scenarios.data ?? [])}
                 scenarioLabel={comparisonResult.data.scenario_name}
               />
+              <TransportationAllocation
+                allocations={comparisonResult.data.transportation_allocation ?? []}
+                decisions={comparisonResult.data.decision_explanations ?? []}
+              />
+              <CarrierCostAnalysis
+                routes={comparisonResult.data.scenario_routes}
+                generatedAt={comparisonResult.data.generated_at}
+              />
               <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
                 <CustomerImpactTable impacts={comparisonResult.data.customer_impacts} />
                 <CostBreakdown
@@ -174,6 +192,14 @@ export default function BaselinePage() {
                 scenarioRoutes={primaryResult.data.scenario_routes}
                 status={primaryResult.data.status}
                 scenarioLabel={primaryResult.data.scenario_name}
+              />
+              <TransportationAllocation
+                allocations={primaryResult.data.transportation_allocation ?? []}
+                decisions={primaryResult.data.decision_explanations ?? []}
+              />
+              <CarrierCostAnalysis
+                routes={primaryResult.data.scenario_routes}
+                generatedAt={primaryResult.data.generated_at}
               />
               <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
                 <CustomerImpactTable impacts={primaryResult.data.customer_impacts} />
@@ -241,8 +267,13 @@ function calculateKpiDeltas(baseline: Kpis, scenario: Kpis): KpiDeltas {
     fixed_vehicle_cost: scenario.cost_breakdown.fixed_vehicle_cost - baseline.cost_breakdown.fixed_vehicle_cost,
     sla_penalty_cost: scenario.cost_breakdown.sla_penalty_cost - baseline.cost_breakdown.sla_penalty_cost,
     carrier_linehaul_cost: (scenario.cost_breakdown.carrier_linehaul_cost ?? 0) - (baseline.cost_breakdown.carrier_linehaul_cost ?? 0),
+    carrier_lane_cost: (scenario.cost_breakdown.carrier_lane_cost ?? 0) - (baseline.cost_breakdown.carrier_lane_cost ?? 0),
     carrier_stop_cost: (scenario.cost_breakdown.carrier_stop_cost ?? 0) - (baseline.cost_breakdown.carrier_stop_cost ?? 0),
+    carrier_minimum_adjustment: (scenario.cost_breakdown.carrier_minimum_adjustment ?? 0) - (baseline.cost_breakdown.carrier_minimum_adjustment ?? 0),
     fuel_surcharge_cost: (scenario.cost_breakdown.fuel_surcharge_cost ?? 0) - (baseline.cost_breakdown.fuel_surcharge_cost ?? 0),
+    accessorial_cost: (scenario.cost_breakdown.accessorial_cost ?? 0) - (baseline.cost_breakdown.accessorial_cost ?? 0),
+    volume_tier_adjustment: (scenario.cost_breakdown.volume_tier_adjustment ?? 0) - (baseline.cost_breakdown.volume_tier_adjustment ?? 0),
+    commitment_adjustment: (scenario.cost_breakdown.commitment_adjustment ?? 0) - (baseline.cost_breakdown.commitment_adjustment ?? 0),
     total_cost: scenario.cost_breakdown.total_cost - baseline.cost_breakdown.total_cost,
   }
 }

@@ -5,7 +5,7 @@ The app mounts:
   /     -> the built React SPA from ./dist (when present)
 
 In local dev only `/api` is served; the React dev server proxies `/api`
-back to this process on port 8001.
+back to this process on port 8002.
 """
 
 from __future__ import annotations
@@ -99,13 +99,13 @@ else:
     async def dev_root() -> dict[str, str]:
         return {
             "message": "Dev mode — run `npm run dev` for the React app.",
-            "api_health": "http://localhost:8001/api/health",
-            "api_docs": "http://localhost:8001/docs",
+            "api_health": "http://localhost:8002/api/health",
+            "api_docs": "http://localhost:8002/docs",
         }
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("PORT", "8001"))
+    port = int(os.getenv("PORT", "8002"))
     uvicorn.run(app, host="0.0.0.0", port=port)

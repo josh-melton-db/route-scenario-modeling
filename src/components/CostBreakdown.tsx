@@ -14,7 +14,10 @@ export default function CostBreakdown({ costs }: CostBreakdownProps) {
     ['SLA penalties', costs.sla_penalty_cost],
     ['Carrier linehaul', costs.carrier_linehaul_cost ?? 0],
     ['Carrier stop charges', costs.carrier_stop_cost ?? 0],
+    ['Carrier tier adjustment', costs.volume_tier_adjustment ?? 0],
     ['Fuel surcharge', costs.fuel_surcharge_cost ?? 0],
+    ['Accessorials', costs.accessorial_cost ?? 0],
+    ['Commitment adjustment', costs.commitment_adjustment ?? 0],
   ] as const
 
   return (

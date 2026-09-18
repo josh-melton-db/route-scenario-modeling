@@ -70,7 +70,7 @@ Local development without a Databricks App:
 ```bash
 npm install
 pip install -r requirements.txt
-npm run dev:all    # Vite on :5173, FastAPI on :8001 with stub data
+npm run dev:all    # Vite on :5180, FastAPI on :8002 with stub data
 ```
 
 To run locally against the isolated Lakebase `dev` branch using the `DEFAULT`

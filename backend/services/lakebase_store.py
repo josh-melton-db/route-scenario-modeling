@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Literal, Mapping, cast
 
 from fastapi import HTTPException
@@ -15,6 +16,10 @@ from ..models import (
     BaselineNetwork,
     Carrier,
     CarrierContract,
+    RateContractCreateRequest,
+    RateContractDetail,
+    RateDraftUpdateRequest,
+    RateVersionCreateRequest,
     OperatingParameterSet,
     CostParameterSet,
     ComparisonResult,
@@ -105,6 +110,435 @@ class LakebaseStore:
                        effective_end, active
                 FROM {self._table('carrier_contracts')} WHERE active ORDER BY carrier_id, contract_name"""
         )]
+
+    def list_rate_contract_details(self) -> list[RateContractDetail]:
+        versions = self.postgres.query(
+            f"""
+            SELECT c.contract_id, c.carrier_id, carriers.carrier_name, c.contract_name,
+                   v.version_id, v.version_number, v.status, v.currency,
+                   v.effective_start, v.effective_end, v.published_at, v.published_by,
+                   v.change_reason, v.updated_at
+            FROM {self._table('carrier_contracts')} c
+            JOIN {self._table('carriers')} carriers ON carriers.carrier_id = c.carrier_id
+            JOIN {self._table('contract_versions')} v ON v.contract_id = c.contract_id
+            WHERE c.active AND carriers.active
+            ORDER BY carriers.carrier_name, c.contract_name, v.version_number DESC
+            """
+        )
+        if not versions:
+            return []
+        version_ids = [str(row["version_id"]) for row in versions]
+
+        def children(table_name: str) -> dict[str, list[dict[str, Any]]]:
+            rows = self.postgres.query(
+                f"SELECT * FROM {self._table(table_name)} WHERE version_id = ANY(%s) ORDER BY rule_id",
+                (version_ids,),
+            )
+            grouped: dict[str, list[dict[str, Any]]] = {version_id: [] for version_id in version_ids}
+            for row in rows:
+                version_id = str(row.pop("version_id"))
+                grouped.setdefault(version_id, []).append(_plain_row(row))
+            return grouped
+
+        lane_rates = children("contract_lane_rates")
+        fuel_surcharges = children("contract_fuel_rules")
+        accessorials = children("contract_accessorial_rules")
+        volume_tiers = children("contract_volume_tiers")
+        commitments = children("contract_capacity_commitments")
+        return [
+            RateContractDetail.model_validate(
+                {
+                    "contract_id": row["contract_id"],
+                    "carrier_id": row["carrier_id"],
+                    "carrier_name": row["carrier_name"],
+                    "contract_name": row["contract_name"],
+                    "version": {
+                        "version_id": row["version_id"],
+                        "version_number": row["version_number"],
+                        "status": row["status"],
+                        "currency": row["currency"],
+                        "effective_start": _plain_value(row["effective_start"]),
+                        "effective_end": _plain_value(row["effective_end"]),
+                        "published_at": _plain_value(row["published_at"]),
+                        "published_by": row["published_by"],
+                        "change_reason": row["change_reason"],
+                    },
+                    "lane_rates": lane_rates[str(row["version_id"])],
+                    "fuel_surcharges": fuel_surcharges[str(row["version_id"])],
+                    "accessorials": accessorials[str(row["version_id"])],
+                    "volume_tiers": volume_tiers[str(row["version_id"])],
+                    "capacity_commitments": commitments[str(row["version_id"])],
+                    "source": "Lakebase rate book",
+                    "freshness_at": _plain_value(row["updated_at"]),
+                }
+            )
+            for row in versions
+        ]
+
+    def _rate_detail(self, contract_id: str, version_id: str) -> RateContractDetail:
+        detail = next(
+            (
+                row
+                for row in self.list_rate_contract_details()
+                if row.contract_id == contract_id
+                and row.version.version_id == version_id
+            ),
+            None,
+        )
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Rate contract version not found.")
+        return detail
+
+    def create_rate_contract(
+        self, request: RateContractCreateRequest
+    ) -> RateContractDetail:
+        stem = re.sub(r"[^A-Z0-9]+", "_", request.contract_name.upper()).strip("_")
+        contract_id = f"{(stem or 'CONTRACT')[:28]}_{uuid.uuid4().hex[:6].upper()}"
+        version_id = f"{contract_id}_V1"
+        with self.postgres.transaction() as connection:
+            carrier = self.postgres.query_one(
+                f"SELECT carrier_id FROM {self._table('carriers')} WHERE carrier_id = %s AND active FOR SHARE",
+                (request.carrier_id,),
+                connection=connection,
+            )
+            if carrier is None:
+                raise HTTPException(status_code=404, detail="Carrier not found.")
+            self.postgres.execute(
+                f"""
+                INSERT INTO {self._table('carrier_contracts')} (
+                    contract_id, carrier_id, contract_name, capacity_stops,
+                    rate_per_mile, rate_per_stop, minimum_charge,
+                    fuel_surcharge_pct, effective_start, effective_end
+                ) VALUES (%s, %s, %s, 0, 0, 0, 0, 0, %s, %s)
+                """,
+                (
+                    contract_id,
+                    request.carrier_id,
+                    request.contract_name.strip(),
+                    request.effective_start,
+                    request.effective_end,
+                ),
+                connection=connection,
+            )
+            self.postgres.execute(
+                f"""
+                INSERT INTO {self._table('contract_versions')} (
+                    version_id, contract_id, version_number, status, currency,
+                    effective_start, effective_end, change_reason
+                ) VALUES (%s, %s, 1, 'draft', %s, %s, %s, 'Initial contract')
+                """,
+                (
+                    version_id,
+                    contract_id,
+                    request.currency.strip().upper(),
+                    request.effective_start,
+                    request.effective_end,
+                ),
+                connection=connection,
+            )
+        return self._rate_detail(contract_id, version_id)
+
+    def create_rate_version(
+        self, contract_id: str, request: RateVersionCreateRequest
+    ) -> RateContractDetail:
+        with self.postgres.transaction() as connection:
+            contract = self.postgres.query_one(
+                f"SELECT contract_id FROM {self._table('carrier_contracts')} WHERE contract_id = %s FOR UPDATE",
+                (contract_id,),
+                connection=connection,
+            )
+            if contract is None:
+                raise HTTPException(status_code=404, detail="Rate contract not found.")
+            versions = self.postgres.query(
+                f"""
+                SELECT version_id, version_number, status, currency
+                FROM {self._table('contract_versions')}
+                WHERE contract_id = %s
+                ORDER BY version_number DESC
+                FOR UPDATE
+                """,
+                (contract_id,),
+                connection=connection,
+            )
+            if any(str(row["status"]) == "draft" for row in versions):
+                raise HTTPException(
+                    status_code=409,
+                    detail="This contract already has a draft. Open or discard it before creating another version.",
+                )
+            source = next(
+                (
+                    row
+                    for row in versions
+                    if request.source_version_id
+                    and str(row["version_id"]) == request.source_version_id
+                ),
+                None,
+            )
+            if request.source_version_id and source is None:
+                raise HTTPException(status_code=404, detail="Source contract version not found.")
+            if not versions:
+                raise HTTPException(status_code=409, detail="Contract has no source version to clone.")
+            source = source or versions[0]
+            version_number = max(int(row["version_number"]) for row in versions) + 1
+            version_id = f"{contract_id}_V{version_number}"
+            self.postgres.execute(
+                f"""
+                INSERT INTO {self._table('contract_versions')} (
+                    version_id, contract_id, version_number, status, currency,
+                    effective_start, effective_end, change_reason
+                ) VALUES (%s, %s, %s, 'draft', %s, %s, %s, %s)
+                """,
+                (
+                    version_id,
+                    contract_id,
+                    version_number,
+                    source["currency"],
+                    request.effective_start,
+                    request.effective_end,
+                    request.change_reason.strip(),
+                ),
+                connection=connection,
+            )
+            clone_specs = (
+                (
+                    "contract_lane_rates",
+                    "LANE",
+                    "lane_name, origin, destination, priority, flat_rate, rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding",
+                ),
+                (
+                    "contract_fuel_rules",
+                    "FUEL",
+                    "name, rate_pct, basis, effective_start, effective_end",
+                ),
+                (
+                    "contract_accessorial_rules",
+                    "ACC",
+                    "code, name, charge_type, rate, description",
+                ),
+                (
+                    "contract_volume_tiers",
+                    "TIER",
+                    "name, period, unit, min_volume, max_volume, discount_pct",
+                ),
+                (
+                    "contract_capacity_commitments",
+                    "COMMIT",
+                    "name, period, unit, committed_quantity, capacity_quantity, current_utilization, shortfall_rate, overage_rate",
+                ),
+            )
+            for table_name, family, columns in clone_specs:
+                self.postgres.execute(
+                    f"""
+                    INSERT INTO {self._table(table_name)} (rule_id, version_id, {columns})
+                    SELECT %s || '_{family}_' || ROW_NUMBER() OVER (ORDER BY rule_id),
+                           %s, {columns}
+                    FROM {self._table(table_name)}
+                    WHERE version_id = %s
+                    """,
+                    (version_id, version_id, source["version_id"]),
+                    connection=connection,
+                )
+        return self._rate_detail(contract_id, version_id)
+
+    def replace_rate_draft(
+        self,
+        contract_id: str,
+        version_id: str,
+        request: RateDraftUpdateRequest,
+    ) -> RateContractDetail:
+        child_specs: tuple[tuple[str, str, list[tuple[Any, ...]]], ...] = (
+            (
+                "contract_lane_rates",
+                "rule_id, version_id, lane_name, origin, destination, priority, flat_rate, rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding",
+                [(row.rule_id, version_id, row.lane_name, row.origin, row.destination, row.priority, row.flat_rate, row.rate_per_mile, row.rate_per_stop, row.included_stops, row.minimum_charge, row.mileage_rounding) for row in request.lane_rates],
+            ),
+            (
+                "contract_fuel_rules",
+                "rule_id, version_id, name, rate_pct, basis, effective_start, effective_end",
+                [(row.rule_id, version_id, row.name, row.rate_pct, row.basis, row.effective_start, row.effective_end) for row in request.fuel_surcharges],
+            ),
+            (
+                "contract_accessorial_rules",
+                "rule_id, version_id, code, name, charge_type, rate, description",
+                [(row.rule_id, version_id, row.code.upper(), row.name, row.charge_type, row.rate, row.description) for row in request.accessorials],
+            ),
+            (
+                "contract_volume_tiers",
+                "rule_id, version_id, name, period, unit, min_volume, max_volume, discount_pct",
+                [(row.rule_id, version_id, row.name, row.period, row.unit, row.min_volume, row.max_volume, row.discount_pct) for row in request.volume_tiers],
+            ),
+            (
+                "contract_capacity_commitments",
+                "rule_id, version_id, name, period, unit, committed_quantity, capacity_quantity, current_utilization, shortfall_rate, overage_rate",
+                [(row.rule_id, version_id, row.name, row.period, row.unit, row.committed_quantity, row.capacity_quantity, row.current_utilization, row.shortfall_rate, row.overage_rate) for row in request.capacity_commitments],
+            ),
+        )
+        with self.postgres.transaction() as connection:
+            version = self.postgres.query_one(
+                f"""
+                SELECT status FROM {self._table('contract_versions')}
+                WHERE contract_id = %s AND version_id = %s FOR UPDATE
+                """,
+                (contract_id, version_id),
+                connection=connection,
+            )
+            if version is None:
+                raise HTTPException(status_code=404, detail="Rate contract version not found.")
+            if str(version["status"]) != "draft":
+                raise HTTPException(status_code=409, detail="Published versions are immutable.")
+            self.postgres.execute(
+                f"UPDATE {self._table('carrier_contracts')} SET contract_name = %s, updated_at = CURRENT_TIMESTAMP WHERE contract_id = %s",
+                (request.contract_name.strip(), contract_id),
+                connection=connection,
+            )
+            self.postgres.execute(
+                f"""
+                UPDATE {self._table('contract_versions')}
+                SET currency = %s, effective_start = %s, effective_end = %s,
+                    change_reason = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE version_id = %s
+                """,
+                (
+                    request.currency.strip().upper(),
+                    request.effective_start,
+                    request.effective_end,
+                    request.change_reason.strip(),
+                    version_id,
+                ),
+                connection=connection,
+            )
+            for table_name, columns, rows in child_specs:
+                self.postgres.execute(
+                    f"DELETE FROM {self._table(table_name)} WHERE version_id = %s",
+                    (version_id,),
+                    connection=connection,
+                )
+                placeholders = ", ".join(["%s"] * len(columns.split(", ")))
+                self.postgres.executemany(
+                    f"INSERT INTO {self._table(table_name)} ({columns}) VALUES ({placeholders})",
+                    rows,
+                    connection=connection,
+                )
+        return self._rate_detail(contract_id, version_id)
+
+    def publish_rate_draft(
+        self, contract_id: str, version_id: str, published_by: str
+    ) -> RateContractDetail:
+        with self.postgres.transaction() as connection:
+            versions = self.postgres.query(
+                f"""
+                SELECT version_id, version_number, status, effective_start, effective_end
+                FROM {self._table('contract_versions')}
+                WHERE contract_id = %s
+                ORDER BY version_number
+                FOR UPDATE
+                """,
+                (contract_id,),
+                connection=connection,
+            )
+            draft = next((row for row in versions if str(row["version_id"]) == version_id), None)
+            if draft is None:
+                raise HTTPException(status_code=404, detail="Rate contract version not found.")
+            if str(draft["status"]) != "draft":
+                raise HTTPException(status_code=409, detail="Only a draft can be published.")
+            draft_start = date.fromisoformat(str(_plain_value(draft["effective_start"])))
+            draft_end = date.fromisoformat(str(_plain_value(draft["effective_end"])))
+            for other in versions:
+                if str(other["status"]) != "published":
+                    continue
+                other_start = date.fromisoformat(str(_plain_value(other["effective_start"]))) if other["effective_start"] else date.min
+                other_end = date.fromisoformat(str(_plain_value(other["effective_end"]))) if other["effective_end"] else date.max
+                if not (draft_start <= other_end and other_start <= draft_end):
+                    continue
+                if other_start >= draft_start:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Effective dates overlap published version {other['version_number']}.",
+                    )
+                self.postgres.execute(
+                    f"""
+                    UPDATE {self._table('contract_versions')}
+                    SET effective_end = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE version_id = %s
+                    """,
+                    ((draft_start - timedelta(days=1)).isoformat(), other["version_id"]),
+                    connection=connection,
+                )
+            self.postgres.execute(
+                f"""
+                UPDATE {self._table('contract_versions')}
+                SET status = 'published', published_at = CURRENT_TIMESTAMP,
+                    published_by = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE version_id = %s
+                """,
+                (published_by, version_id),
+                connection=connection,
+            )
+            lane = self.postgres.query_one(
+                f"SELECT rate_per_mile, rate_per_stop, minimum_charge FROM {self._table('contract_lane_rates')} WHERE version_id = %s ORDER BY priority DESC LIMIT 1",
+                (version_id,),
+                connection=connection,
+            )
+            fuel = self.postgres.query_one(
+                f"SELECT rate_pct FROM {self._table('contract_fuel_rules')} WHERE version_id = %s ORDER BY effective_start LIMIT 1",
+                (version_id,),
+                connection=connection,
+            )
+            commitment = self.postgres.query_one(
+                f"SELECT capacity_quantity FROM {self._table('contract_capacity_commitments')} WHERE version_id = %s ORDER BY rule_id LIMIT 1",
+                (version_id,),
+                connection=connection,
+            )
+            self.postgres.execute(
+                f"""
+                UPDATE {self._table('carrier_contracts')}
+                SET capacity_stops = %s, rate_per_mile = %s, rate_per_stop = %s,
+                    minimum_charge = %s, fuel_surcharge_pct = %s,
+                    effective_start = %s, effective_end = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE contract_id = %s
+                """,
+                (
+                    int(commitment["capacity_quantity"]) if commitment else 0,
+                    float(lane["rate_per_mile"]) if lane else 0,
+                    float(lane["rate_per_stop"]) if lane else 0,
+                    float(lane["minimum_charge"]) if lane else 0,
+                    float(fuel["rate_pct"]) if fuel else 0,
+                    draft_start.isoformat(),
+                    draft_end.isoformat(),
+                    contract_id,
+                ),
+                connection=connection,
+            )
+        return self._rate_detail(contract_id, version_id)
+
+    def delete_rate_draft(self, contract_id: str, version_id: str) -> None:
+        with self.postgres.transaction() as connection:
+            version = self.postgres.query_one(
+                f"SELECT status FROM {self._table('contract_versions')} WHERE contract_id = %s AND version_id = %s FOR UPDATE",
+                (contract_id, version_id),
+                connection=connection,
+            )
+            if version is None:
+                raise HTTPException(status_code=404, detail="Rate contract version not found.")
+            if str(version["status"]) != "draft":
+                raise HTTPException(status_code=409, detail="Published versions cannot be discarded.")
+            self.postgres.execute(
+                f"DELETE FROM {self._table('contract_versions')} WHERE version_id = %s",
+                (version_id,),
+                connection=connection,
+            )
+            remaining = self.postgres.query_one(
+                f"SELECT COUNT(*) AS count FROM {self._table('contract_versions')} WHERE contract_id = %s",
+                (contract_id,),
+                connection=connection,
+            )
+            if remaining and int(remaining["count"]) == 0:
+                self.postgres.execute(
+                    f"DELETE FROM {self._table('carrier_contracts')} WHERE contract_id = %s",
+                    (contract_id,),
+                    connection=connection,
+                )
 
     def list_operating_parameters(self) -> list[OperatingParameterSet]:
         return [OperatingParameterSet.model_validate(_plain_row(row)) for row in self.postgres.query(

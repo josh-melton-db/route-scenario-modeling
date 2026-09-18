@@ -144,11 +144,11 @@ export default function CustomScenarioBuilder({
               className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"
             >
               <Plus className="h-3.5 w-3.5" />
-              Cost assumptions
+              Private-fleet cost assumptions
             </button>
           )}
           {!operatingConstraintsEnabled && <button type="button" onClick={() => onOperatingConstraintsEnabledChange(true)} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"><Plus className="h-3.5 w-3.5" />Operating constraints</button>}
-          {!transportationChoicesEnabled && <button type="button" onClick={() => onTransportationChoicesEnabledChange(true)} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"><Plus className="h-3.5 w-3.5" />Transportation choices</button>}
+          {!transportationChoicesEnabled && <button type="button" onClick={() => onTransportationChoicesEnabledChange(true)} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"><Plus className="h-3.5 w-3.5" />Carrier sourcing & contracts</button>}
           {availableChangeOptions.length === 0 && costOverrideEnabled && operatingConstraintsEnabled && transportationChoicesEnabled && (
             <span className="py-1.5 text-xs text-muted-foreground">
               All change cards are active.

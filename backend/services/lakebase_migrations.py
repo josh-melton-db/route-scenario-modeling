@@ -6,7 +6,7 @@ from typing import Iterable
 
 from .postgres import PostgresService
 
-MIGRATION_VERSION = "2026_09_13_revenue_parameters_v5"
+MIGRATION_VERSION = "2026_09_16_rate_authoring_v6"
 
 
 def _statements(postgres: PostgresService) -> Iterable[str]:
@@ -150,6 +150,104 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
         )
     """
     yield f"""
+        CREATE TABLE IF NOT EXISTS {table("contract_versions")} (
+            version_id TEXT PRIMARY KEY,
+            contract_id TEXT NOT NULL REFERENCES {table("carrier_contracts")} (contract_id) ON DELETE CASCADE,
+            version_number INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('draft', 'published', 'expired')),
+            currency TEXT NOT NULL DEFAULT 'USD',
+            effective_start DATE,
+            effective_end DATE,
+            published_at TIMESTAMPTZ,
+            published_by TEXT,
+            change_reason TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (contract_id, version_number)
+        )
+    """
+    yield f"ALTER TABLE {table('contract_versions')} ADD COLUMN IF NOT EXISTS change_reason TEXT"
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("contract_lane_rates")} (
+            rule_id TEXT PRIMARY KEY,
+            version_id TEXT NOT NULL REFERENCES {table("contract_versions")} (version_id) ON DELETE CASCADE,
+            lane_name TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 100,
+            flat_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+            rate_per_mile DOUBLE PRECISION NOT NULL DEFAULT 0,
+            rate_per_stop DOUBLE PRECISION NOT NULL DEFAULT 0,
+            included_stops INTEGER NOT NULL DEFAULT 0,
+            minimum_charge DOUBLE PRECISION NOT NULL DEFAULT 0,
+            mileage_rounding TEXT NOT NULL DEFAULT 'exact'
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("contract_fuel_rules")} (
+            rule_id TEXT PRIMARY KEY,
+            version_id TEXT NOT NULL REFERENCES {table("contract_versions")} (version_id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            rate_pct DOUBLE PRECISION NOT NULL,
+            basis TEXT NOT NULL,
+            effective_start DATE,
+            effective_end DATE
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("contract_accessorial_rules")} (
+            rule_id TEXT PRIMARY KEY,
+            version_id TEXT NOT NULL REFERENCES {table("contract_versions")} (version_id) ON DELETE CASCADE,
+            code TEXT NOT NULL,
+            name TEXT NOT NULL,
+            charge_type TEXT NOT NULL,
+            rate DOUBLE PRECISION NOT NULL,
+            description TEXT NOT NULL,
+            UNIQUE (version_id, code)
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("contract_volume_tiers")} (
+            rule_id TEXT PRIMARY KEY,
+            version_id TEXT NOT NULL REFERENCES {table("contract_versions")} (version_id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            period TEXT NOT NULL,
+            unit TEXT NOT NULL,
+            min_volume DOUBLE PRECISION NOT NULL,
+            max_volume DOUBLE PRECISION,
+            discount_pct DOUBLE PRECISION NOT NULL DEFAULT 0
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("contract_capacity_commitments")} (
+            rule_id TEXT PRIMARY KEY,
+            version_id TEXT NOT NULL REFERENCES {table("contract_versions")} (version_id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            period TEXT NOT NULL,
+            unit TEXT NOT NULL,
+            committed_quantity DOUBLE PRECISION NOT NULL,
+            capacity_quantity DOUBLE PRECISION NOT NULL,
+            current_utilization DOUBLE PRECISION NOT NULL DEFAULT 0,
+            shortfall_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+            overage_rate DOUBLE PRECISION NOT NULL DEFAULT 0
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("rate_quotes")} (
+            quote_id TEXT PRIMARY KEY,
+            scenario_id TEXT,
+            route_id TEXT,
+            contract_id TEXT NOT NULL REFERENCES {table("carrier_contracts")} (contract_id),
+            version_id TEXT NOT NULL REFERENCES {table("contract_versions")} (version_id),
+            service_date DATE NOT NULL,
+            rate_book_snapshot_id TEXT NOT NULL,
+            request_payload JSONB NOT NULL,
+            result_payload JSONB NOT NULL,
+            total_cost DOUBLE PRECISION NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    yield f"""
         CREATE TABLE IF NOT EXISTS {table("operating_parameters")} (
             parameter_set_id TEXT PRIMARY KEY,
             parameter_set_name TEXT NOT NULL,
@@ -190,6 +288,105 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
         ('GL_PRIORITY_2026', 'GL_LOGISTICS', 'GL Priority 2026', 20, 5.10, 55, 425, 10, '2026-01-01', '2026-12-31'),
         ('MW_SPOT_2026', 'MIDWEST_EXPRESS', 'Midwest Spot 2026', 8, 4.70, 50, 400, 14, '2026-01-01', '2026-12-31')
         ON CONFLICT (contract_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_versions")} (
+        version_id, contract_id, version_number, status, currency, effective_start,
+        effective_end, published_at, published_by
+    )
+        SELECT contract_id || '_V1', contract_id, 1, 'published', 'USD',
+               effective_start, effective_end, COALESCE(effective_start, CURRENT_DATE),
+               'Transportation Procurement'
+        FROM {table("carrier_contracts")}
+        ON CONFLICT (version_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_lane_rates")} (
+        rule_id, version_id, lane_name, origin, destination, priority, flat_rate,
+        rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding
+    )
+        SELECT contract_id || '_LANE_NORTH', contract_id || '_V1',
+               'North Depot → North Metro', 'DPT_NORTH', 'North Metro', 200,
+               GREATEST(50, minimum_charge * 0.22), rate_per_mile, rate_per_stop,
+               1, minimum_charge, 'up_to_mile'
+        FROM {table("carrier_contracts")}
+        ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_lane_rates")} (
+        rule_id, version_id, lane_name, origin, destination, priority, flat_rate,
+        rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding
+    )
+        SELECT contract_id || '_LANE_REGIONAL', contract_id || '_V1',
+               'Great Lakes regional fallback', '*', '*', 10,
+               GREATEST(75, minimum_charge * 0.28), rate_per_mile * 1.05,
+               rate_per_stop, 0, minimum_charge * 1.1, 'up_to_mile'
+        FROM {table("carrier_contracts")}
+        ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_fuel_rules")} (
+        rule_id, version_id, name, rate_pct, basis, effective_start, effective_end
+    )
+        SELECT contract_id || '_FUEL_1', contract_id || '_V1',
+               'Published diesel surcharge', fuel_surcharge_pct,
+               'linehaul_and_minimum', effective_start, effective_end
+        FROM {table("carrier_contracts")}
+        ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_accessorial_rules")} (
+        rule_id, version_id, code, name, charge_type, rate, description
+    )
+        SELECT contract_id || '_ACC_LIFTGATE', contract_id || '_V1', 'LIFTGATE',
+               'Liftgate service', 'flat', 65,
+               'Applied once when a route requires liftgate equipment.'
+        FROM {table("carrier_contracts")}
+        ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_accessorial_rules")} (
+        rule_id, version_id, code, name, charge_type, rate, description
+    )
+        SELECT contract_id || '_ACC_INSIDE', contract_id || '_V1', 'INSIDE_DELIVERY',
+               'Inside delivery', 'per_stop', 32,
+               'Applied for each stop requiring inside delivery.'
+        FROM {table("carrier_contracts")}
+        ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_accessorial_rules")} (
+        rule_id, version_id, code, name, charge_type, rate, description
+    )
+        SELECT contract_id || '_ACC_DETENTION', contract_id || '_V1', 'DETENTION',
+               'Detention', 'per_hour', 85,
+               'Applied to approved detention hours after free time.'
+        FROM {table("carrier_contracts")}
+        ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_volume_tiers")} (
+        rule_id, version_id, name, period, unit, min_volume, max_volume, discount_pct
+    )
+        SELECT contract_id || '_TIER_1', contract_id || '_V1', 'Base monthly tier',
+               'month', 'stops', 0, 49, 0 FROM {table("carrier_contracts")}
+        ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_volume_tiers")} (
+        rule_id, version_id, name, period, unit, min_volume, max_volume, discount_pct
+    )
+        SELECT contract_id || '_TIER_2', contract_id || '_V1', '50–99 monthly stops',
+               'month', 'stops', 50, 99, 2 FROM {table("carrier_contracts")}
+        ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_volume_tiers")} (
+        rule_id, version_id, name, period, unit, min_volume, max_volume, discount_pct
+    )
+        SELECT contract_id || '_TIER_3', contract_id || '_V1', '100+ monthly stops',
+               'month', 'stops', 100, NULL, 4 FROM {table("carrier_contracts")}
+        ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_capacity_commitments")} (
+        rule_id, version_id, name, period, unit, committed_quantity,
+        capacity_quantity, current_utilization, shortfall_rate, overage_rate
+    )
+        SELECT contract_id || '_COMMIT_1', contract_id || '_V1',
+               'Monthly reserved stop capacity', 'month', 'stops',
+               capacity_stops * 3, capacity_stops * 5, capacity_stops * 2, 12, 18
+        FROM {table("carrier_contracts")}
+        ON CONFLICT (rule_id) DO NOTHING
     """
     yield f"""INSERT INTO {table("operating_parameters")} (
         parameter_set_id, parameter_set_name, private_vehicle_limit,
