@@ -119,7 +119,7 @@ export interface NetworkOverviewParams {
 }
 
 export interface NetworkOverviewContext extends NetworkOverviewParams {
-  scenario_id: 'baseline'
+  scenario_id: string
 }
 
 export interface NetworkOverviewKpis {
@@ -206,6 +206,128 @@ export interface NetworkOverview {
   source: string
   freshness_at: string
   is_partial: boolean
+}
+
+
+export type NetworkScenarioStatus =
+  | 'draft'
+  | 'validated'
+  | 'solving'
+  | 'solved'
+  | 'infeasible'
+  | 'failed'
+  | 'depot_plans_running'
+  | 'reconciliation_required'
+  | 'reconciled'
+  | 'published'
+
+export interface NetworkScenarioAssumptions {
+  disabled_facility_ids: string[]
+  disabled_lane_ids: string[]
+  lane_cost_adjustments_pct: Record<string, number>
+  unmet_penalty_per_case: number
+}
+
+export interface NetworkScenarioValidationIssue {
+  severity: 'error' | 'warning' | 'info'
+  code: string
+  scope: 'scenario' | 'plan' | 'facility' | 'lane' | 'rate'
+  entity_id?: string | null
+  message: string
+}
+
+export interface NetworkScenarioValidation {
+  valid: boolean
+  issues: NetworkScenarioValidationIssue[]
+  summary: string
+  validated_at: string
+}
+
+export interface NetworkScenario {
+  scenario_id: string
+  scenario_name: string
+  baseline_scenario_id: string
+  demand_plan_version_id: string
+  capacity_plan_version_id: string
+  horizon_start: string
+  horizon_end: string
+  region_id: string
+  status: NetworkScenarioStatus
+  revision: number
+  assumptions: NetworkScenarioAssumptions
+  validation: NetworkScenarioValidation | null
+  created_at: string
+  updated_at: string
+  solved_at: string | null
+}
+
+export interface NetworkScenarioCreateRequest {
+  scenario_name: string
+  baseline_scenario_id?: string
+  demand_plan_version_id: string
+  capacity_plan_version_id: string
+  horizon_start: string
+  horizon_end: string
+  region_id?: string
+  assumptions?: NetworkScenarioAssumptions
+}
+
+export interface NetworkScenarioUpdateRequest {
+  scenario_name?: string
+  assumptions?: NetworkScenarioAssumptions
+}
+
+export interface NetworkScenarioKpiDeltas {
+  demand_units: number
+  assigned_units: number
+  unmet_units: number
+  total_cost: number
+  cost_per_unit: number
+  on_time_pct: number
+  utilization_pct: number
+}
+
+export interface NetworkScenarioException {
+  exception_id: string
+  exception_type: 'unmet_demand' | 'capacity_constraint' | 'missing_rate' | 'disconnected_node'
+  severity: 'info' | 'warning' | 'critical'
+  service_date: string | null
+  entity_type: 'network' | 'facility' | 'lane'
+  entity_id: string | null
+  message: string
+  demand_units?: number | null
+  assigned_units?: number | null
+  unmet_units?: number | null
+}
+
+export interface NetworkFlowChargeDetail {
+  service_date: string
+  lane_id: string
+  assigned_units: number
+  loads: number
+  rate_source: 'governed_contract' | 'planning_fallback'
+  contract_id: string | null
+  contract_version_id: string | null
+  rate_book_snapshot_id: string | null
+  total_cost: number
+  charge_lines: RateChargeLine[]
+}
+
+export interface NetworkScenarioResult {
+  scenario_id: string
+  revision: number
+  generated_at: string
+  overview: NetworkOverview
+  baseline_overview: NetworkOverview
+  kpi_deltas: NetworkScenarioKpiDeltas
+  affected_depot_ids: string[]
+  charge_details: NetworkFlowChargeDetail[]
+  exceptions: NetworkScenarioException[]
+}
+
+export interface NetworkScenarioRunResponse {
+  scenario: NetworkScenario
+  result: NetworkScenarioResult
 }
 
 export interface Carrier {

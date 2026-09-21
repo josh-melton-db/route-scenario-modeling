@@ -6,7 +6,7 @@ from typing import Iterable
 
 from .postgres import PostgresService
 
-MIGRATION_VERSION = "2026_09_16_rate_authoring_v6"
+MIGRATION_VERSION = "2026_09_21_network_scenarios_v7"
 
 
 def _statements(postgres: PostgresService) -> Iterable[str]:
@@ -679,12 +679,76 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("network_scenarios")} (
+            scenario_id TEXT PRIMARY KEY,
+            scenario_name TEXT NOT NULL,
+            baseline_scenario_id TEXT NOT NULL DEFAULT 'baseline',
+            demand_plan_version_id TEXT NOT NULL,
+            capacity_plan_version_id TEXT NOT NULL,
+            horizon_start DATE NOT NULL,
+            horizon_end DATE NOT NULL,
+            region_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            revision INTEGER NOT NULL DEFAULT 1,
+            assumptions JSONB NOT NULL,
+            validation JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            solved_at TIMESTAMPTZ
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("network_scenario_results")} (
+            scenario_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            result_payload JSONB NOT NULL,
+            generated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("network_flow_results")} (
+            scenario_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            service_date DATE NOT NULL,
+            lane_id TEXT NOT NULL,
+            lane_type TEXT NOT NULL,
+            assigned_units INTEGER NOT NULL,
+            total_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+            rate_source TEXT,
+            contract_id TEXT,
+            contract_version_id TEXT,
+            rate_book_snapshot_id TEXT,
+            PRIMARY KEY (scenario_id, service_date, lane_id)
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("network_flow_charge_details")} (
+            scenario_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            service_date DATE NOT NULL,
+            lane_id TEXT NOT NULL,
+            payload JSONB NOT NULL,
+            PRIMARY KEY (scenario_id, service_date, lane_id)
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("network_scenario_exceptions")} (
+            scenario_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            exception_id TEXT NOT NULL,
+            payload JSONB NOT NULL,
+            PRIMARY KEY (scenario_id, exception_id)
+        )
+    """
     yield f"CREATE INDEX IF NOT EXISTS orders_depot_day_idx ON {table('orders')} (depot_id, delivery_day)"
     yield f"CREATE INDEX IF NOT EXISTS scenarios_depot_day_idx ON {table('scenario_definitions')} (depot_id, delivery_day)"
     yield f"CREATE INDEX IF NOT EXISTS solve_runs_active_idx ON {table('solve_runs')} (status, updated_at)"
     yield f"CREATE INDEX IF NOT EXISTS editor_sessions_principal_idx ON {table('editor_sessions')} (principal, status, expires_at)"
     yield f"CREATE INDEX IF NOT EXISTS editor_session_rows_page_idx ON {table('editor_session_rows')} (session_id, entity_type, operation, row_id)"
     yield f"CREATE INDEX IF NOT EXISTS editor_audit_events_session_idx ON {table('editor_audit_events')} (session_id, created_at)"
+    yield f"CREATE INDEX IF NOT EXISTS network_scenarios_updated_idx ON {table('network_scenarios')} (updated_at DESC)"
+    yield f"CREATE INDEX IF NOT EXISTS network_flow_results_lane_idx ON {table('network_flow_results')} (scenario_id, lane_id)"
 
 
 def migrate_lakebase(postgres: PostgresService | None = None) -> None:

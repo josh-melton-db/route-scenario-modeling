@@ -33,6 +33,11 @@ import type {
   NetworkOptions,
   NetworkOverview,
   NetworkOverviewParams,
+  NetworkScenario,
+  NetworkScenarioCreateRequest,
+  NetworkScenarioResult,
+  NetworkScenarioRunResponse,
+  NetworkScenarioUpdateRequest,
   RunStartResponse,
   RunStatusResponse,
   ScenarioCreateRequest,
@@ -68,6 +73,46 @@ export const api = {
   networkOptions: () => requestJSON<NetworkOptions>('/api/network/options'),
   networkOverview: (params: NetworkOverviewParams) =>
     requestJSON<NetworkOverview>(`/api/network/overview?${qs({ ...params })}`),
+  networkScenarios: () =>
+    requestJSON<NetworkScenario[]>('/api/network/scenarios'),
+  createNetworkScenario: (payload: NetworkScenarioCreateRequest) =>
+    requestJSON<NetworkScenario>('/api/network/scenarios', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  networkScenario: (scenarioId: string) =>
+    requestJSON<NetworkScenario>(
+      `/api/network/scenarios/${encodeURIComponent(scenarioId)}`,
+    ),
+  updateNetworkScenario: (scenarioId: string, payload: NetworkScenarioUpdateRequest) =>
+    requestJSON<NetworkScenario>(
+      `/api/network/scenarios/${encodeURIComponent(scenarioId)}`,
+      { method: 'PATCH', body: JSON.stringify(payload) },
+    ),
+  validateNetworkScenario: (scenarioId: string) =>
+    requestJSON<NetworkScenario>(
+      `/api/network/scenarios/${encodeURIComponent(scenarioId)}/validate`,
+      { method: 'POST' },
+    ),
+  runNetworkScenario: (scenarioId: string) =>
+    requestJSON<NetworkScenarioRunResponse>(
+      `/api/network/scenarios/${encodeURIComponent(scenarioId)}/run`,
+      { method: 'POST' },
+    ),
+  networkScenarioResult: (scenarioId: string) =>
+    requestJSON<NetworkScenarioResult>(
+      `/api/network/scenarios/${encodeURIComponent(scenarioId)}/result`,
+    ),
+  deleteNetworkScenario: async (scenarioId: string) => {
+    const res = await fetch(
+      `/api/network/scenarios/${encodeURIComponent(scenarioId)}`,
+      { method: 'DELETE' },
+    )
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`${res.status} ${res.statusText}: ${body}`)
+    }
+  },
   depots: () => requestJSON<Depot[]>('/api/meta/depots'),
   days: () => requestJSON<string[]>('/api/meta/days'),
   carriers: () => requestJSON<Carrier[]>('/api/meta/carriers'),

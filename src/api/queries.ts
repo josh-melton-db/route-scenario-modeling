@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import type {
   CreateScenarioResponse,
+  NetworkScenarioUpdateRequest,
   EditorDeleteRequest,
   EditorEntityType,
   EditorInsertRequest,
@@ -26,6 +27,10 @@ export const queryKeys = {
   networkOptions: ['network-options'] as const,
   networkOverview: (params: NetworkOverviewParams) =>
     ['network-overview', params] as const,
+  networkScenarios: ['network-scenarios'] as const,
+  networkScenario: (scenarioId: string) => ['network-scenario', scenarioId] as const,
+  networkScenarioResult: (scenarioId: string) =>
+    ['network-scenario-result', scenarioId] as const,
   depots: ['depots'] as const,
   days: ['days'] as const,
   carriers: ['carriers'] as const,
@@ -428,5 +433,94 @@ export function useCommitEditorSession() {
 export function useDiscardEditorSession() {
   return useMutation({
     mutationFn: (sessionId: string) => api.discardEditorSession(sessionId),
+  })
+}
+
+
+export function useNetworkScenarios() {
+  return useQuery({
+    queryKey: queryKeys.networkScenarios,
+    queryFn: api.networkScenarios,
+  })
+}
+
+export function useNetworkScenario(scenarioId: string) {
+  return useQuery({
+    queryKey: queryKeys.networkScenario(scenarioId),
+    queryFn: () => api.networkScenario(scenarioId),
+    enabled: Boolean(scenarioId),
+  })
+}
+
+export function useNetworkScenarioResult(scenarioId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.networkScenarioResult(scenarioId),
+    queryFn: () => api.networkScenarioResult(scenarioId),
+    enabled: Boolean(scenarioId) && enabled,
+  })
+}
+
+export function useCreateNetworkScenario() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.createNetworkScenario,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.networkScenarios })
+    },
+  })
+}
+
+export function useUpdateNetworkScenario(scenarioId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: NetworkScenarioUpdateRequest) =>
+      api.updateNetworkScenario(scenarioId, payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.networkScenarios })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.networkScenario(scenarioId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.networkScenarioResult(scenarioId),
+      })
+    },
+  })
+}
+
+export function useValidateNetworkScenario(scenarioId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.validateNetworkScenario(scenarioId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.networkScenario(scenarioId),
+      })
+    },
+  })
+}
+
+export function useRunNetworkScenario(scenarioId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.runNetworkScenario(scenarioId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.networkScenarios })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.networkScenario(scenarioId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.networkScenarioResult(scenarioId),
+      })
+    },
+  })
+}
+
+export function useDeleteNetworkScenario() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.deleteNetworkScenario,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.networkScenarios })
+    },
   })
 }

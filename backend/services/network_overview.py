@@ -57,7 +57,7 @@ def _percent(numerator: float, denominator: float) -> float:
     return round(numerator / denominator * 100, 1) if denominator > 0 else 0.0
 
 
-def _lane_daily_cost(lane: Mapping[str, Any], assigned_units: int) -> float:
+def estimate_lane_daily_cost(lane: Mapping[str, Any], assigned_units: int) -> float:
     """Return a deterministic planning cost for the read-only baseline.
 
     Phase 2 has no route/load assignment yet, so linehaul loads are inferred from
@@ -107,6 +107,35 @@ class NetworkOverviewService:
             capacity_plan_version_id=capacity_plan_version_id,
             horizon_start=horizon_start,
             horizon_end=horizon_end,
+        )
+
+    def load_rows(
+        self,
+        *,
+        demand_plan_version_id: str,
+        capacity_plan_version_id: str,
+        horizon_start: date,
+        horizon_end: date,
+    ) -> NetworkRows:
+        """Load canonical rows for scenario validation and allocation."""
+
+        return self._load_rows(
+            demand_plan_version_id=demand_plan_version_id,
+            capacity_plan_version_id=capacity_plan_version_id,
+            horizon_start=horizon_start,
+            horizon_end=horizon_end,
+        )
+
+    def build_overview(
+        self,
+        rows: NetworkRows,
+        *,
+        context: NetworkOverviewContext,
+        scenario_id: str = "baseline",
+    ) -> NetworkOverview:
+        return self._build_overview(
+            rows,
+            context=context.model_copy(update={"scenario_id": scenario_id}),
         )
 
     def _load_option_rows(self) -> NetworkRows:
@@ -452,6 +481,13 @@ class NetworkOverviewService:
             lane_assigned[lane_id] += units
             daily_flow[lane_id].append(units)
 
+        has_scenario_costs = "network_flow_cost_daily" in rows
+        scenario_cost_by_lane: defaultdict[str, float] = defaultdict(float)
+        for row in rows.get("network_flow_cost_daily", []):
+            if not in_horizon(row):
+                continue
+            scenario_cost_by_lane[str(row["lane_id"])] += float(row["total_cost"])
+
         def endpoint(
             endpoint_type: str, endpoint_id: str
         ) -> tuple[str, dict[str, float]]:
@@ -489,7 +525,14 @@ class NetworkOverviewService:
             assigned = lane_assigned[lane_id]
             capacity = lane_capacity[lane_id]
             utilization = _percent(assigned, capacity)
-            lane_cost = sum(_lane_daily_cost(lane, units) for units in daily_flow[lane_id])
+            lane_cost = (
+                scenario_cost_by_lane[lane_id]
+                if has_scenario_costs
+                else sum(
+                    estimate_lane_daily_cost(lane, units)
+                    for units in daily_flow[lane_id]
+                )
+            )
             origin_name, origin_location = endpoint(
                 str(lane["origin_endpoint_type"]), str(lane["origin_endpoint_id"])
             )

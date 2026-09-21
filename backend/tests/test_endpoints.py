@@ -189,3 +189,135 @@ def test_delete_scenario() -> None:
     assert client.delete(f"/api/scenarios/{scenario_id}").status_code == 204
     assert client.get(f"/api/scenarios/{scenario_id}").status_code == 404
     assert client.delete("/api/scenarios/baseline").status_code == 400
+
+
+def test_network_scenario_lifecycle() -> None:
+    options = client.get("/api/network/options").json()
+    created = client.post(
+        "/api/network/scenarios",
+        json={
+            "scenario_name": "Southeast relief",
+            "demand_plan_version_id": options["default_demand_plan_version_id"],
+            "capacity_plan_version_id": options["default_capacity_plan_version_id"],
+            "horizon_start": "2026-09-21",
+            "horizon_end": "2026-09-23",
+            "region_id": "ALL",
+        },
+    )
+    assert created.status_code == 201
+    scenario = created.json()
+    scenario_id = scenario["scenario_id"]
+    assert scenario["status"] == "draft"
+    assert scenario["revision"] == 1
+
+    validated = client.post(f"/api/network/scenarios/{scenario_id}/validate").json()
+    assert validated["validation"]["valid"] is True
+    assert any(
+        issue["code"] == "planning_rate_fallback"
+        for issue in validated["validation"]["issues"]
+    )
+
+    run = client.post(f"/api/network/scenarios/{scenario_id}/run")
+    assert run.status_code == 200
+    payload = run.json()
+    assert payload["scenario"]["status"] == "solved"
+    result = payload["result"]
+    # The solver routes through alternate DCs instead of leaving demand unmet.
+    assert result["kpi_deltas"]["unmet_units"] < 0
+    assert result["kpi_deltas"]["assigned_units"] > 0
+    assert result["affected_depot_ids"]
+    sources = {row["rate_source"] for row in result["charge_details"]}
+    assert sources == {"governed_contract", "planning_fallback"}
+    governed = next(
+        row
+        for row in result["charge_details"]
+        if row["rate_source"] == "governed_contract"
+    )
+    assert governed["contract_id"] == "GL_STANDARD_2026"
+    assert governed["charge_lines"]
+    exception_types = {row["exception_type"] for row in result["exceptions"]}
+    assert exception_types == {"unmet_demand", "missing_rate"}
+    assert result["overview"]["kpis"]["assigned_units"] == (
+        result["baseline_overview"]["kpis"]["assigned_units"]
+        + result["kpi_deltas"]["assigned_units"]
+    )
+
+    reread = client.get(f"/api/network/scenarios/{scenario_id}/result")
+    assert reread.status_code == 200
+    assert reread.json()["scenario_id"] == scenario_id
+
+    edited = client.patch(
+        f"/api/network/scenarios/{scenario_id}",
+        json={"assumptions": {"disabled_facility_ids": ["DC_SOUTHEAST_ATLANTA"]}},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["revision"] == 2
+    assert edited.json()["status"] == "draft"
+    assert (
+        client.get(f"/api/network/scenarios/{scenario_id}/result").status_code == 404
+    )
+
+    revalidated = client.post(f"/api/network/scenarios/{scenario_id}/validate").json()
+    assert revalidated["validation"]["valid"] is True
+    rerun = client.post(f"/api/network/scenarios/{scenario_id}/run")
+    assert rerun.status_code == 200
+    rerun_result = rerun.json()["result"]
+    assert rerun_result["kpi_deltas"]["unmet_units"] > 0
+    atlanta = next(
+        row
+        for row in rerun_result["overview"]["facilities"]
+        if row["facility_id"] == "DC_SOUTHEAST_ATLANTA"
+    )
+    assert atlanta["assigned_units"] == 0
+
+    assert client.delete(f"/api/network/scenarios/{scenario_id}").status_code == 204
+    assert client.get(f"/api/network/scenarios/{scenario_id}").status_code == 404
+
+
+def test_network_scenario_validation_rejects_unknown_references() -> None:
+    options = client.get("/api/network/options").json()
+    created = client.post(
+        "/api/network/scenarios",
+        json={
+            "scenario_name": "Bad references",
+            "demand_plan_version_id": "DEMAND_UNKNOWN",
+            "capacity_plan_version_id": options["default_capacity_plan_version_id"],
+            "horizon_start": "2026-09-21",
+            "horizon_end": "2026-09-23",
+        },
+    )
+    assert created.status_code == 404
+
+    created = client.post(
+        "/api/network/scenarios",
+        json={
+            "scenario_name": "Bad horizon",
+            "demand_plan_version_id": options["default_demand_plan_version_id"],
+            "capacity_plan_version_id": options["default_capacity_plan_version_id"],
+            "horizon_start": "2026-09-23",
+            "horizon_end": "2026-09-21",
+        },
+    )
+    assert created.status_code == 422
+
+    created = client.post(
+        "/api/network/scenarios",
+        json={
+            "scenario_name": "Unknown lane",
+            "demand_plan_version_id": options["default_demand_plan_version_id"],
+            "capacity_plan_version_id": options["default_capacity_plan_version_id"],
+            "horizon_start": "2026-09-21",
+            "horizon_end": "2026-09-23",
+            "assumptions": {"disabled_lane_ids": ["LNE_UNKNOWN"]},
+        },
+    )
+    assert created.status_code == 201
+    scenario_id = created.json()["scenario_id"]
+    validated = client.post(f"/api/network/scenarios/{scenario_id}/validate").json()
+    assert validated["validation"]["valid"] is False
+    assert any(
+        issue["code"] == "unknown_lane"
+        for issue in validated["validation"]["issues"]
+    )
+    assert client.post(f"/api/network/scenarios/{scenario_id}/run").status_code == 409
+    assert client.delete(f"/api/network/scenarios/{scenario_id}").status_code == 204

@@ -708,6 +708,18 @@ class ComparisonResult(StrictModel):
 
 NetworkLaneType = Literal["ALL", "LINEHAUL", "MARKET", "DELIVERY"]
 NetworkMetric = Literal["assigned_flow", "utilization", "cost", "cost_per_unit"]
+NetworkScenarioStatus = Literal[
+    "draft",
+    "validated",
+    "solving",
+    "solved",
+    "infeasible",
+    "failed",
+    "depot_plans_running",
+    "reconciliation_required",
+    "reconciled",
+    "published",
+]
 
 
 class NetworkRegionOption(StrictModel):
@@ -758,7 +770,7 @@ class NetworkOptions(StrictModel):
 
 
 class NetworkOverviewContext(StrictModel):
-    scenario_id: Literal["baseline"] = "baseline"
+    scenario_id: str = "baseline"
     demand_plan_version_id: str
     capacity_plan_version_id: str
     horizon_start: str
@@ -853,6 +865,124 @@ class NetworkOverview(StrictModel):
     source: str
     freshness_at: str
     is_partial: bool = False
+
+
+class NetworkScenarioAssumptions(StrictModel):
+    disabled_facility_ids: list[str] = Field(default_factory=list)
+    disabled_lane_ids: list[str] = Field(default_factory=list)
+    lane_cost_adjustments_pct: dict[str, float] = Field(default_factory=dict)
+    unmet_penalty_per_case: float = Field(default=250.0, ge=0)
+
+
+class NetworkScenarioValidationIssue(StrictModel):
+    severity: Literal["error", "warning", "info"]
+    code: str
+    scope: Literal["scenario", "plan", "facility", "lane", "rate"]
+    entity_id: str | None = None
+    message: str
+
+
+class NetworkScenarioValidation(StrictModel):
+    valid: bool
+    issues: list[NetworkScenarioValidationIssue] = Field(default_factory=list)
+    summary: str
+    validated_at: str
+
+
+class NetworkScenario(StrictModel):
+    scenario_id: str
+    scenario_name: str
+    baseline_scenario_id: str = "baseline"
+    demand_plan_version_id: str
+    capacity_plan_version_id: str
+    horizon_start: str
+    horizon_end: str
+    region_id: str
+    status: NetworkScenarioStatus = "draft"
+    revision: int = Field(default=1, ge=1)
+    assumptions: NetworkScenarioAssumptions = Field(
+        default_factory=NetworkScenarioAssumptions
+    )
+    validation: NetworkScenarioValidation | None = None
+    created_at: str
+    updated_at: str
+    solved_at: str | None = None
+
+
+class NetworkScenarioCreateRequest(StrictModel):
+    scenario_name: str
+    baseline_scenario_id: str = "baseline"
+    demand_plan_version_id: str
+    capacity_plan_version_id: str
+    horizon_start: str
+    horizon_end: str
+    region_id: str = "ALL"
+    assumptions: NetworkScenarioAssumptions = Field(
+        default_factory=NetworkScenarioAssumptions
+    )
+
+
+class NetworkScenarioUpdateRequest(StrictModel):
+    scenario_name: str | None = None
+    assumptions: NetworkScenarioAssumptions | None = None
+
+
+class NetworkScenarioKpiDeltas(StrictModel):
+    demand_units: int
+    assigned_units: int
+    unmet_units: int
+    total_cost: float
+    cost_per_unit: float
+    on_time_pct: float
+    utilization_pct: float
+
+
+class NetworkScenarioException(StrictModel):
+    exception_id: str
+    exception_type: Literal[
+        "unmet_demand",
+        "capacity_constraint",
+        "missing_rate",
+        "disconnected_node",
+    ]
+    severity: Literal["info", "warning", "critical"]
+    service_date: str | None = None
+    entity_type: Literal["network", "facility", "lane"]
+    entity_id: str | None = None
+    message: str
+    demand_units: int | None = None
+    assigned_units: int | None = None
+    unmet_units: int | None = None
+
+
+class NetworkFlowChargeDetail(StrictModel):
+    service_date: str
+    lane_id: str
+    assigned_units: int = Field(ge=0)
+    loads: int = Field(ge=0)
+    rate_source: Literal["governed_contract", "planning_fallback"]
+    contract_id: str | None = None
+    contract_version_id: str | None = None
+    rate_book_snapshot_id: str | None = None
+    total_cost: float = Field(ge=0)
+    charge_lines: list[RateChargeLine] = Field(default_factory=list)
+
+
+class NetworkScenarioResult(StrictModel):
+    scenario_id: str
+    revision: int = Field(ge=1)
+    generated_at: str
+    overview: NetworkOverview
+    baseline_overview: NetworkOverview
+    kpi_deltas: NetworkScenarioKpiDeltas
+    affected_depot_ids: list[str] = Field(default_factory=list)
+    charge_details: list[NetworkFlowChargeDetail] = Field(default_factory=list)
+    exceptions: list[NetworkScenarioException] = Field(default_factory=list)
+
+
+class NetworkScenarioRunResponse(StrictModel):
+    scenario: NetworkScenario
+    result: NetworkScenarioResult
 
 
 class EditorSession(StrictModel):
