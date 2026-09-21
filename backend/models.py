@@ -701,6 +701,154 @@ class ComparisonResult(StrictModel):
     rate_book_snapshot_id: str | None = None
 
 
+NetworkLaneType = Literal["ALL", "LINEHAUL", "MARKET", "DELIVERY"]
+NetworkMetric = Literal["assigned_flow", "utilization", "cost", "cost_per_unit"]
+
+
+class NetworkRegionOption(StrictModel):
+    region_id: str
+    region_name: str
+
+
+class NetworkFacilityOption(StrictModel):
+    facility_id: str
+    facility_name: str
+    facility_type: Literal["distribution_center", "depot"]
+    region_id: str
+    parent_facility_id: str | None = None
+
+
+class NetworkPlanVersionOption(StrictModel):
+    plan_version_id: str
+    display_name: str
+    as_of_date: str
+    horizon_start: str
+    horizon_end: str
+    status: Literal["published"] = "published"
+
+
+class NetworkMetricOption(StrictModel):
+    metric_id: NetworkMetric
+    label: str
+    unit: str
+
+
+class NetworkOptions(StrictModel):
+    regions: list[NetworkRegionOption]
+    facilities: list[NetworkFacilityOption]
+    demand_plans: list[NetworkPlanVersionOption]
+    capacity_plans: list[NetworkPlanVersionOption]
+    lane_types: list[NetworkLaneType]
+    metrics: list[NetworkMetricOption]
+    default_demand_plan_version_id: str
+    default_capacity_plan_version_id: str
+    default_horizon_start: str
+    default_horizon_end: str
+    default_region_id: str
+    default_lane_type: NetworkLaneType = "LINEHAUL"
+    default_metric: NetworkMetric = "assigned_flow"
+    source: str
+    freshness_at: str
+
+
+class NetworkOverviewContext(StrictModel):
+    scenario_id: Literal["baseline"] = "baseline"
+    demand_plan_version_id: str
+    capacity_plan_version_id: str
+    horizon_start: str
+    horizon_end: str
+    region_id: str
+    lane_type: NetworkLaneType
+    metric: NetworkMetric
+
+
+class NetworkOverviewKpis(StrictModel):
+    demand_units: int = Field(ge=0)
+    assigned_units: int = Field(ge=0)
+    unmet_units: int = Field(ge=0)
+    total_cost: float = Field(ge=0)
+    cost_per_unit: float = Field(ge=0)
+    on_time_pct: float = Field(ge=0, le=100)
+    utilization_pct: float = Field(ge=0)
+
+
+class NetworkFacilityAggregate(StrictModel):
+    facility_id: str
+    facility_name: str
+    facility_type: Literal["distribution_center", "depot"]
+    region_id: str
+    parent_facility_id: str | None = None
+    location: LatLng
+    demand_units: int = Field(ge=0)
+    assigned_units: int = Field(ge=0)
+    capacity_units: int = Field(ge=0)
+    utilization_pct: float = Field(ge=0)
+    total_cost: float = Field(ge=0)
+    cost_per_unit: float = Field(ge=0)
+    on_time_pct: float = Field(ge=0, le=100)
+    connected_facility_count: int = Field(ge=0)
+    depot_count: int = Field(ge=0)
+    depot_analysis_available: bool = False
+
+
+class NetworkLaneAggregate(StrictModel):
+    lane_id: str
+    lane_name: str
+    lane_type: Literal["LINEHAUL", "MARKET", "DELIVERY"]
+    origin_endpoint_id: str
+    origin_endpoint_name: str
+    origin_endpoint_type: Literal["facility", "market", "customer"]
+    origin_location: LatLng
+    destination_endpoint_id: str
+    destination_endpoint_name: str
+    destination_endpoint_type: Literal["facility", "market", "customer"]
+    destination_location: LatLng
+    mode: str
+    distance_miles: float = Field(ge=0)
+    transit_minutes: int = Field(ge=0)
+    assigned_units: int = Field(ge=0)
+    capacity_units: int = Field(ge=0)
+    utilization_pct: float = Field(ge=0)
+    total_cost: float = Field(ge=0)
+    cost_per_unit: float = Field(ge=0)
+    on_time_pct: float = Field(ge=0, le=100)
+    contract_coverage: Literal["covered", "partial", "not_required"]
+    contract_id: str | None = None
+    contract_version_id: str | None = None
+    included_in_network_cost: bool
+
+
+class NetworkInsight(StrictModel):
+    insight_id: str
+    insight_type: Literal[
+        "bottleneck",
+        "unmet_demand",
+        "high_cost",
+        "underutilized_capacity",
+        "service_risk",
+        "contract_gap",
+    ]
+    severity: Literal["info", "warning", "critical"]
+    title: str
+    summary: str
+    entity_type: Literal["facility", "lane", "network"]
+    entity_id: str | None = None
+    metric_value: float | None = None
+    metric_unit: str | None = None
+
+
+class NetworkOverview(StrictModel):
+    context: NetworkOverviewContext
+    kpis: NetworkOverviewKpis
+    facilities: list[NetworkFacilityAggregate]
+    lanes: list[NetworkLaneAggregate]
+    insights: list[NetworkInsight]
+    summary: str
+    source: str
+    freshness_at: str
+    is_partial: bool = False
+
+
 class EditorSession(StrictModel):
     """Authenticated user's isolated planning-data editing session."""
 

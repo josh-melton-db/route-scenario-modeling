@@ -1,8 +1,7 @@
 command:
-  - uvicorn
-  - backend.main:app
-  - --host=0.0.0.0
-  - --port=8000
+  - python
+  - -m
+  - backend.main
 env:
   - name: DATABRICKS_CATALOG
     value: demos
@@ -10,6 +9,8 @@ env:
     value: route_scenario_modeling
   - name: DATA_BACKEND
     value: lakebase
+  - name: DATABRICKS_SQL_WAREHOUSE_ID
+    valueFrom: sql_warehouse
   - name: LAKEBASE_APP_SCHEMA
     value: route_scenario_modeling
   - name: LAKEBASE_ENDPOINT

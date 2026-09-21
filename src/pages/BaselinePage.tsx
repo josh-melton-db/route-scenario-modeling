@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Loader2 } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { ArrowLeft, Loader2 } from 'lucide-react'
 import type { KpiDeltas, Kpis } from '@/api/types'
 import CarrierCostAnalysis from '@/components/CarrierCostAnalysis'
 import CostBreakdown from '@/components/CostBreakdown'
@@ -24,16 +24,25 @@ import {
 
 export default function BaselinePage() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [depotId, setDepotId] = useState('DPT_NORTH')
-  const [deliveryDay, setDeliveryDay] = useState('Tuesday')
+  const [depotId, setDepotId] = useState(
+    () => searchParams.get('depot') || 'DPT_NORTH',
+  )
+  const [deliveryDay, setDeliveryDay] = useState(
+    () =>
+      searchParams.get('day') ||
+      deliveryDayFromDate(searchParams.get('date')) ||
+      'Tuesday',
+  )
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null)
   const primaryScenarioId = searchParams.get('primary') || 'baseline'
   const comparisonScenarioId = searchParams.get('compare') || ''
 
   function updateSelection(primary: string, comparison: string) {
-    const next = new URLSearchParams()
+    const next = new URLSearchParams(searchParams)
     if (primary !== 'baseline') next.set('primary', primary)
+    else next.delete('primary')
     if (comparison) next.set('compare', comparison)
+    else next.delete('compare')
     setSearchParams(next, { replace: true })
   }
 
@@ -61,6 +70,19 @@ export default function BaselinePage() {
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
+      {safeNetworkReturn(searchParams.get('networkReturn')) && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2">
+          <Link
+            to={safeNetworkReturn(searchParams.get('networkReturn')) as string}
+            className="inline-flex items-center gap-2 text-xs font-medium text-primary hover:underline"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" /> Back to network baseline
+          </Link>
+          <span className="text-xs text-muted-foreground">
+            Depot analysis · supplied by network plan
+          </span>
+        </div>
+      )}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex flex-wrap items-end gap-3">
           <ScenarioCombobox
@@ -94,6 +116,11 @@ export default function BaselinePage() {
             setDepotId(nextDepot)
             setDeliveryDay(nextDay)
             setSelectedRouteId(null)
+            const next = new URLSearchParams(searchParams)
+            next.set('depot', nextDepot)
+            next.set('day', nextDay)
+            next.delete('date')
+            setSearchParams(next, { replace: true })
           }}
         />
       </div>
@@ -236,6 +263,17 @@ export default function BaselinePage() {
       )}
     </div>
   )
+}
+
+function deliveryDayFromDate(value: string | null) {
+  if (!value) return null
+  const parsed = new Date(`${value}T12:00:00`)
+  if (Number.isNaN(parsed.valueOf())) return null
+  return parsed.toLocaleDateString('en-US', { weekday: 'long' })
+}
+
+function safeNetworkReturn(value: string | null) {
+  return value?.startsWith('/network') ? value : null
 }
 
 function scenarioName(id: string, scenarios: { scenario_id: string; scenario_name: string }[]) {

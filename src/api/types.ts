@@ -54,6 +54,159 @@ export interface Depot {
   location: LatLng
 }
 
+export type NetworkLaneType = 'ALL' | 'LINEHAUL' | 'MARKET' | 'DELIVERY'
+export type NetworkMetric =
+  | 'assigned_flow'
+  | 'utilization'
+  | 'cost'
+  | 'cost_per_unit'
+
+export interface NetworkRegionOption {
+  region_id: string
+  region_name: string
+}
+
+export interface NetworkFacilityOption {
+  facility_id: string
+  facility_name: string
+  facility_type: 'distribution_center' | 'depot'
+  region_id: string
+  parent_facility_id: string | null
+}
+
+export interface NetworkPlanVersionOption {
+  plan_version_id: string
+  display_name: string
+  as_of_date: string
+  horizon_start: string
+  horizon_end: string
+  status: 'published'
+}
+
+export interface NetworkMetricOption {
+  metric_id: NetworkMetric
+  label: string
+  unit: string
+}
+
+export interface NetworkOptions {
+  regions: NetworkRegionOption[]
+  facilities: NetworkFacilityOption[]
+  demand_plans: NetworkPlanVersionOption[]
+  capacity_plans: NetworkPlanVersionOption[]
+  lane_types: NetworkLaneType[]
+  metrics: NetworkMetricOption[]
+  default_demand_plan_version_id: string
+  default_capacity_plan_version_id: string
+  default_horizon_start: string
+  default_horizon_end: string
+  default_region_id: string
+  default_lane_type: NetworkLaneType
+  default_metric: NetworkMetric
+  source: string
+  freshness_at: string
+}
+
+export interface NetworkOverviewParams {
+  demand_plan_version_id: string
+  capacity_plan_version_id: string
+  horizon_start: string
+  horizon_end: string
+  region_id: string
+  lane_type: NetworkLaneType
+  metric: NetworkMetric
+}
+
+export interface NetworkOverviewContext extends NetworkOverviewParams {
+  scenario_id: 'baseline'
+}
+
+export interface NetworkOverviewKpis {
+  demand_units: number
+  assigned_units: number
+  unmet_units: number
+  total_cost: number
+  cost_per_unit: number
+  on_time_pct: number
+  utilization_pct: number
+}
+
+export interface NetworkFacilityAggregate {
+  facility_id: string
+  facility_name: string
+  facility_type: 'distribution_center' | 'depot'
+  region_id: string
+  parent_facility_id: string | null
+  location: LatLng
+  demand_units: number
+  assigned_units: number
+  capacity_units: number
+  utilization_pct: number
+  total_cost: number
+  cost_per_unit: number
+  on_time_pct: number
+  connected_facility_count: number
+  depot_count: number
+  depot_analysis_available: boolean
+}
+
+export interface NetworkLaneAggregate {
+  lane_id: string
+  lane_name: string
+  lane_type: Exclude<NetworkLaneType, 'ALL'>
+  origin_endpoint_id: string
+  origin_endpoint_name: string
+  origin_endpoint_type: 'facility' | 'market' | 'customer'
+  origin_location: LatLng
+  destination_endpoint_id: string
+  destination_endpoint_name: string
+  destination_endpoint_type: 'facility' | 'market' | 'customer'
+  destination_location: LatLng
+  mode: string
+  distance_miles: number
+  transit_minutes: number
+  assigned_units: number
+  capacity_units: number
+  utilization_pct: number
+  total_cost: number
+  cost_per_unit: number
+  on_time_pct: number
+  contract_coverage: 'covered' | 'partial' | 'not_required'
+  contract_id: string | null
+  contract_version_id: string | null
+  included_in_network_cost: boolean
+}
+
+export interface NetworkInsight {
+  insight_id: string
+  insight_type:
+    | 'bottleneck'
+    | 'unmet_demand'
+    | 'high_cost'
+    | 'underutilized_capacity'
+    | 'service_risk'
+    | 'contract_gap'
+  severity: 'info' | 'warning' | 'critical'
+  title: string
+  summary: string
+  entity_type: 'facility' | 'lane' | 'network'
+  entity_id: string | null
+  metric_value: number | null
+  metric_unit: string | null
+}
+
+export interface NetworkOverview {
+  context: NetworkOverviewContext
+  kpis: NetworkOverviewKpis
+  facilities: NetworkFacilityAggregate[]
+  lanes: NetworkLaneAggregate[]
+  insights: NetworkInsight[]
+  summary: string
+  source: string
+  freshness_at: string
+  is_partial: boolean
+}
+
 export interface Carrier {
   carrier_id: string
   carrier_name: string

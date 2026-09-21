@@ -7,6 +7,7 @@ import type {
   EditorInsertRequest,
   EditorPatchRequest,
   EditorPreviewRequest,
+  NetworkOverviewParams,
   RateContractCreateRequest,
   RateDraftUpdateRequest,
   RatePublishRequest,
@@ -22,6 +23,9 @@ import type {
 const terminalStatuses = new Set(['succeeded', 'infeasible', 'failed'])
 
 export const queryKeys = {
+  networkOptions: ['network-options'] as const,
+  networkOverview: (params: NetworkOverviewParams) =>
+    ['network-overview', params] as const,
   depots: ['depots'] as const,
   days: ['days'] as const,
   carriers: ['carriers'] as const,
@@ -48,6 +52,22 @@ export const queryKeys = {
     page: number,
     pageSize: number,
   ) => ['editor-rows', sessionId, entityType, page, pageSize] as const,
+}
+
+export function useNetworkOptions() {
+  return useQuery({
+    queryKey: queryKeys.networkOptions,
+    queryFn: api.networkOptions,
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+export function useNetworkOverview(params: NetworkOverviewParams | null) {
+  return useQuery({
+    queryKey: params ? queryKeys.networkOverview(params) : ['network-overview', 'disabled'],
+    queryFn: () => api.networkOverview(params as NetworkOverviewParams),
+    enabled: Boolean(params),
+  })
 }
 
 export function useDepots() {

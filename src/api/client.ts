@@ -30,6 +30,9 @@ import type {
   EditorSession,
   EditorValidationResponse,
   Kpis,
+  NetworkOptions,
+  NetworkOverview,
+  NetworkOverviewParams,
   RunStartResponse,
   RunStatusResponse,
   ScenarioCreateRequest,
@@ -62,6 +65,9 @@ function qs(params: Record<string, string>): string {
 }
 
 export const api = {
+  networkOptions: () => requestJSON<NetworkOptions>('/api/network/options'),
+  networkOverview: (params: NetworkOverviewParams) =>
+    requestJSON<NetworkOverview>(`/api/network/overview?${qs({ ...params })}`),
   depots: () => requestJSON<Depot[]>('/api/meta/depots'),
   days: () => requestJSON<string[]>('/api/meta/days'),
   carriers: () => requestJSON<Carrier[]>('/api/meta/carriers'),

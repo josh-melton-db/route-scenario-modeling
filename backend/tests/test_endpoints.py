@@ -52,6 +52,64 @@ def test_baseline_endpoints() -> None:
     assert kpis.json()["cost_breakdown"]["total_cost"] == 4920
 
 
+def test_network_overview_endpoints() -> None:
+    options = client.get("/api/network/options")
+    assert options.status_code == 200
+    option_payload = options.json()
+    assert option_payload["default_lane_type"] == "LINEHAUL"
+    assert option_payload["default_region_id"] == "REGION_GREAT_LAKES"
+    assert len(option_payload["facilities"]) == 8
+    assert {row["metric_id"] for row in option_payload["metrics"]} == {
+        "assigned_flow",
+        "utilization",
+        "cost",
+        "cost_per_unit",
+    }
+
+    overview = client.get("/api/network/overview")
+    assert overview.status_code == 200
+    payload = overview.json()
+    assert payload["context"]["lane_type"] == "LINEHAUL"
+    assert payload["kpis"]["demand_units"] == payload["kpis"]["assigned_units"]
+    assert payload["kpis"]["unmet_units"] == 0
+    assert payload["kpis"]["total_cost"] > 0
+    assert len(payload["facilities"]) == 8
+    assert len(payload["lanes"]) == 8
+    assert payload["insights"]
+
+    selected_lane = payload["lanes"][0]
+    assert selected_lane["origin_location"]["lat"]
+    assert selected_lane["destination_location"]["lng"]
+
+
+def test_network_overview_filters_and_validation() -> None:
+    delivery = client.get(
+        "/api/network/overview",
+        params={
+            "lane_type": "DELIVERY",
+            "metric": "cost_per_unit",
+            "horizon_start": "2026-09-21",
+            "horizon_end": "2026-09-21",
+        },
+    )
+    assert delivery.status_code == 200
+    payload = delivery.json()
+    assert payload["context"]["metric"] == "cost_per_unit"
+    assert len(payload["lanes"]) == 72
+    assert all(row["lane_type"] == "DELIVERY" for row in payload["lanes"])
+
+    invalid_range = client.get(
+        "/api/network/overview",
+        params={"horizon_start": "2026-09-22", "horizon_end": "2026-09-21"},
+    )
+    assert invalid_range.status_code == 400
+
+    missing_region = client.get(
+        "/api/network/overview", params={"region_id": "REGION_UNKNOWN"}
+    )
+    assert missing_region.status_code == 404
+
+
 def test_scenario_lifecycle() -> None:
     created = client.post(
         "/api/scenarios",

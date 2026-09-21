@@ -132,9 +132,15 @@ resources:
       description: Route scenario modeling for baseline reconstruction and what-if planning
       source_code_path: .
       config:
+        command:
+          - python
+          - -m
+          - backend.main
         env:
           - name: DATA_BACKEND
             value: lakebase
+          - name: DATABRICKS_SQL_WAREHOUSE_ID
+            value_from: sql_warehouse
           - name: LAKEBASE_APP_SCHEMA
             value: ${var.lakebase_app_schema}
           - name: LAKEBASE_ENDPOINT
@@ -239,4 +245,64 @@ resources:
           uc_securable:
             securable_type: TABLE
             securable_full_name: ${var.catalog}.${var.schema}.cost_parameters
+            permission: SELECT
+        - name: dim_regions
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.dim_regions
+            permission: SELECT
+        - name: dim_facilities
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.dim_facilities
+            permission: SELECT
+        - name: facility_hierarchy
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.facility_hierarchy
+            permission: SELECT
+        - name: dim_markets
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.dim_markets
+            permission: SELECT
+        - name: dim_network_customers
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.dim_network_customers
+            permission: SELECT
+        - name: dim_network_lanes
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.dim_network_lanes
+            permission: SELECT
+        - name: demand_plan_versions
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.demand_plan_versions
+            permission: SELECT
+        - name: demand_plan_daily
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.demand_plan_daily
+            permission: SELECT
+        - name: capacity_plan_versions
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.capacity_plan_versions
+            permission: SELECT
+        - name: facility_capacity_daily
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.facility_capacity_daily
+            permission: SELECT
+        - name: lane_capacity_daily
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.lane_capacity_daily
+            permission: SELECT
+        - name: baseline_network_flow_daily
+          uc_securable:
+            securable_type: TABLE
+            securable_full_name: ${var.catalog}.${var.schema}.baseline_network_flow_daily
             permission: SELECT

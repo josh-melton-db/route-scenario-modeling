@@ -1,12 +1,18 @@
 import { Link, useLocation } from 'react-router-dom'
-import { MapPinned, PlayCircle, Route, ScrollText, Table2 } from 'lucide-react'
+import { MapPinned, Network, PlayCircle, Route, ScrollText, Table2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
   {
+    path: '/network',
+    label: 'Network',
+    icon: Network,
+    activePrefixes: ['/network'],
+  },
+  {
     path: '/analyze',
-    label: 'Analyze',
+    label: 'Depot',
     icon: MapPinned,
     activePrefixes: ['/analyze'],
   },
@@ -37,7 +43,7 @@ export function Layout({ children }: { children: ReactNode }) {
     <div className="min-h-screen flex flex-col bg-background">
       <nav className="sticky top-0 z-50 border-b border-border/60 bg-card/80 backdrop-blur">
         <div className="grid min-h-16 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-4 sm:px-6 lg:px-8">
-          <Link to="/analyze" className="flex min-w-0 items-center gap-2 justify-self-start">
+          <Link to="/network" className="flex min-w-0 items-center gap-2 justify-self-start">
             <div className="rounded-md bg-primary/15 p-1.5 text-primary">
               <Route className="h-4 w-4" />
             </div>
