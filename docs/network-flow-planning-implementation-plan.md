@@ -454,6 +454,7 @@ Implementation status as of September 21, 2026:
 - Phase 1 is implemented: canonical schemas, four-region deterministic data, alternate DC paths, normal and Southeast-constrained published inputs, canonical rate endpoints, reconciliation, and validation.
 - Phase 2 is implemented: the read-only network overview, governed context API, URL-backed filters and deep links, planning map, KPI and insight surfaces, entity details, and depot round-trip navigation.
 - Phase 3 is implemented as a thin end-to-end vertical slice: network scenario authoring (facility/lane assumptions, unmet penalty), validation against published plans, a fixed-capacity min-cost-flow solve that never invents capacity, governed-contract rating with explicit planning-fallback exceptions, Lakebase persistence with revisions, and the five-tab scenario workspace (Scenario, Plan flow, Lane changes, Rate audit, Exceptions). Depot-plan fan-out and reconciliation remain future work.
+- Navigation is now two-level: the app lands on the network overview (minimal nav plus a scenario picker; selecting a scenario reveals the Scenario/Plan flow/Lane changes/Rate audit/Exceptions tabs), while clicking a depot or DC from the map drills into the lower level carrying Depot/Scenarios/Rates/Inputs. All 24 depots serve generated route-level analysis; DCs get a summary page linking into their depots.
 
 ### Phase 1 Canonical data and synthetic generation
 
