@@ -694,7 +694,6 @@ function FlowTab({
         <NetworkFlowMap
           facilities={overview.facilities}
           lanes={overview.lanes}
-          metric="assigned_flow"
           selectedFacilityId={selectedFacilityId}
           selectedLaneId={selectedLaneId}
           onSelectFacility={(id) => {

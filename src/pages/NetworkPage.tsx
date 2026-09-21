@@ -134,7 +134,6 @@ export default function NetworkPage() {
         <NetworkFlowMap
           facilities={overview.data.facilities}
           lanes={overview.data.lanes}
-          metric={context.metric}
           selectedFacilityId={selectedFacility?.facility_id ?? null}
           selectedLaneId={selectedLane?.lane_id ?? null}
           onSelectFacility={(id) => selectEntity('facility', id)}

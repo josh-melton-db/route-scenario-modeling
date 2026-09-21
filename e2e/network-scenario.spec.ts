@@ -75,7 +75,7 @@ test.describe('network scenario save, validate, and run', () => {
     // Deleting from the scenario tab returns to the network overview.
     await page.getByRole('link', { name: 'Scenario', exact: true }).click()
     await page.getByRole('button', { name: 'Delete scenario' }).click()
-    await expect(page).toHaveURL(/\/network$/)
+    await expect(page).toHaveURL(/\/network(\?|$)/)
     await expect(page.getByRole('heading', { name: 'Network baseline' })).toBeVisible()
   })
 

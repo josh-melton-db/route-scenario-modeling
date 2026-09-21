@@ -47,7 +47,7 @@ export default function NetworkContextBar({
         </div>
       </div>
 
-      <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[1.4fr_1.4fr_1fr_1fr_1fr_1fr_1fr]">
+      <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[1.5fr_1.5fr_1fr_1fr_1fr_1fr]">
         <ContextSelect
           label="Demand plan"
           value={value.demand_plan_version_id}
@@ -131,17 +131,6 @@ export default function NetworkContextBar({
           options={options.lane_types.map((laneType) => ({
             value: laneType,
             label: laneLabels[laneType],
-          }))}
-        />
-        <ContextSelect
-          label="Map metric"
-          value={value.metric}
-          onChange={(next) =>
-            onChange({ metric: next as NetworkOverviewParams['metric'] })
-          }
-          options={options.metrics.map((metric) => ({
-            value: metric.metric_id,
-            label: metric.label,
           }))}
         />
       </div>
