@@ -129,11 +129,11 @@ def test_existing_generate_all_exposes_canonical_network_tables() -> None:
 
 def test_national_demo_shape_and_alternate_paths(national_network) -> None:
     data = national_network
-    assert len(data["dim_regions"]) == 4
-    assert len(data["dim_facilities"]) == 32
-    assert len(data["dim_markets"]) == 24
-    assert len(data["dim_network_customers"]) == 2400
-    assert len(data["demand_plan_daily"]) == 2400 * 28
+    assert len(data["dim_regions"]) == 5
+    assert len(data["dim_facilities"]) == 40
+    assert len(data["dim_markets"]) == 30
+    assert len(data["dim_network_customers"]) == 3000
+    assert len(data["demand_plan_daily"]) == 3000 * 28
     assert len(data["capacity_plan_versions"]) == 2
     assert validate_network_dataset(data) == []
 

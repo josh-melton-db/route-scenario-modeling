@@ -282,6 +282,70 @@ _ADDITIONAL_REGION_SPECS = (
             ),
         ),
     ),
+    (
+        "REGION_TOLA",
+        "TOLA",
+        (
+            (
+                "DC_TOLA_DALLAS",
+                "Dallas Distribution Center",
+                32.7767,
+                -96.7970,
+                "America/Chicago",
+            ),
+            (
+                "DC_TOLA_HOUSTON",
+                "Houston Distribution Center",
+                29.7604,
+                -95.3698,
+                "America/Chicago",
+            ),
+        ),
+        (
+            (
+                "DPT_TOLA_DALLAS",
+                "Dallas Depot",
+                "DC_TOLA_DALLAS",
+                32.8500,
+                -96.8500,
+            ),
+            (
+                "DPT_TOLA_OKLAHOMA",
+                "Oklahoma City Depot",
+                "DC_TOLA_DALLAS",
+                35.4676,
+                -97.5164,
+            ),
+            (
+                "DPT_TOLA_LITTLE_ROCK",
+                "Little Rock Depot",
+                "DC_TOLA_DALLAS",
+                34.7465,
+                -92.2896,
+            ),
+            (
+                "DPT_TOLA_HOUSTON",
+                "Houston Depot",
+                "DC_TOLA_HOUSTON",
+                29.8200,
+                -95.4200,
+            ),
+            (
+                "DPT_TOLA_SAN_ANTONIO",
+                "San Antonio Depot",
+                "DC_TOLA_HOUSTON",
+                29.4241,
+                -98.4936,
+            ),
+            (
+                "DPT_TOLA_NEW_ORLEANS",
+                "New Orleans Depot",
+                "DC_TOLA_HOUSTON",
+                29.9511,
+                -90.0715,
+            ),
+        ),
+    ),
 )
 
 _WEEKDAY_MULTIPLIERS = (1.00, 1.07, 1.12, 0.98, 1.16, 0.72, 0.58)
@@ -995,7 +1059,7 @@ def generate_national_network_dataset(
     horizon_start: date = DEFAULT_NETWORK_HORIZON_START,
     horizon_days: int = 28,
 ) -> dict[str, list[dict[str, object]]]:
-    """Generate the four-region US planning demo with alternate DC paths."""
+    """Generate the five-region US planning demo with alternate DC paths."""
 
     if horizon_days < 1:
         raise ValueError("horizon_days must be at least 1.")
@@ -1020,6 +1084,7 @@ def generate_national_network_dataset(
                     "REGION_NORTHEAST": "NE",
                     "REGION_SOUTHEAST": "SE",
                     "REGION_WEST": "W",
+                    "REGION_TOLA": "TOLA",
                 }[region_id],
             )
         )

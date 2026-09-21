@@ -12,7 +12,7 @@ def test_health_and_metadata_endpoints() -> None:
     depots = client.get("/api/meta/depots")
     assert depots.status_code == 200
     assert depots.json()[0]["depot_id"] == "DPT_NORTH"
-    assert len(depots.json()) == 24
+    assert len(depots.json()) == 30
 
     days = client.get("/api/meta/days")
     assert days.status_code == 200
@@ -62,8 +62,8 @@ def test_network_overview_endpoints() -> None:
     assert option_payload["default_capacity_plan_version_id"] == (
         "CAPACITY_US_SE_CONSTRAINED_V2"
     )
-    assert len(option_payload["regions"]) == 5
-    assert len(option_payload["facilities"]) == 32
+    assert len(option_payload["regions"]) == 6
+    assert len(option_payload["facilities"]) == 40
     assert len(option_payload["capacity_plans"]) == 2
     assert {row["metric_id"] for row in option_payload["metrics"]} == {
         "assigned_flow",
@@ -79,8 +79,8 @@ def test_network_overview_endpoints() -> None:
     assert payload["kpis"]["demand_units"] > payload["kpis"]["assigned_units"]
     assert payload["kpis"]["unmet_units"] > 0
     assert payload["kpis"]["total_cost"] > 0
-    assert len(payload["facilities"]) == 32
-    assert len(payload["lanes"]) == 56
+    assert len(payload["facilities"]) == 40
+    assert len(payload["lanes"]) == 70
     assert payload["insights"]
     assert all(row["utilization_pct"] <= 100 for row in payload["facilities"])
     atlanta = next(
@@ -109,7 +109,7 @@ def test_network_overview_filters_and_validation() -> None:
     assert delivery.status_code == 200
     payload = delivery.json()
     assert payload["context"]["metric"] == "cost_per_unit"
-    assert len(payload["lanes"]) == 2400
+    assert len(payload["lanes"]) == 3000
     assert all(row["lane_type"] == "DELIVERY" for row in payload["lanes"])
 
     normal = client.get(

@@ -25,7 +25,7 @@ test('drilling from a distribution center into depot-level analysis', async ({ p
 
   // The depot selector lists every network depot.
   const depotOptions = page.getByLabel('Depot').locator('option')
-  await expect(depotOptions).toHaveCount(24, { timeout: 30_000 })
+  await expect(depotOptions).toHaveCount(30, { timeout: 30_000 })
 
   // The return context brings the user back to the distribution center.
   await page.getByRole('link', { name: 'Back to network baseline' }).click()

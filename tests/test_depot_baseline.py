@@ -56,7 +56,7 @@ def test_every_network_depot_gets_a_baseline() -> None:
         for row in rows["dim_facilities"]
         if row["facility_type"] == "depot"
     ]
-    assert len(depot_ids) == 24
+    assert len(depot_ids) == 30
     for depot_id in depot_ids:
         result = generate_depot_baseline(rows, depot_id)
         assert result["baseline"]["depot"]["depot_id"] == depot_id
