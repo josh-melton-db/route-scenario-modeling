@@ -11,9 +11,7 @@ from typing import Any, cast
 
 from fastapi import HTTPException
 
-from route_opt.network_synthetic import generate_national_network_dataset
-from route_opt.synthetic import generate_depots
-
+from route_opt.network_synthetic import national_dataset_cached
 from ..config import get_data_backend
 from ..models import (
     NetworkFacilityAggregate,
@@ -37,10 +35,7 @@ NetworkRows = dict[str, list[dict[str, Any]]]
 
 @lru_cache(maxsize=1)
 def _local_network_rows() -> NetworkRows:
-    return cast(
-        NetworkRows,
-        generate_national_network_dataset(generate_depots(), seed=42),
-    )
+    return cast(NetworkRows, national_dataset_cached(seed=42))
 
 
 def _as_string(value: object) -> str:
@@ -605,7 +600,7 @@ class NetworkOverviewService:
                 connected[destination_id].add(origin_id)
 
         facility_aggregates: list[NetworkFacilityAggregate] = []
-        local_detail_ids = {"DPT_NORTH"} if get_data_backend() == "stub" else set(facilities)
+        local_detail_ids = set(facilities)
         for facility_id, facility in facilities.items():
             if (
                 context.region_id != "ALL"

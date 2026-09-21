@@ -11,7 +11,8 @@ def test_health_and_metadata_endpoints() -> None:
 
     depots = client.get("/api/meta/depots")
     assert depots.status_code == 200
-    assert [depot["depot_id"] for depot in depots.json()] == ["DPT_NORTH"]
+    assert depots.json()[0]["depot_id"] == "DPT_NORTH"
+    assert len(depots.json()) == 24
 
     days = client.get("/api/meta/days")
     assert days.status_code == 200
@@ -321,3 +322,64 @@ def test_network_scenario_validation_rejects_unknown_references() -> None:
     )
     assert client.post(f"/api/network/scenarios/{scenario_id}/run").status_code == 409
     assert client.delete(f"/api/network/scenarios/{scenario_id}").status_code == 204
+
+
+def test_generated_depot_baseline_and_scenario_endpoints() -> None:
+    network = client.get(
+        "/api/baseline/network", params={"depot_id": "DPT_CHICAGO", "delivery_day": "Tuesday"}
+    )
+    assert network.status_code == 200
+    payload = network.json()
+    assert payload["depot"]["depot_id"] == "DPT_CHICAGO"
+    assert payload["depot"]["region"] == "Great Lakes"
+    assert len(payload["routes"]) >= 10
+    assert all(route["depot_id"] == "DPT_CHICAGO" for route in payload["routes"])
+    assert {stop["customer_id"] for route in payload["routes"] for stop in route["stops"]}
+
+    kpis = client.get(
+        "/api/baseline/kpis", params={"depot_id": "DPT_CHICAGO", "delivery_day": "Tuesday"}
+    )
+    assert kpis.status_code == 200
+    assert kpis.json()["route_count"] == len(payload["routes"])
+    assert kpis.json()["total_cases"] == sum(
+        route["total_cases"] for route in payload["routes"]
+    )
+
+    created = client.post(
+        "/api/scenarios",
+        json={
+            "scenario_name": "Chicago consolidation",
+            "scenario_type": "driver_count_change",
+            "baseline_scenario_id": "baseline",
+            "depot_id": "DPT_CHICAGO",
+            "delivery_day": "Tuesday",
+            "parameters": {"driver_delta": -1, "allow_overtime": True},
+        },
+    )
+    assert created.status_code == 200
+    scenario_id = created.json()["scenario"]["scenario_id"]
+    assert client.post(f"/api/scenarios/{scenario_id}/run").status_code == 200
+
+    result = client.get(f"/api/scenarios/{scenario_id}/results")
+    assert result.status_code == 200
+    body = result.json()
+    assert body["baseline_depot"]["depot_id"] == "DPT_CHICAGO"
+    assert body["scenario_depot"]["depot_id"] == "DPT_CHICAGO"
+    assert all(
+        route["depot_id"] == "DPT_CHICAGO" for route in body["scenario_routes"]
+    )
+    baseline_stops = sum(len(route["stops"]) for route in body["baseline_routes"])
+    scenario_stops = sum(len(route["stops"]) for route in body["scenario_routes"])
+    assert scenario_stops == baseline_stops == 100
+    assert client.delete(f"/api/scenarios/{scenario_id}").status_code == 204
+
+
+def test_unknown_depot_baseline_is_rejected() -> None:
+    missing = client.get(
+        "/api/baseline/network", params={"depot_id": "DPT_UNKNOWN", "delivery_day": "Tuesday"}
+    )
+    assert missing.status_code == 404
+    wrong_day = client.get(
+        "/api/baseline/network", params={"depot_id": "DPT_CHICAGO", "delivery_day": "Friday"}
+    )
+    assert wrong_day.status_code == 404

@@ -186,10 +186,7 @@ function buildDepotAnalysisHref(
   horizonEnd: string,
   networkParams: URLSearchParams,
 ) {
-  const serviceDate =
-    depotId === 'DPT_NORTH'
-      ? firstWeekdayInRange(horizonStart, horizonEnd, 2)
-      : horizonStart
+  const serviceDate = firstWeekdayInRange(horizonStart, horizonEnd, 2)
   if (!serviceDate) return null
   const returnPath = `/network?${networkParams.toString()}`
   const params = new URLSearchParams({

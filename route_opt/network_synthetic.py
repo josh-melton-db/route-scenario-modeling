@@ -1,4 +1,15 @@
 from __future__ import annotations
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def national_dataset_cached(seed: int = 42) -> dict[str, list]:
+    """Single shared national dataset for overview, scenarios, and depot baselines."""
+    from .synthetic import generate_depots
+
+    return generate_national_network_dataset(generate_depots(), seed=seed)  # type: ignore[return-value]
+
+
 
 import math
 import random

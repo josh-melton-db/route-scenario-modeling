@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -10,6 +11,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from route_opt.depot_baseline import DELIVERY_DAY, generate_depot_baseline
+from route_opt.network_synthetic import national_dataset_cached
 from route_opt.rates import contract_detail_from_legacy, contract_status, quote_contract
 
 from ..config import get_stub_dir
@@ -97,6 +100,43 @@ def _build_route(
     )
 
 
+
+def _generated_new_stops(depot: Depot) -> list[Stop]:
+    """Deterministic new-customer growth stops placed near any depot."""
+    specs = [
+        ("CUST-901", "Meadowbrook Foods", 105, 0.045, 0.03),
+        ("CUST-902", "Creekside Market", 95, -0.04, 0.05),
+        ("CUST-903", "Prairie Grocery", 100, 0.06, -0.035),
+        ("CUST-904", "Townline Retail", 100, -0.05, -0.045),
+    ]
+    stops: list[Stop] = []
+    clock = 480
+    for index, (customer_id, name, cases, dlat, dlng) in enumerate(specs, start=1):
+        arrival = clock + 12 * index
+        departure = arrival + 25
+        stops.append(
+            Stop(
+                stop_id=f"STP-90{index}",
+                customer_id=customer_id,
+                customer_name=name,
+                sequence=index,
+                location=LatLng(
+                    lat=round(depot.location.lat + dlat, 6),
+                    lng=round(depot.location.lng + dlng, 6),
+                ),
+                demand_cases=cases,
+                service_minutes=25,
+                time_window_start="08:00",
+                time_window_end="12:00",
+                arrival_time=f"{arrival // 60:02d}:{arrival % 60:02d}",
+                departure_time=f"{departure // 60:02d}:{departure % 60:02d}",
+                delivery_day="Tuesday",
+                is_new_customer=True,
+            )
+        )
+    return stops
+
+
 class StubStore:
     def __init__(self, stub_dir: Path | None = None):
         self.stub_dir = stub_dir or get_stub_dir()
@@ -111,6 +151,9 @@ class StubStore:
         self._baseline_kpis = Kpis.model_validate(
             _read_json(self.stub_dir / "baseline" / "kpis.json")
         )
+        # Baselines for the remaining network depots are generated lazily from
+        # the same canonical dataset that powers the network overview.
+        self._generated_baselines: dict[str, dict[str, Any]] = {}
         self._scenario_raw: dict[str, dict[str, Any]] = {}
         scenarios_dir = self.stub_dir / "scenarios"
         for path in sorted(scenarios_dir.glob("*.json")):
@@ -189,7 +232,7 @@ class StubStore:
             self._rate_contract_details[(contract.contract_id, detail.version.version_id)] = detail
 
     def list_depots(self) -> list[Depot]:
-        return [self._baseline_network.depot]
+        return [self._baseline_network.depot, *self._other_depot_ids_as_depots()]
 
     def list_days(self) -> list[str]:
         return [self._baseline_network.delivery_day]
@@ -466,16 +509,44 @@ class StubStore:
             for scenario in scenarios
         ]
 
+    def _generated_baseline(self, depot_id: str) -> dict[str, Any]:
+        cached = self._generated_baselines.get(depot_id)
+        if cached is None:
+            cached = generate_depot_baseline(national_dataset_cached(seed=42), depot_id)
+            self._generated_baselines[depot_id] = cached
+        return cached
+
+    def _other_depot_ids_as_depots(self) -> list[Depot]:
+        rows = national_dataset_cached(seed=42)
+        known = {self._baseline_network.depot.depot_id}
+        depots: list[Depot] = []
+        for row in rows["dim_facilities"]:
+            if row["facility_type"] != "depot" or str(row["facility_id"]) in known:
+                continue
+            generated = self._generated_baseline(str(row["facility_id"]))
+            depots.append(Depot.model_validate(generated["baseline"]["depot"]))
+        return sorted(depots, key=lambda row: row.depot_id)
+
     def get_baseline_network(self, depot_id: str, delivery_day: str) -> BaselineNetwork:
-        if depot_id != self._baseline_network.depot.depot_id:
-            raise HTTPException(status_code=404, detail="Baseline depot not found in stubs.")
-        if delivery_day != self._baseline_network.delivery_day:
+        if delivery_day != DELIVERY_DAY:
             raise HTTPException(status_code=404, detail="Baseline day not found in stubs.")
-        return self._baseline_network
+        if depot_id == self._baseline_network.depot.depot_id:
+            return self._baseline_network
+        if depot_id in {
+            str(row["facility_id"])
+            for row in national_dataset_cached(seed=42)["dim_facilities"]
+            if row["facility_type"] == "depot"
+        }:
+            return BaselineNetwork.model_validate(
+                self._generated_baseline(depot_id)["baseline"]
+            )
+        raise HTTPException(status_code=404, detail="Baseline depot not found in stubs.")
 
     def get_baseline_kpis(self, depot_id: str, delivery_day: str) -> Kpis:
-        self.get_baseline_network(depot_id, delivery_day)
-        return self._baseline_kpis
+        if depot_id == self._baseline_network.depot.depot_id:
+            self.get_baseline_network(depot_id, delivery_day)
+            return self._baseline_kpis
+        return Kpis.model_validate(self._generated_baseline(depot_id)["kpis"])
 
     def create_scenario(self, payload: ScenarioCreateRequest) -> tuple[ScenarioDefinition, str]:
         spec = self._spec_for(payload.scenario_type)
@@ -555,13 +626,19 @@ class StubStore:
         scenario_name = scenario.scenario_name if scenario else raw["scenario_name"]
         variant = raw.pop("route_variant")
         scenario_depot = Depot.model_validate(raw["scenario_depot"])
+        baseline_network, baseline_kpis = self._baseline_for_scenario(
+            scenario, scenario_depot
+        )
+        if scenario is not None and scenario.depot_id != self._baseline_network.depot.depot_id:
+            scenario_depot = baseline_network.depot
+        raw["scenario_depot"] = scenario_depot.model_dump()
         raw["scenario_id"] = scenario_id_for_response
         raw["scenario_name"] = scenario_name
-        raw["baseline_depot"] = self._baseline_network.depot.model_dump()
-        raw["baseline_routes"] = [route.model_dump() for route in self._baseline_network.routes]
-        raw["baseline_kpis"] = self._baseline_kpis.model_dump()
+        raw["baseline_depot"] = baseline_network.depot.model_dump()
+        raw["baseline_routes"] = [route.model_dump() for route in baseline_network.routes]
+        raw["baseline_kpis"] = baseline_kpis.model_dump()
         scenario_routes = self._build_scenario_routes(
-            variant, scenario_id_for_response, scenario_depot
+            variant, scenario_id_for_response, scenario_depot, baseline_network.routes
         )
         if scenario is not None:
             scenario_routes = self._apply_stub_rate_model(raw, scenario, scenario_routes)
@@ -783,17 +860,41 @@ class StubStore:
             raise HTTPException(status_code=404, detail="Scenario result stub not found.")
         return raw
 
+    def _baseline_for_scenario(
+        self,
+        scenario: ScenarioDefinition | None,
+        scenario_depot: Depot,
+    ) -> tuple[BaselineNetwork, Kpis]:
+        if scenario is None or scenario.depot_id == self._baseline_network.depot.depot_id:
+            return self._baseline_network, self._baseline_kpis
+        network = self.get_baseline_network(scenario.depot_id, DELIVERY_DAY)
+        kpis = self.get_baseline_kpis(scenario.depot_id, DELIVERY_DAY)
+        if scenario.scenario_type == "facility_move":
+            network = network.model_copy(deep=True, update={"depot": scenario_depot})
+        return network, kpis
+
     def _build_scenario_routes(
         self,
         variant: str,
         scenario_id: str,
         scenario_depot: Depot,
+        baseline_routes: list[Route] | None = None,
     ) -> list[Route]:
-        baseline_routes = self._baseline_network.routes
+        baseline_routes = baseline_routes or self._baseline_network.routes
+        is_modeled_depot = scenario_depot.depot_id == "DPT_NORTH"
         if variant in {"baseline_identity", "day_change"}:
             routes = [_route_with_scenario(route, scenario_id, scenario_depot) for route in baseline_routes]
             if variant == "day_change":
-                moved_ids = {"CUST-003", "CUST-006", "CUST-010", "CUST-015", "CUST-020", "CUST-023"}
+                moved_ids = (
+                    {"CUST-003", "CUST-006", "CUST-010", "CUST-015", "CUST-020", "CUST-023"}
+                    if is_modeled_depot
+                    else {
+                        stop.customer_id
+                        for route in baseline_routes
+                        for stop in route.stops
+                        if (stop.sequence - 1) % 4 == 2
+                    }
+                )
                 changed = []
                 for route in routes:
                     data = route.model_dump()
@@ -810,31 +911,74 @@ class StubStore:
 
         if variant == "driver_minus_one":
             stops = [stop for route in baseline_routes for stop in route.stops]
-            chunks = [stops[0:8], stops[8:16], stops[16:24]]
-            specs = [
-                ("RTE-001", "Route 1 Consolidated", 1, 100, 149, 1595, 1080, 35),
-                ("RTE-002", "Route 2 Consolidated", 2, 99, 148, 1580, 1040, 40),
-                ("RTE-003", "Route 3 Consolidated", 3, 102, 151, 1631, 1040, 43),
-            ]
+            if is_modeled_depot:
+                chunks = [stops[0:8], stops[8:16], stops[16:24]]
+                specs = [
+                    ("RTE-001", "Route 1 Consolidated", 1, 100, 149, 1595, 1080, 35),
+                    ("RTE-002", "Route 2 Consolidated", 2, 99, 148, 1580, 1040, 40),
+                    ("RTE-003", "Route 3 Consolidated", 3, 102, 151, 1631, 1040, 43),
+                ]
+                return [
+                    _build_route(
+                        route_id=route_id,
+                        scenario_id=scenario_id,
+                        route_name=name,
+                        depot=scenario_depot,
+                        driver_num=driver_num,
+                        stops=chunk,
+                        total_miles=miles,
+                        drive_minutes=drive,
+                        total_cost=cost,
+                        capacity_cases=capacity,
+                        overtime_minutes=overtime,
+                    )
+                    for (route_id, name, driver_num, miles, drive, cost, capacity, overtime), chunk in zip(specs, chunks)
+                ]
+            chunk_count = max(1, len(baseline_routes) - 1)
+            size = max(1, math.ceil(len(stops) / chunk_count))
+            chunks = [stops[offset : offset + size] for offset in range(0, len(stops), size)]
+            total_miles = sum(route.total_miles for route in baseline_routes)
             return [
                 _build_route(
-                    route_id=route_id,
+                    route_id=f"RTE-{index + 1:03d}",
                     scenario_id=scenario_id,
-                    route_name=name,
+                    route_name=f"Route {index + 1} Consolidated",
                     depot=scenario_depot,
-                    driver_num=driver_num,
+                    driver_num=index + 1,
                     stops=chunk,
-                    total_miles=miles,
-                    drive_minutes=drive,
-                    total_cost=cost,
-                    capacity_cases=capacity,
-                    overtime_minutes=overtime,
+                    total_miles=round(total_miles / len(chunks), 1),
+                    drive_minutes=int(
+                        sum(route.drive_minutes for route in baseline_routes) / len(chunks)
+                    ),
+                    total_cost=round(
+                        sum(route.total_cost for route in baseline_routes) / len(chunks), 2
+                    ),
+                    capacity_cases=max(600, sum(stop.demand_cases for stop in chunk)),
+                    overtime_minutes=30 if index == len(chunks) - 1 else 0,
                 )
-                for (route_id, name, driver_num, miles, drive, cost, capacity, overtime), chunk in zip(specs, chunks)
+                for index, chunk in enumerate(chunks)
             ]
 
         if variant == "new_customers":
             routes = [_route_with_scenario(route, scenario_id, scenario_depot) for route in baseline_routes]
+            if not is_modeled_depot:
+                new_stops = _generated_new_stops(scenario_depot)
+                routes.append(
+                    _build_route(
+                        route_id=f"RTE-{len(baseline_routes) + 1:03d}",
+                        scenario_id=scenario_id,
+                        route_name=f"Route {len(baseline_routes) + 1}",
+                        depot=scenario_depot,
+                        driver_num=len(baseline_routes) + 1,
+                        stops=new_stops,
+                        total_miles=48,
+                        drive_minutes=74,
+                        total_cost=969,
+                        capacity_cases=600,
+                        overtime_minutes=7,
+                    )
+                )
+                return routes
             new_stops = [
                 Stop(stop_id="STP-901", customer_id="CUST-901", customer_name="Meadowbrook Foods", sequence=1, location=LatLng(lat=42.5537, lng=-83.0284), demand_cases=105, service_minutes=25, time_window_start="08:00", time_window_end="12:00", arrival_time="08:32", departure_time="08:57", delivery_day="Tuesday", is_new_customer=True),
                 Stop(stop_id="STP-902", customer_id="CUST-902", customer_name="Creekside Market", sequence=2, location=LatLng(lat=42.5902, lng=-82.9861), demand_cases=95, service_minutes=25, time_window_start="09:00", time_window_end="13:00", arrival_time="09:28", departure_time="09:53", delivery_day="Tuesday", is_new_customer=True),
