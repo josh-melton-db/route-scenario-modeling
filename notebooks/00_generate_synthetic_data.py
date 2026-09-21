@@ -15,6 +15,7 @@ except Exception:
     pass
 
 from route_opt.config import config_from_widgets
+from route_opt.schemas import NETWORK_TABLES
 from route_opt.spark_io import write_rows_as_parquet, write_rows_as_table
 from route_opt.synthetic import generate_all
 
@@ -36,6 +37,7 @@ gold_table_map = {
     "fact_customer_product_demand": tables["fact_customer_product_demand"],
     "fact_delivery_orders": tables["fact_delivery_orders"],
     "cost_parameters": tables["cost_parameters"],
+    **{table_name: tables[table_name] for table_name in NETWORK_TABLES},
 }
 for table_name, rows in gold_table_map.items():
     write_rows_as_table(spark, rows, config.table(table_name))

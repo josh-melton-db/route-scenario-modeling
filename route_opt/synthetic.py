@@ -10,6 +10,7 @@ except Exception:  # pragma: no cover - Faker is available in Databricks/job env
     Faker = None  # type: ignore[assignment]
 
 from .cost import CostParameters
+from .network_synthetic import generate_network_dataset
 from .schemas import DAYS, stable_id
 
 GENERATED_RUN_ID = "seeded-route-scenario-modeling-v0"
@@ -224,10 +225,11 @@ def generate_demand_and_orders(
 
 
 def generate_all(seed: int = 42, customer_count: int = 250) -> dict[str, list[dict[str, object]]]:
+    depots = generate_depots()
     customers = generate_customers(customer_count=customer_count, seed=seed)
     demand, orders = generate_demand_and_orders(customers, seed=seed)
-    return {
-        "depot_master": generate_depots(),
+    route_data = {
+        "depot_master": depots,
         "location_data": customers,
         "fleet_assets": generate_fleet(),
         "drivers": generate_drivers(),
@@ -237,4 +239,8 @@ def generate_all(seed: int = 42, customer_count: int = 250) -> dict[str, list[di
         "revenue_parameters": [
             {"product_family": "cartons", "revenue_per_case": 6.25, "active": True}
         ],
+    }
+    return {
+        **route_data,
+        **generate_network_dataset(depots, seed=seed),
     }

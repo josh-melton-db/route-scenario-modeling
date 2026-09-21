@@ -16,6 +16,21 @@ DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 BASELINE_SCENARIO_ID = "baseline"
 MATRIX_SOURCE = "haversine_circuity"
 
+NETWORK_TABLES = [
+    "dim_regions",
+    "dim_facilities",
+    "facility_hierarchy",
+    "dim_markets",
+    "dim_network_customers",
+    "dim_network_lanes",
+    "demand_plan_versions",
+    "demand_plan_daily",
+    "capacity_plan_versions",
+    "facility_capacity_daily",
+    "lane_capacity_daily",
+    "baseline_network_flow_daily",
+]
+
 RAW_TABLES = [
     "depot_master",
     "location_data",
@@ -24,7 +39,7 @@ RAW_TABLES = [
     "fact_customer_product_demand",
     "fact_delivery_orders",
     "cost_parameters",
-]
+] + NETWORK_TABLES
 
 GOLD_TABLES = [
     "dim_depots_augmented",
@@ -35,7 +50,7 @@ GOLD_TABLES = [
     "fact_customer_product_demand",
     "fact_delivery_orders",
     "cost_parameters",
-]
+] + NETWORK_TABLES
 
 SCENARIO_TABLES = [
     "scenario_definitions",
