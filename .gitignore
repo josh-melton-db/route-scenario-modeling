@@ -14,3 +14,7 @@ mlruns/
 .idea/
 .cursor/
 docs/
+
+# Playwright
+playwright-report/
+test-results/

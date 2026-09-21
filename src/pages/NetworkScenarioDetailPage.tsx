@@ -91,12 +91,14 @@ export default function NetworkScenarioDetailPage() {
   async function save(next: {
     scenario_name?: string
     assumptions?: NetworkScenarioAssumptions
-  }) {
+  }): Promise<boolean> {
     setActionError(null)
     try {
       await updateScenario.mutateAsync(next)
+      return true
     } catch (err) {
       setActionError(String(err))
+      return false
     }
   }
 
@@ -267,7 +269,7 @@ function ScenarioTab({
   regions: { region_id: string; region_name: string }[]
   lanes: { lane_id: string; lane_name: string }[]
   busy: boolean
-  onSave: (next: { scenario_name?: string; assumptions?: NetworkScenarioAssumptions }) => Promise<void>
+  onSave: (next: { scenario_name?: string; assumptions?: NetworkScenarioAssumptions }) => Promise<boolean>
   onValidate: () => Promise<void>
 }) {
   const [name, setName] = useState(scenario.scenario_name)
@@ -498,7 +500,14 @@ function ScenarioTab({
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => void onSave({ scenario_name: name.trim() || scenario.scenario_name, assumptions })}
+              onClick={() => {
+                void onSave({
+                  scenario_name: name.trim() || scenario.scenario_name,
+                  assumptions,
+                }).then((saved) => {
+                  if (saved) setDirty(false)
+                })
+              }}
               disabled={!dirty || busy}
               className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent/50 disabled:cursor-not-allowed disabled:opacity-50"
             >

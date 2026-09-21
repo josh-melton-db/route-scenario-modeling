@@ -4,14 +4,15 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:backend": "uvicorn backend.main:app --reload --host 0.0.0.0 --port 8002",
-    "dev:all": "npm run dev:backend & npm run dev",
-    "dev:lakebase": "bash scripts/dev-lakebase.sh",
-    "setup:python": "python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt",
     "build": "tsc -b && vite build",
+    "dev": "vite",
+    "dev:all": "npm run dev:backend & npm run dev",
+    "dev:backend": "uvicorn backend.main:app --reload --host 0.0.0.0 --port 8002",
+    "dev:lakebase": "bash scripts/dev-lakebase.sh",
+    "lint": "eslint .",
+    "setup:python": "python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt",
     "start": "vite preview --host 0.0.0.0 --port 8000",
-    "lint": "eslint ."
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@deck.gl/layers": "^9.2.10",
@@ -28,6 +29,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^24.6.0",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
