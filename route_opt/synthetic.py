@@ -10,7 +10,10 @@ except Exception:  # pragma: no cover - Faker is available in Databricks/job env
     Faker = None  # type: ignore[assignment]
 
 from .cost import CostParameters
-from .network_synthetic import generate_network_dataset
+from .network_synthetic import (
+    generate_national_network_dataset,
+    generate_network_dataset,
+)
 from .schemas import DAYS, stable_id
 
 GENERATED_RUN_ID = "seeded-route-scenario-modeling-v0"
@@ -224,7 +227,11 @@ def generate_demand_and_orders(
     return demand_rows, order_rows
 
 
-def generate_all(seed: int = 42, customer_count: int = 250) -> dict[str, list[dict[str, object]]]:
+def generate_all(
+    seed: int = 42,
+    customer_count: int = 250,
+    network_scope: str = "regional",
+) -> dict[str, list[dict[str, object]]]:
     depots = generate_depots()
     customers = generate_customers(customer_count=customer_count, seed=seed)
     demand, orders = generate_demand_and_orders(customers, seed=seed)
@@ -240,7 +247,13 @@ def generate_all(seed: int = 42, customer_count: int = 250) -> dict[str, list[di
             {"product_family": "cartons", "revenue_per_case": 6.25, "active": True}
         ],
     }
+    if network_scope == "national":
+        network_data = generate_national_network_dataset(depots, seed=seed)
+    elif network_scope == "regional":
+        network_data = generate_network_dataset(depots, seed=seed)
+    else:
+        raise ValueError("network_scope must be 'regional' or 'national'.")
     return {
         **route_data,
-        **generate_network_dataset(depots, seed=seed),
+        **network_data,
     }

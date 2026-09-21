@@ -7,6 +7,9 @@ from pydantic import ValidationError
 
 from route_opt.network_schemas import NetworkLane
 from route_opt.network_synthetic import (
+    NATIONAL_CAPACITY_PLAN_VERSION_ID,
+    SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID,
+    generate_national_network_dataset,
     generate_network_dataset,
     validate_network_dataset,
 )
@@ -19,6 +22,11 @@ def _network():
         seed=42,
         customers_per_depot=12,
     )
+
+
+@pytest.fixture(scope="module")
+def national_network():
+    return generate_national_network_dataset(generate_depots(), seed=42)
 
 
 def test_canonical_network_shape_and_existing_depot_mapping() -> None:
@@ -117,3 +125,82 @@ def test_existing_generate_all_exposes_canonical_network_tables() -> None:
     assert "demand_plan_daily" in data
     assert "facility_capacity_daily" in data
     assert validate_network_dataset(data) == []
+
+
+def test_national_demo_shape_and_alternate_paths(national_network) -> None:
+    data = national_network
+    assert len(data["dim_regions"]) == 4
+    assert len(data["dim_facilities"]) == 32
+    assert len(data["dim_markets"]) == 24
+    assert len(data["dim_network_customers"]) == 2400
+    assert len(data["demand_plan_daily"]) == 2400 * 28
+    assert len(data["capacity_plan_versions"]) == 2
+    assert validate_network_dataset(data) == []
+
+    lanes = {row["lane_id"]: row for row in data["dim_network_lanes"]}
+    alternate_id = "LNE_DC_SOUTHEAST_CHARLOTTE_TO_DPT_SE_NASHVILLE"
+    assert alternate_id in lanes
+    alternate_capacity = [
+        row
+        for row in data["lane_capacity_daily"]
+        if row["lane_id"] == alternate_id
+        and row["capacity_plan_version_id"] == NATIONAL_CAPACITY_PLAN_VERSION_ID
+    ]
+    assert alternate_capacity
+    assert all(int(row["capacity_units"]) > 0 for row in alternate_capacity)
+
+
+def test_constrained_southeast_plan_preserves_unmet_demand(national_network) -> None:
+    data = national_network
+    service_date = "2026-09-21"
+    southeast_customers = {
+        row["customer_id"]
+        for row in data["dim_network_customers"]
+        if row["region_id"] == "REGION_SOUTHEAST"
+    }
+    southeast_demand = sum(
+        int(row["demand_units"])
+        for row in data["demand_plan_daily"]
+        if row["service_date"] == service_date
+        and row["customer_id"] in southeast_customers
+    )
+    lanes = {row["lane_id"]: row for row in data["dim_network_lanes"]}
+    constrained_delivery = sum(
+        int(row["assigned_units"])
+        for row in data["baseline_network_flow_daily"]
+        if row["service_date"] == service_date
+        and row["capacity_plan_version_id"]
+        == SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID
+        and lanes[row["lane_id"]]["lane_type"] == "DELIVERY"
+        and lanes[row["lane_id"]]["origin_endpoint_id"].startswith("DPT_SE_")
+    )
+    normal_delivery = sum(
+        int(row["assigned_units"])
+        for row in data["baseline_network_flow_daily"]
+        if row["service_date"] == service_date
+        and row["capacity_plan_version_id"] == NATIONAL_CAPACITY_PLAN_VERSION_ID
+        and lanes[row["lane_id"]]["lane_type"] == "DELIVERY"
+        and lanes[row["lane_id"]]["origin_endpoint_id"].startswith("DPT_SE_")
+    )
+    assert normal_delivery == southeast_demand
+    assert 0 < constrained_delivery < southeast_demand
+
+    lane_capacity = {
+        (
+            row["capacity_plan_version_id"],
+            row["service_date"],
+            row["lane_id"],
+        ): int(row["capacity_units"])
+        for row in data["lane_capacity_daily"]
+    }
+    assert all(
+        int(row["assigned_units"])
+        <= lane_capacity[
+            (
+                row["capacity_plan_version_id"],
+                row["service_date"],
+                row["lane_id"],
+            )
+        ]
+        for row in data["baseline_network_flow_daily"]
+    )

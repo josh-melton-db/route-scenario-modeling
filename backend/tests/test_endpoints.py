@@ -57,8 +57,13 @@ def test_network_overview_endpoints() -> None:
     assert options.status_code == 200
     option_payload = options.json()
     assert option_payload["default_lane_type"] == "LINEHAUL"
-    assert option_payload["default_region_id"] == "REGION_GREAT_LAKES"
-    assert len(option_payload["facilities"]) == 8
+    assert option_payload["default_region_id"] == "ALL"
+    assert option_payload["default_capacity_plan_version_id"] == (
+        "CAPACITY_US_SE_CONSTRAINED_V2"
+    )
+    assert len(option_payload["regions"]) == 5
+    assert len(option_payload["facilities"]) == 32
+    assert len(option_payload["capacity_plans"]) == 2
     assert {row["metric_id"] for row in option_payload["metrics"]} == {
         "assigned_flow",
         "utilization",
@@ -70,12 +75,20 @@ def test_network_overview_endpoints() -> None:
     assert overview.status_code == 200
     payload = overview.json()
     assert payload["context"]["lane_type"] == "LINEHAUL"
-    assert payload["kpis"]["demand_units"] == payload["kpis"]["assigned_units"]
-    assert payload["kpis"]["unmet_units"] == 0
+    assert payload["kpis"]["demand_units"] > payload["kpis"]["assigned_units"]
+    assert payload["kpis"]["unmet_units"] > 0
     assert payload["kpis"]["total_cost"] > 0
-    assert len(payload["facilities"]) == 8
-    assert len(payload["lanes"]) == 8
+    assert len(payload["facilities"]) == 32
+    assert len(payload["lanes"]) == 56
     assert payload["insights"]
+    assert all(row["utilization_pct"] <= 100 for row in payload["facilities"])
+    atlanta = next(
+        row
+        for row in payload["facilities"]
+        if row["facility_id"] == "DC_SOUTHEAST_ATLANTA"
+    )
+    assert atlanta["assigned_units"] == atlanta["capacity_units"]
+    assert atlanta["utilization_pct"] == 100
 
     selected_lane = payload["lanes"][0]
     assert selected_lane["origin_location"]["lat"]
@@ -95,8 +108,18 @@ def test_network_overview_filters_and_validation() -> None:
     assert delivery.status_code == 200
     payload = delivery.json()
     assert payload["context"]["metric"] == "cost_per_unit"
-    assert len(payload["lanes"]) == 72
+    assert len(payload["lanes"]) == 2400
     assert all(row["lane_type"] == "DELIVERY" for row in payload["lanes"])
+
+    normal = client.get(
+        "/api/network/overview",
+        params={
+            "capacity_plan_version_id": "CAPACITY_US_BASELINE_V1",
+            "region_id": "REGION_SOUTHEAST",
+        },
+    )
+    assert normal.status_code == 200
+    assert normal.json()["kpis"]["unmet_units"] == 0
 
     invalid_range = client.get(
         "/api/network/overview",

@@ -11,7 +11,7 @@ from typing import Any, cast
 
 from fastapi import HTTPException
 
-from route_opt.network_synthetic import generate_network_dataset
+from route_opt.network_synthetic import generate_national_network_dataset
 from route_opt.synthetic import generate_depots
 
 from ..config import get_data_backend
@@ -37,7 +37,10 @@ NetworkRows = dict[str, list[dict[str, Any]]]
 
 @lru_cache(maxsize=1)
 def _local_network_rows() -> NetworkRows:
-    return cast(NetworkRows, generate_network_dataset(generate_depots(), seed=42))
+    return cast(
+        NetworkRows,
+        generate_national_network_dataset(generate_depots(), seed=42),
+    )
 
 
 def _as_string(value: object) -> str:
@@ -275,6 +278,9 @@ class NetworkOverviewService:
         )
         options = NetworkOptions(
             regions=[
+                NetworkRegionOption(region_id="ALL", region_name="All regions")
+            ]
+            + [
                 NetworkRegionOption(
                     region_id=str(row["region_id"]),
                     region_name=str(row["region_name"]),
@@ -317,7 +323,7 @@ class NetworkOverviewService:
             default_capacity_plan_version_id=str(capacity_default["plan_version_id"]),
             default_horizon_start=_as_string(demand_default["horizon_start"]),
             default_horizon_end=_as_string(demand_default["horizon_end"]),
-            default_region_id=str(regions[0]["region_id"]),
+            default_region_id="ALL",
             source=self._source(),
             freshness_at=freshness,
         )
@@ -333,6 +339,7 @@ class NetworkOverviewService:
             horizon_start=_as_string(row["horizon_start"]),
             horizon_end=_as_string(row["horizon_end"]),
             status="published",
+            validation_status="passed",
         )
 
     def get_overview(
@@ -404,7 +411,10 @@ class NetworkOverviewService:
         for row in rows["demand_plan_daily"]:
             if (
                 str(row["demand_plan_version_id"]) != context.demand_plan_version_id
-                or str(row["region_id"]) != context.region_id
+                or (
+                    context.region_id != "ALL"
+                    and str(row["region_id"]) != context.region_id
+                )
                 or not in_horizon(row)
             ):
                 continue
@@ -469,7 +479,10 @@ class NetworkOverviewService:
         lane_aggregates: list[NetworkLaneAggregate] = []
         for lane_id, lane in lanes.items():
             origin = facilities.get(str(lane["origin_endpoint_id"]))
-            if origin is None or str(origin["region_id"]) != context.region_id:
+            if origin is None or (
+                context.region_id != "ALL"
+                and str(origin["region_id"]) != context.region_id
+            ):
                 continue
             if context.lane_type != "ALL" and lane["lane_type"] != context.lane_type:
                 continue
@@ -483,6 +496,10 @@ class NetworkOverviewService:
             destination_name, destination_location = endpoint(
                 str(lane["destination_endpoint_type"]),
                 str(lane["destination_endpoint_id"]),
+            )
+            is_covered_linehaul = (
+                lane["lane_type"] == "LINEHAUL"
+                and str(origin["region_id"]) == "REGION_GREAT_LAKES"
             )
             lane_aggregates.append(
                 NetworkLaneAggregate(
@@ -511,15 +528,17 @@ class NetworkOverviewService:
                         utilization, int(lane["transit_minutes"])
                     ),
                     contract_coverage=(
-                        "covered" if lane["lane_type"] == "LINEHAUL" else "not_required"
+                        "covered"
+                        if is_covered_linehaul
+                        else "partial"
+                        if lane["lane_type"] == "LINEHAUL"
+                        else "not_required"
                     ),
                     contract_id=(
-                        "GL_STANDARD_2026" if lane["lane_type"] == "LINEHAUL" else None
+                        "GL_STANDARD_2026" if is_covered_linehaul else None
                     ),
                     contract_version_id=(
-                        "GL_STANDARD_2026_V1"
-                        if lane["lane_type"] == "LINEHAUL"
-                        else None
+                        "GL_STANDARD_2026_V1" if is_covered_linehaul else None
                     ),
                     included_in_network_cost=lane["lane_type"] != "MARKET",
                 )
@@ -545,7 +564,10 @@ class NetworkOverviewService:
         facility_aggregates: list[NetworkFacilityAggregate] = []
         local_detail_ids = {"DPT_NORTH"} if get_data_backend() == "stub" else set(facilities)
         for facility_id, facility in facilities.items():
-            if str(facility["region_id"]) != context.region_id:
+            if (
+                context.region_id != "ALL"
+                and str(facility["region_id"]) != context.region_id
+            ):
                 continue
             if facility["facility_type"] == "distribution_center":
                 demand = sum(demand_by_depot[depot_id] for depot_id in children[facility_id])
@@ -591,7 +613,7 @@ class NetworkOverviewService:
                     demand_units=demand,
                     assigned_units=assigned,
                     capacity_units=capacity,
-                    utilization_pct=_percent(demand, capacity),
+                    utilization_pct=_percent(assigned, capacity),
                     total_cost=_round_money(cost),
                     cost_per_unit=_round_money(cost / assigned if assigned else 0),
                     on_time_pct=round(on_time, 1),
@@ -701,6 +723,25 @@ class NetworkOverviewService:
                     metric_unit="%",
                 )
             )
+            contract_gap = next(
+                (row for row in active if row.contract_coverage == "partial"),
+                None,
+            )
+            if contract_gap:
+                insights.append(
+                    NetworkInsight(
+                        insight_id=f"contract-{contract_gap.lane_id}",
+                        insight_type="contract_gap",
+                        severity="warning",
+                        title=f"{contract_gap.lane_name} lacks governed linehaul coverage",
+                        summary=(
+                            "Modeled planning cost is available, but no published canonical "
+                            "rate-book lane is attached."
+                        ),
+                        entity_type="lane",
+                        entity_id=contract_gap.lane_id,
+                    )
+                )
             underused_pool = [row for row in lanes if row.capacity_units > 0]
             if underused_pool:
                 underused = min(underused_pool, key=lambda row: row.utilization_pct)

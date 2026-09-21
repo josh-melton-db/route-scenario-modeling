@@ -24,7 +24,7 @@ config = config_from_widgets()
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {config.catalog}.{config.schema}")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {config.catalog}.{config.schema}.{config.raw_volume}")
 
-tables = generate_all(seed=42, customer_count=250)
+tables = generate_all(seed=42, customer_count=250, network_scope="national")
 for table_name, rows in tables.items():
     write_rows_as_parquet(spark, rows, f"{config.raw_path}/{table_name}")
 

@@ -119,6 +119,7 @@ class ExternalPlanVersion(NetworkModel):
     time_grain: Literal["day"] = "day"
     unit: Literal["cases"] = "cases"
     status: Literal["published"] = "published"
+    validation_status: Literal["passed"] = "passed"
     record_count: int = Field(ge=0)
 
     @model_validator(mode="after")

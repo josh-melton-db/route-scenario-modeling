@@ -81,6 +81,7 @@ export interface NetworkPlanVersionOption {
   horizon_start: string
   horizon_end: string
   status: 'published'
+  validation_status: 'passed'
 }
 
 export interface NetworkMetricOption {
@@ -250,6 +251,11 @@ export interface LaneRateRule {
   lane_name: string
   origin: string
   destination: string
+  lane_type?: 'LINEHAUL' | 'MARKET' | 'DELIVERY' | null
+  origin_endpoint_id?: string | null
+  origin_endpoint_type?: 'facility' | 'market' | 'customer' | null
+  destination_endpoint_id?: string | null
+  destination_endpoint_type?: 'facility' | 'market' | 'customer' | null
   priority: number
   flat_rate: number
   rate_per_mile: number

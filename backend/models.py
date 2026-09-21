@@ -116,6 +116,11 @@ class LaneRateRule(StrictModel):
     lane_name: str
     origin: str
     destination: str
+    lane_type: Literal["LINEHAUL", "MARKET", "DELIVERY"] | None = None
+    origin_endpoint_id: str | None = None
+    origin_endpoint_type: Literal["facility", "market", "customer"] | None = None
+    destination_endpoint_id: str | None = None
+    destination_endpoint_type: Literal["facility", "market", "customer"] | None = None
     priority: int = 100
     flat_rate: float = 0
     rate_per_mile: float = 0
@@ -725,6 +730,7 @@ class NetworkPlanVersionOption(StrictModel):
     horizon_start: str
     horizon_end: str
     status: Literal["published"] = "published"
+    validation_status: Literal["passed"] = "passed"
 
 
 class NetworkMetricOption(StrictModel):

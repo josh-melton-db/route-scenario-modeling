@@ -251,6 +251,11 @@ function LaneRatesEditor({ detail, depots, destinations, onChange }: EditorProps
           lane_name: derivedLaneName(origin, destination, depots),
           origin,
           destination,
+          lane_type: 'MARKET',
+          origin_endpoint_id: origin === '*' ? null : origin,
+          origin_endpoint_type: origin === '*' ? null : 'facility',
+          destination_endpoint_id: null,
+          destination_endpoint_type: null,
           priority: source?.priority ?? 100,
           flat_rate: source?.flat_rate ?? 75,
           rate_per_mile: source?.rate_per_mile ?? 4.5,
@@ -269,6 +274,15 @@ function LaneRatesEditor({ detail, depots, destinations, onChange }: EditorProps
     updateRule(index, {
       [field]: value,
       lane_name: derivedLaneName(origin, destination, depots),
+      ...(field === 'origin'
+        ? {
+            origin_endpoint_id: value === '*' ? null : value,
+            origin_endpoint_type: value === '*' ? null : 'facility' as const,
+          }
+        : {
+            destination_endpoint_id: null,
+            destination_endpoint_type: null,
+          }),
     })
   }
 

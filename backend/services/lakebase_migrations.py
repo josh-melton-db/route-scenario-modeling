@@ -174,6 +174,11 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             lane_name TEXT NOT NULL,
             origin TEXT NOT NULL,
             destination TEXT NOT NULL,
+            lane_type TEXT,
+            origin_endpoint_id TEXT,
+            origin_endpoint_type TEXT,
+            destination_endpoint_id TEXT,
+            destination_endpoint_type TEXT,
             priority INTEGER NOT NULL DEFAULT 100,
             flat_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
             rate_per_mile DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -183,6 +188,11 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             mileage_rounding TEXT NOT NULL DEFAULT 'exact'
         )
     """
+    yield f"ALTER TABLE {table('contract_lane_rates')} ADD COLUMN IF NOT EXISTS lane_type TEXT"
+    yield f"ALTER TABLE {table('contract_lane_rates')} ADD COLUMN IF NOT EXISTS origin_endpoint_id TEXT"
+    yield f"ALTER TABLE {table('contract_lane_rates')} ADD COLUMN IF NOT EXISTS origin_endpoint_type TEXT"
+    yield f"ALTER TABLE {table('contract_lane_rates')} ADD COLUMN IF NOT EXISTS destination_endpoint_id TEXT"
+    yield f"ALTER TABLE {table('contract_lane_rates')} ADD COLUMN IF NOT EXISTS destination_endpoint_type TEXT"
     yield f"""
         CREATE TABLE IF NOT EXISTS {table("contract_fuel_rules")} (
             rule_id TEXT PRIMARY KEY,
@@ -300,26 +310,42 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
         ON CONFLICT (version_id) DO NOTHING
     """
     yield f"""INSERT INTO {table("contract_lane_rates")} (
-        rule_id, version_id, lane_name, origin, destination, priority, flat_rate,
+        rule_id, version_id, lane_name, origin, destination, lane_type,
+        origin_endpoint_id, origin_endpoint_type, destination_endpoint_id,
+        destination_endpoint_type, priority, flat_rate,
         rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding
     )
         SELECT contract_id || '_LANE_NORTH', contract_id || '_V1',
-               'North Depot → North Metro', 'DPT_NORTH', 'North Metro', 200,
+               'North Depot → North Metro', 'DPT_NORTH', 'North Metro', 'MARKET',
+               'DPT_NORTH', 'facility', 'MKT_NORTH', 'market', 200,
                GREATEST(50, minimum_charge * 0.22), rate_per_mile, rate_per_stop,
                1, minimum_charge, 'up_to_mile'
         FROM {table("carrier_contracts")}
         ON CONFLICT (rule_id) DO NOTHING
     """
     yield f"""INSERT INTO {table("contract_lane_rates")} (
-        rule_id, version_id, lane_name, origin, destination, priority, flat_rate,
+        rule_id, version_id, lane_name, origin, destination, lane_type,
+        origin_endpoint_id, origin_endpoint_type, destination_endpoint_id,
+        destination_endpoint_type, priority, flat_rate,
         rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding
     )
         SELECT contract_id || '_LANE_REGIONAL', contract_id || '_V1',
-               'Great Lakes regional fallback', '*', '*', 10,
+               'Great Lakes regional fallback', '*', '*', NULL,
+               NULL, NULL, NULL, NULL, 10,
                GREATEST(75, minimum_charge * 0.28), rate_per_mile * 1.05,
                rate_per_stop, 0, minimum_charge * 1.1, 'up_to_mile'
         FROM {table("carrier_contracts")}
         ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""
+        UPDATE {table("contract_lane_rates")}
+        SET lane_type = 'MARKET',
+            origin_endpoint_id = 'DPT_NORTH',
+            origin_endpoint_type = 'facility',
+            destination_endpoint_id = 'MKT_NORTH',
+            destination_endpoint_type = 'market'
+        WHERE rule_id LIKE '%_LANE_NORTH'
+          AND origin = 'DPT_NORTH'
     """
     yield f"""INSERT INTO {table("contract_fuel_rules")} (
         rule_id, version_id, name, rate_pct, basis, effective_start, effective_end

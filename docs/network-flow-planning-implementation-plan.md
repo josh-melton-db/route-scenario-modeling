@@ -449,6 +449,12 @@ Both applications already use compatible React, Deck.gl, MapLibre, and router ve
 
 ## Implementation phases
 
+Implementation status as of September 21, 2026:
+
+- Phase 1 is implemented: canonical schemas, four-region deterministic data, alternate DC paths, normal and Southeast-constrained published inputs, canonical rate endpoints, reconciliation, and validation.
+- Phase 2 is implemented: the read-only network overview, governed context API, URL-backed filters and deep links, planning map, KPI and insight surfaces, entity details, and depot round-trip navigation.
+- Phase 3 is the next implementation phase.
+
 ### Phase 1 Canonical data and synthetic generation
 
 Deliverables:

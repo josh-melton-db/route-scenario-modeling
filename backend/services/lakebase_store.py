@@ -303,7 +303,7 @@ class LakebaseStore:
                 (
                     "contract_lane_rates",
                     "LANE",
-                    "lane_name, origin, destination, priority, flat_rate, rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding",
+                    "lane_name, origin, destination, lane_type, origin_endpoint_id, origin_endpoint_type, destination_endpoint_id, destination_endpoint_type, priority, flat_rate, rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding",
                 ),
                 (
                     "contract_fuel_rules",
@@ -349,8 +349,8 @@ class LakebaseStore:
         child_specs: tuple[tuple[str, str, list[tuple[Any, ...]]], ...] = (
             (
                 "contract_lane_rates",
-                "rule_id, version_id, lane_name, origin, destination, priority, flat_rate, rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding",
-                [(row.rule_id, version_id, row.lane_name, row.origin, row.destination, row.priority, row.flat_rate, row.rate_per_mile, row.rate_per_stop, row.included_stops, row.minimum_charge, row.mileage_rounding) for row in request.lane_rates],
+                "rule_id, version_id, lane_name, origin, destination, lane_type, origin_endpoint_id, origin_endpoint_type, destination_endpoint_id, destination_endpoint_type, priority, flat_rate, rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding",
+                [(row.rule_id, version_id, row.lane_name, row.origin, row.destination, row.lane_type, row.origin_endpoint_id, row.origin_endpoint_type, row.destination_endpoint_id, row.destination_endpoint_type, row.priority, row.flat_rate, row.rate_per_mile, row.rate_per_stop, row.included_stops, row.minimum_charge, row.mileage_rounding) for row in request.lane_rates],
             ),
             (
                 "contract_fuel_rules",
