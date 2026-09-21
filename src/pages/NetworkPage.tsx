@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
-import { Loader2, Workflow } from 'lucide-react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Loader2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import type {
   NetworkOverviewParams,
   NetworkOptions,
@@ -115,20 +115,11 @@ export default function NetworkPage() {
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <NetworkContextBar
-          options={options.data}
-          value={context}
-          onChange={updateContext}
-        />
-        <Link
-          to="/network/scenarios"
-          className="inline-flex h-10 shrink-0 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent/50"
-        >
-          <Workflow className="h-4 w-4" />
-          Scenario planning
-        </Link>
-      </div>
+      <NetworkContextBar
+        options={options.data}
+        value={context}
+        onChange={updateContext}
+      />
       <NetworkKpiStrip overview={overview.data} />
       {overview.data.is_partial && (
         <div className="rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-xs text-warning">
