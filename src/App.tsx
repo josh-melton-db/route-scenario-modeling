@@ -7,7 +7,7 @@ import ScenarioBuilderPage from './pages/ScenarioBuilderPage'
 import RatesPage from './pages/RatesPage'
 import ContractDetailPage from './pages/ContractDetailPage'
 import NetworkPage from './pages/NetworkPage'
-import NetworkScenariosPage from './pages/NetworkScenariosPage'
+import DcPage from './pages/DcPage'
 import NetworkScenarioDetailPage from './pages/NetworkScenarioDetailPage'
 
 export default function App() {
@@ -17,11 +17,12 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/network" replace />} />
           <Route path="/network" element={<NetworkPage />} />
-          <Route path="/network/scenarios" element={<NetworkScenariosPage />} />
+          <Route path="/network/scenarios" element={<Navigate to="/network" replace />} />
           <Route
             path="/network/scenarios/:scenarioId/:tab?"
             element={<NetworkScenarioDetailPage />}
           />
+          <Route path="/dc/:facilityId" element={<DcPage />} />
           <Route path="/analyze" element={<BaselinePage />} />
           <Route path="/baseline" element={<Navigate to="/analyze" replace />} />
           <Route path="/scenario" element={<ScenarioBuilderPage />} />

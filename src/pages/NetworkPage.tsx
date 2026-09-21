@@ -112,6 +112,10 @@ export default function NetworkPage() {
         searchParams,
       )
     : null
+  const dcAnalysisHref =
+    selectedFacility?.facility_type === 'distribution_center'
+      ? `/dc/${encodeURIComponent(selectedFacility.facility_id)}`
+      : null
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
@@ -145,6 +149,7 @@ export default function NetworkPage() {
         facility={selectedFacility}
         lane={selectedLane}
         depotAnalysisHref={depotAnalysisHref}
+        dcAnalysisHref={dcAnalysisHref}
         onClose={() => {
           const next = new URLSearchParams(searchParams)
           next.delete('facility')

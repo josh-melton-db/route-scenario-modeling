@@ -1,20 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, NavLink, Navigate, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import {
   AlertTriangle,
-  ArrowLeft,
   Ban,
   Loader2,
   Play,
   Save,
   Search,
   ShieldCheck,
+  Trash2,
 } from 'lucide-react'
 import EmptyState from '@/components/EmptyState'
 import ErrorState from '@/components/ErrorState'
 import KpiCard from '@/components/KpiCard'
 import NetworkFlowMap from '@/components/NetworkFlowMap'
 import {
+  useDeleteNetworkScenario,
   useNetworkOptions,
   useNetworkOverview,
   useNetworkScenario,
@@ -32,14 +33,6 @@ import type {
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-const tabs = [
-  { id: 'scenario', label: 'Scenario' },
-  { id: 'flow', label: 'Plan flow' },
-  { id: 'lanes', label: 'Lane changes' },
-  { id: 'charges', label: 'Rate audit' },
-  { id: 'exceptions', label: 'Exceptions' },
-] as const
-
 const SOLVED_STATUSES = new Set(['solved', 'depot_plans_running', 'reconciliation_required', 'reconciled', 'published'])
 
 export default function NetworkScenarioDetailPage() {
@@ -52,6 +45,7 @@ export default function NetworkScenarioDetailPage() {
   const updateScenario = useUpdateNetworkScenario(scenarioId)
   const validateScenario = useValidateNetworkScenario(scenarioId)
   const runScenario = useRunNetworkScenario(scenarioId)
+  const deleteScenario = useDeleteNetworkScenario()
   const basePath = `/network/scenarios/${encodeURIComponent(scenarioId)}`
   const [actionError, setActionError] = useState<string | null>(null)
 
@@ -68,7 +62,7 @@ export default function NetworkScenarioDetailPage() {
     : null
   const linehaulOverview = useNetworkOverview(context)
 
-  if (!tabs.some((item) => item.id === tab)) {
+  if (!['scenario', 'flow', 'lanes', 'charges', 'exceptions'].includes(tab)) {
     return <Navigate to={`${basePath}/scenario`} replace />
   }
   if (scenario.error) {
@@ -121,17 +115,23 @@ export default function NetworkScenarioDetailPage() {
     }
   }
 
+  async function handleDelete() {
+    setActionError(null)
+    if (!window.confirm(`Delete "${scenario.data?.scenario_name ?? 'this scenario'}"? This cannot be undone.`)) {
+      return
+    }
+    try {
+      await deleteScenario.mutateAsync(scenarioId)
+      navigate('/network')
+    } catch (err) {
+      setActionError(String(err))
+    }
+  }
+
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
       <header>
-        <Link
-          to="/network/scenarios"
-          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Network scenarios
-        </Link>
-        <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-semibold tracking-tight">
@@ -171,27 +171,6 @@ export default function NetworkScenarioDetailPage() {
         </div>
       )}
 
-      <nav aria-label="Scenario sections" className="overflow-x-auto border-b border-border">
-        <div className="flex min-w-max gap-1">
-          {tabs.map((item) => (
-            <NavLink
-              key={item.id}
-              to={`${basePath}/${item.id}`}
-              className={({ isActive }) =>
-                cn(
-                  'border-b-2 px-3 py-2.5 text-sm font-medium transition-colors',
-                  isActive
-                    ? 'border-primary text-foreground'
-                    : 'border-transparent text-muted-foreground hover:text-foreground',
-                )
-              }
-            >
-              {item.label}
-            </NavLink>
-          ))}
-        </div>
-      </nav>
-
       {tab === 'scenario' && (
         <ScenarioTab
           scenario={scenario.data}
@@ -201,6 +180,8 @@ export default function NetworkScenarioDetailPage() {
           busy={busy}
           onSave={save}
           onValidate={validate}
+          onDelete={handleDelete}
+          deletePending={deleteScenario.isPending}
         />
       )}
       {tab === 'flow' && (
@@ -263,6 +244,8 @@ function ScenarioTab({
   busy,
   onSave,
   onValidate,
+  onDelete,
+  deletePending,
 }: {
   scenario: NetworkScenario
   facilities: { facility_id: string; facility_name: string; facility_type: string; region_id: string }[]
@@ -271,6 +254,8 @@ function ScenarioTab({
   busy: boolean
   onSave: (next: { scenario_name?: string; assumptions?: NetworkScenarioAssumptions }) => Promise<boolean>
   onValidate: () => Promise<void>
+  onDelete: () => Promise<void>
+  deletePending: boolean
 }) {
   const [name, setName] = useState(scenario.scenario_name)
   const [assumptions, setAssumptions] = useState<NetworkScenarioAssumptions>(scenario.assumptions)
@@ -563,11 +548,20 @@ function ScenarioTab({
               solver runs.
             </p>
           )}
-          <p className="mt-auto text-xs text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {canRun
               ? 'Ready to run from the header button.'
               : 'Save, then validate, to enable Run.'}
           </p>
+          <button
+            type="button"
+            onClick={() => void onDelete()}
+            disabled={busy || deletePending || scenario.status === 'published'}
+            className="mt-auto inline-flex h-9 items-center gap-2 self-start rounded-md border border-destructive/50 px-3 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete scenario
+          </button>
         </section>
       </div>
     </div>

@@ -273,7 +273,9 @@ function deliveryDayFromDate(value: string | null) {
 }
 
 function safeNetworkReturn(value: string | null) {
-  return value?.startsWith('/network') ? value : null
+  return value?.startsWith('/network') || value?.startsWith('/dc/')
+    ? value
+    : null
 }
 
 function scenarioName(id: string, scenarios: { scenario_id: string; scenario_name: string }[]) {

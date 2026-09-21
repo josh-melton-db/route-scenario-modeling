@@ -1,5 +1,4 @@
-import { CalendarRange, Layers3, Workflow } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { CalendarRange, Database, Layers3 } from 'lucide-react'
 import type {
   NetworkOptions,
   NetworkOverviewParams,
@@ -42,13 +41,10 @@ export default function NetworkContextBar({
             </p>
           </div>
         </div>
-        <Link
-          to="/network/scenarios"
-          className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium transition-colors hover:bg-accent/50"
-        >
-          <Workflow className="h-4 w-4" />
-          Scenario planning
-        </Link>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Database className="h-3.5 w-3.5" />
+          Demand and capacity are read-only
+        </div>
       </div>
 
       <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[1.4fr_1.4fr_1fr_1fr_1fr_1fr_1fr]">

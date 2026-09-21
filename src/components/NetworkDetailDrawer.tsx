@@ -18,6 +18,7 @@ interface NetworkDetailDrawerProps {
   facility: NetworkFacilityAggregate | null
   lane: NetworkLaneAggregate | null
   depotAnalysisHref: string | null
+  dcAnalysisHref: string | null
   onClose: () => void
   onSelectFacility: (facilityId: string) => void
 }
@@ -26,6 +27,7 @@ export default function NetworkDetailDrawer({
   facility,
   lane,
   depotAnalysisHref,
+  dcAnalysisHref,
   onClose,
   onSelectFacility,
 }: NetworkDetailDrawerProps) {
@@ -79,6 +81,13 @@ export default function NetworkDetailDrawer({
               className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"
             >
               Open depot analysis <ExternalLink className="h-4 w-4" />
+            </Link>
+          ) : facility?.facility_type === 'distribution_center' && dcAnalysisHref ? (
+            <Link
+              to={dcAnalysisHref}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"
+            >
+              View distribution center <ExternalLink className="h-4 w-4" />
             </Link>
           ) : facility?.facility_type === 'depot' ? (
             <div className="rounded-md border border-border bg-background/40 p-3 text-xs text-muted-foreground">
