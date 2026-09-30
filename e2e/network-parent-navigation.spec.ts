@@ -136,5 +136,5 @@ test('preserves parent scenario, run, depot, and date across route navigation', 
   await expect(page).toHaveURL(new RegExp(`/analyze\\?.*networkRun=${runId}`))
   await page.getByRole('link', { name: 'Network' }).click()
   await expect(page).toHaveURL(`${appUrl}/network/scenarios/${scenarioId}/flow?run=${runId}`)
-  expect(historicalReads).toBeGreaterThan(1)
+  await expect.poll(() => historicalReads).toBeGreaterThan(1)
 })

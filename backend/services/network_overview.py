@@ -30,6 +30,7 @@ from ..models import (
     NetworkRegionOption,
 )
 from .sql import SqlService, sql_literal
+from .network_assignment_projection import projected_demand_rows
 
 NetworkRows = dict[str, list[dict[str, Any]]]
 
@@ -280,7 +281,11 @@ class NetworkOverviewService:
         now = time.monotonic()
         if self._options_cache and now - self._options_cache[0] < 300:
             return self._options_cache[1].model_copy(deep=True)
-        rows = self._load_option_rows()
+        from .baseline_service import baseline_service
+
+        # Accepted revisions retain their own dated input catalog. A fixture
+        # refresh must not silently swap those versions underneath the UI.
+        rows = baseline_service.active_rows()
         demand_plans = sorted(
             rows["demand_plan_versions"],
             key=lambda row: _as_string(row["published_at"]),
@@ -297,8 +302,10 @@ class NetworkOverviewService:
                 status_code=503,
                 detail="Canonical network plan metadata is not available.",
             )
-        demand_default = demand_plans[0]
-        capacity_default = capacity_plans[0]
+        metadata = rows.get('baseline_revision_metadata', [])
+        selected = metadata[0] if metadata else {}
+        demand_default = next((row for row in demand_plans if str(row['plan_version_id']) == selected.get('demand_plan_version_id')), demand_plans[0])
+        capacity_default = next((row for row in capacity_plans if str(row['plan_version_id']) == selected.get('capacity_plan_version_id')), capacity_plans[0])
         freshness = max(
             _as_string(demand_default["published_at"]),
             _as_string(capacity_default["published_at"]),
@@ -381,26 +388,38 @@ class NetworkOverviewService:
         metric: NetworkMetric,
     ) -> NetworkOverview:
         options = self.get_options()
-        demand_id = demand_plan_version_id or options.default_demand_plan_version_id
-        capacity_id = capacity_plan_version_id or options.default_capacity_plan_version_id
-        start = horizon_start or date.fromisoformat(options.default_horizon_start)
-        end = horizon_end or date.fromisoformat(options.default_horizon_end)
+        # Import lazily to avoid a baseline-service initialization cycle.
+        from .baseline_service import baseline_service
+
+        rows = baseline_service.active_rows()
+        active_demand_id, active_capacity_id = baseline_service._plan_ids(rows)
+        demand_id = demand_plan_version_id or active_demand_id or options.default_demand_plan_version_id
+        capacity_id = capacity_plan_version_id or active_capacity_id or options.default_capacity_plan_version_id
+        active_demand = next(
+            (row for row in rows.get("demand_plan_versions", [])
+             if str(row["plan_version_id"]) == demand_id),
+            None,
+        )
+        start = horizon_start or date.fromisoformat(
+            _as_string(active_demand["horizon_start"]) if active_demand
+            else options.default_horizon_start
+        )
+        end = horizon_end or date.fromisoformat(
+            _as_string(active_demand["horizon_end"]) if active_demand
+            else options.default_horizon_end
+        )
         selected_region = region_id or options.default_region_id
         if end < start:
             raise HTTPException(status_code=400, detail="Horizon end must not precede start.")
-        if demand_id not in {row.plan_version_id for row in options.demand_plans}:
+        active_demand_ids = {str(row["plan_version_id"]) for row in rows.get("demand_plan_versions", [])}
+        active_capacity_ids = {str(row["plan_version_id"]) for row in rows.get("capacity_plan_versions", [])}
+        if demand_id not in ({row.plan_version_id for row in options.demand_plans} | active_demand_ids):
             raise HTTPException(status_code=404, detail="Demand plan version not found.")
-        if capacity_id not in {row.plan_version_id for row in options.capacity_plans}:
+        if capacity_id not in ({row.plan_version_id for row in options.capacity_plans} | active_capacity_ids):
             raise HTTPException(status_code=404, detail="Capacity plan version not found.")
         if selected_region not in {row.region_id for row in options.regions}:
             raise HTTPException(status_code=404, detail="Network region not found.")
 
-        rows = self._load_rows(
-            demand_plan_version_id=demand_id,
-            capacity_plan_version_id=capacity_id,
-            horizon_start=start,
-            horizon_end=end,
-        )
         return self._build_overview(
             rows,
             context=NetworkOverviewContext(
@@ -435,7 +454,13 @@ class NetworkOverviewService:
 
         demand_by_depot: defaultdict[str, int] = defaultdict(int)
         total_demand = 0
-        for row in rows["demand_plan_daily"]:
+        try:
+            demand_rows = projected_demand_rows(
+                rows, context.demand_plan_version_id, context.capacity_plan_version_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        for row in demand_rows:
             if (
                 str(row["demand_plan_version_id"]) != context.demand_plan_version_id
                 or (
@@ -482,7 +507,19 @@ class NetworkOverviewService:
         has_scenario_costs = "network_flow_cost_daily" in rows
         scenario_cost_by_lane: defaultdict[str, float] = defaultdict(float)
         for row in rows.get("network_flow_cost_daily", []):
-            if not in_horizon(row):
+            if (
+                not in_horizon(row)
+                or (
+                    row.get("demand_plan_version_id") is not None
+                    and str(row["demand_plan_version_id"])
+                    != context.demand_plan_version_id
+                )
+                or (
+                    row.get("capacity_plan_version_id") is not None
+                    and str(row["capacity_plan_version_id"])
+                    != context.capacity_plan_version_id
+                )
+            ):
                 continue
             scenario_cost_by_lane[str(row["lane_id"])] += float(row["total_cost"])
 
@@ -534,7 +571,7 @@ class NetworkOverviewService:
             utilization = _percent(assigned, capacity)
             lane_cost = (
                 scenario_cost_by_lane[lane_id]
-                if has_scenario_costs
+                if has_scenario_costs and lane_id in scenario_cost_by_lane
                 else sum(
                     estimate_lane_daily_cost(lane, units)
                     for units in daily_flow[lane_id]

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date, timedelta
+import json
+import os
+import subprocess
+import sys
 
 import pytest
 from pydantic import ValidationError
@@ -84,7 +89,7 @@ def test_baseline_flow_reconciles_across_all_three_lane_grains() -> None:
             row["assigned_units"]
         )
 
-    assert len(demand_by_date) == 7
+    assert len(demand_by_date) == 28
     for service_date, total_demand in demand_by_date.items():
         assert flow_by_date_and_type[(service_date, "LINEHAUL")] == total_demand
         assert flow_by_date_and_type[(service_date, "MARKET")] == total_demand
@@ -170,7 +175,7 @@ def test_national_demo_shape_and_alternate_paths(national_network) -> None:
 
 def test_constrained_southeast_plan_preserves_unmet_demand(national_network) -> None:
     data = national_network
-    service_date = "2026-09-21"
+    service_date = data["demand_plan_versions"][0]["horizon_start"]
     southeast_customers = {
         row["customer_id"]
         for row in data["dim_network_customers"]
@@ -222,3 +227,57 @@ def test_constrained_southeast_plan_preserves_unmet_demand(national_network) -> 
         ]
         for row in data["baseline_network_flow_daily"]
     )
+
+
+@pytest.mark.parametrize("anchor", ["2026-02-03", "2027-11-19"])
+def test_explicit_anchor_freezes_coherent_28_day_snapshot(anchor: str) -> None:
+    code = """
+import json
+from route_opt.network_synthetic import national_dataset_cached
+from route_opt.synthetic import generate_all
+from backend.services.rates import list_rate_contract_details
+from backend.services.stub_store import StubStore
+d = national_dataset_cached()
+local = generate_all()
+rates = list_rate_contract_details(StubStore())
+print(json.dumps({
+  'version': d['demand_plan_versions'][0],
+  'dates': sorted({r['service_date'] for r in d['demand_plan_daily']}),
+  'route_dates': sorted({r['route_date'] for r in local['fact_delivery_orders']}),
+  'rate_ranges': [[r.version.effective_start, r.version.effective_end] for r in rates],
+}))
+"""
+    env = {**os.environ, "DEMO_DATE_ANCHOR": anchor, "PYTHONPATH": os.getcwd()}
+    payload = json.loads(subprocess.check_output([sys.executable, "-c", code], env=env))
+    dates = payload["dates"]
+    assert len(dates) == 28
+    assert dates[0] == anchor
+    assert dates[-1] == (date.fromisoformat(anchor) + timedelta(days=27)).isoformat()
+    assert payload["version"]["as_of_date"] == anchor
+    assert anchor.replace("-", "") in payload["version"]["plan_version_id"]
+    assert len(payload["route_dates"]) == 1
+    assert dates[0] <= payload["route_dates"][0] <= dates[-1]
+    assert payload["rate_ranges"]
+    assert all(start <= dates[0] and end >= dates[-1] for start, end in payload["rate_ranges"])
+
+
+def test_process_anchor_does_not_slide_when_clock_changes() -> None:
+    code = """
+from datetime import date
+from route_opt import demo_dates
+demo_dates._local_today = lambda: date(2026, 3, 1)
+first = demo_dates.demo_date_anchor()
+demo_dates._local_today = lambda: date(2026, 3, 2)
+assert first == demo_dates.demo_date_anchor() == date(2026, 3, 1)
+"""
+    env = {key: value for key, value in os.environ.items() if key != "DEMO_DATE_ANCHOR"}
+    env["PYTHONPATH"] = os.getcwd()
+    subprocess.check_call([sys.executable, "-c", code], env=env)
+
+
+def test_invalid_explicit_anchor_is_rejected() -> None:
+    code = "from route_opt.demo_dates import demo_date_anchor; demo_date_anchor()"
+    env = {**os.environ, "DEMO_DATE_ANCHOR": "09/30/2026", "PYTHONPATH": os.getcwd()}
+    result = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "ISO date" in result.stderr

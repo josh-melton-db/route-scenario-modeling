@@ -351,6 +351,59 @@ export interface NetworkScenarioRunResponse {
   result: NetworkScenarioResult
 }
 
+export interface NetworkBaselineState {
+  original_revision_id: string
+  active_revision_id: string
+  active_run_id: string | null
+  active_plan_run_id?: string
+  active_plan_scenario_id?: string
+  accepted_at: string | null
+  route_coverage?: NetworkBaselineRouteCoverage
+}
+
+export interface NetworkBaselineRouteCoverage {
+  ready: boolean
+  covered_dates: number
+  expected_dates: number
+  covered_depots: number
+  expected_depots: number
+  message: string
+}
+
+export interface NetworkBaselineProposal {
+  proposal_id: string
+  run_id: string
+  source_revision_id: string
+  status: string
+  route_coverage?: NetworkBaselineRouteCoverage
+}
+
+export interface NetworkReleaseTarget {
+  customer_id: string
+  customer_name: string
+  assigned_cases: number
+}
+
+export interface NetworkDemandChange {
+  change_id: string
+  status: string
+  service_date: string
+  customer_id: string
+  cases: number
+  depot_id: string
+  depot_plan_id: string
+  route_scenario_id: string
+}
+
+export interface NetworkReleaseRequest {
+  kind: 'release'
+  depot_plan_id: string
+  route_scenario_id: string
+  service_date: string
+  customer_id: string
+  cases: number
+}
+
 export interface Carrier {
   carrier_id: string
   carrier_name: string

@@ -1,5 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { Loader2 } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '@/api/client'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type {
   NetworkOverviewParams,
@@ -13,6 +15,7 @@ import NetworkDetailDrawer from '@/components/NetworkDetailDrawer'
 import NetworkFlowMap from '@/components/NetworkFlowMap'
 import NetworkInsightRail from '@/components/NetworkInsightRail'
 import NetworkKpiStrip from '@/components/NetworkKpiStrip'
+import NetworkBaselineActions from '@/components/NetworkBaselineActions'
 import { buildDepotAnalysisHref } from '@/lib/networkLinks'
 
 const queryNames: Record<keyof NetworkOverviewParams, string> = {
@@ -34,6 +37,11 @@ export default function NetworkPage() {
     [options.data, searchParams],
   )
   const overview = useNetworkOverview(context)
+  const baselinePlan = useQuery({
+    queryKey: ['network-baseline-plan-run', context],
+    queryFn: () => api.networkBaselinePlanRun(context!),
+    enabled: Boolean(context),
+  })
 
   useEffect(() => {
     if (!context) return
@@ -106,11 +114,15 @@ export default function NetworkPage() {
     ) ?? null
   const selectedLane =
     overview.data.lanes.find((row) => row.lane_id === searchParams.get('lane')) ?? null
-  const depotAnalysisHref = selectedFacility?.depot_analysis_available
+  const networkReturn = `/network?${searchParams.toString()}`
+  const depotAnalysisHref = selectedFacility?.depot_analysis_available && baselinePlan.data?.run_id
     ? buildDepotAnalysisHref(
         selectedFacility.facility_id,
         context.horizon_start,
         context.horizon_end,
+        baselinePlan.data.scenario_id,
+        baselinePlan.data.run_id,
+        networkReturn,
       )
     : null
   const dcAnalysisHref =
@@ -133,11 +145,14 @@ export default function NetworkPage() {
       return
     }
 
-    const href = facility.depot_analysis_available
+    const href = facility.depot_analysis_available && baselinePlan.data?.run_id
       ? buildDepotAnalysisHref(
           facility.facility_id,
           context.horizon_start,
           context.horizon_end,
+          baselinePlan.data.scenario_id,
+          baselinePlan.data.run_id,
+          networkReturn,
         )
       : null
     if (href) {
@@ -156,6 +171,9 @@ export default function NetworkPage() {
         onChange={updateContext}
       />
       <NetworkKpiStrip overview={overview.data} />
+      <NetworkBaselineActions />
+      {baselinePlan.isLoading && <p className="text-xs text-muted-foreground">Preparing the baseline's immutable depot-planning context…</p>}
+      {baselinePlan.error && <p role="alert" className="text-xs text-destructive">Depot planning context could not be loaded: {String(baselinePlan.error)}</p>}
       {overview.data.is_partial && (
         <div className="rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-xs text-warning">
           This view is partial. Available facts are shown with their latest published freshness.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from datetime import date, timedelta
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -127,30 +128,33 @@ def test_tariff_charge_is_separate_and_reconciles(monkeypatch: pytest.MonkeyPatc
 
 def test_validation_rejects_overlapping_directed_tariffs() -> None:
     options = client.get("/api/network/options").json()
+    start = options["default_horizon_start"]
+    middle = (date.fromisoformat(start) + timedelta(days=1)).isoformat()
+    end = (date.fromisoformat(start) + timedelta(days=2)).isoformat()
     created = client.post(
         "/api/network/scenarios",
         json={
             "scenario_name": "Overlapping tariffs",
             "demand_plan_version_id": options["default_demand_plan_version_id"],
             "capacity_plan_version_id": options["default_capacity_plan_version_id"],
-            "horizon_start": "2026-09-21",
-            "horizon_end": "2026-09-23",
+            "horizon_start": start,
+            "horizon_end": end,
             "assumptions": {
                 "tariffs": [
                     {
                         "rule_id": "MX_US_A",
                         "origin_country": "MX",
                         "destination_country": "US",
-                        "effective_start": "2026-09-21",
-                        "effective_end": "2026-09-22",
+                        "effective_start": start,
+                        "effective_end": middle,
                         "amount_per_case": 2,
                     },
                     {
                         "rule_id": "MX_US_B",
                         "origin_country": "MX",
                         "destination_country": "US",
-                        "effective_start": "2026-09-22",
-                        "effective_end": "2026-09-23",
+                        "effective_start": middle,
+                        "effective_end": end,
                         "amount_per_case": 3,
                     },
                 ]
@@ -172,11 +176,13 @@ def test_validation_rejects_overlapping_directed_tariffs() -> None:
 
 def test_run_reports_tariff_economics_separately() -> None:
     options = client.get("/api/network/options").json()
+    start = options["default_horizon_start"]
+    end = (date.fromisoformat(start) + timedelta(days=2)).isoformat()
     common = {
         "demand_plan_version_id": options["default_demand_plan_version_id"],
         "capacity_plan_version_id": options["default_capacity_plan_version_id"],
-        "horizon_start": "2026-09-21",
-        "horizon_end": "2026-09-23",
+        "horizon_start": start,
+        "horizon_end": end,
         "region_id": "REGION_TOLA",
     }
     baseline_created = client.post(
@@ -197,8 +203,8 @@ def test_run_reports_tariff_economics_separately() -> None:
                         "rule_id": "MX_US_TEST",
                         "origin_country": "MX",
                         "destination_country": "US",
-                        "effective_start": "2026-09-21",
-                        "effective_end": "2026-09-23",
+                        "effective_start": start,
+                        "effective_end": end,
                         "amount_per_case": 0.1,
                     }
                 ]
@@ -248,8 +254,8 @@ def test_run_reports_tariff_economics_separately() -> None:
                         "rule_id": "MX_US_TEST",
                         "origin_country": "MX",
                         "destination_country": "US",
-                        "effective_start": "2026-09-21",
-                        "effective_end": "2026-09-23",
+                        "effective_start": start,
+                        "effective_end": end,
                         "amount_per_case": 5,
                     }
                 ]

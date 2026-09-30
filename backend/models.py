@@ -893,12 +893,22 @@ class NetworkTariffRule(StrictModel):
         return self
 
 
+class NetworkReleaseOverlay(StrictModel):
+    service_date: str
+    customer_id: str
+    source_depot_id: str
+    cases: int = Field(gt=0)
+
+
 class NetworkScenarioAssumptions(StrictModel):
     disabled_facility_ids: list[str] = Field(default_factory=list)
     disabled_lane_ids: list[str] = Field(default_factory=list)
     lane_cost_adjustments_pct: dict[str, float] = Field(default_factory=dict)
     unmet_penalty_per_case: float = Field(default=250.0, ge=0)
     tariffs: list[NetworkTariffRule] = Field(default_factory=list)
+    source_baseline_revision_id: str | None = None
+    parent_run_id: str | None = None
+    release_overlays: list[NetworkReleaseOverlay] = Field(default_factory=list)
 
 
 class NetworkScenarioValidationIssue(StrictModel):
@@ -920,6 +930,7 @@ class NetworkScenario(StrictModel):
     scenario_id: str
     scenario_name: str
     baseline_scenario_id: str = "baseline"
+    source_baseline_revision_id: str | None = None
     demand_plan_version_id: str
     capacity_plan_version_id: str
     horizon_start: str
@@ -939,6 +950,7 @@ class NetworkScenario(StrictModel):
 class NetworkScenarioCreateRequest(StrictModel):
     scenario_name: str
     baseline_scenario_id: str = "baseline"
+    source_baseline_revision_id: str | None = None
     demand_plan_version_id: str
     capacity_plan_version_id: str
     horizon_start: str
@@ -1023,6 +1035,36 @@ class NetworkScenarioResult(StrictModel):
 class NetworkScenarioRunResponse(StrictModel):
     scenario: NetworkScenario
     result: NetworkScenarioResult
+
+
+class NetworkDemandChangeCreateRequest(StrictModel):
+    depot_plan_id: str = Field(min_length=1)
+    route_scenario_id: str = Field(min_length=1)
+    service_date: str
+    customer_id: str = Field(min_length=1)
+    cases: int = Field(gt=0)
+    kind: Literal["release"]
+
+
+class NetworkDemandChange(StrictModel):
+    change_id: str
+    parent_run_id: str
+    depot_plan_id: str
+    route_scenario_id: str
+    depot_id: str
+    service_date: str
+    customer_id: str
+    cases: int = Field(gt=0)
+    kind: Literal["release"] = "release"
+    status: Literal["pending", "resolved"] = "pending"
+    created_at: str
+    resolved_run_id: str | None = None
+
+
+class NetworkReleaseTarget(StrictModel):
+    customer_id: str
+    customer_name: str
+    assigned_cases: int = Field(gt=0)
 
 
 class EditorSession(StrictModel):

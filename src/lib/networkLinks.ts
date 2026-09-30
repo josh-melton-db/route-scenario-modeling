@@ -63,7 +63,10 @@ export function buildDepotAnalysisHref(
   networkRun?: string,
   networkReturn?: string,
 ) {
-  const serviceDate = firstWeekdayInRange(horizonStart, horizonEnd, 2)
+  // Pinned plans solve every exact date; Tuesday is only a legacy API constraint.
+  const serviceDate = networkRun
+    ? (horizonStart <= horizonEnd ? horizonStart : null)
+    : firstWeekdayInRange(horizonStart, horizonEnd, 2)
   if (!serviceDate) return null
   return buildRouteWorkspaceHref('/analyze', {
     depot: depotId,

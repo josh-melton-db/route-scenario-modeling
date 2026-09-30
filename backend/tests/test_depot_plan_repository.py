@@ -104,4 +104,3 @@ def test_missing_record_errors_are_clear() -> None:
     with pytest.raises(HTTPException) as mutate_error:
         repository.mutate("missing", lambda _: None)
     assert mutate_error.value.status_code == 404
-

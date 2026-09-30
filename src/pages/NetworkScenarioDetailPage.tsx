@@ -17,6 +17,7 @@ import KpiCard from '@/components/KpiCard'
 import NetworkDetailDrawer from '@/components/NetworkDetailDrawer'
 import NetworkFlowMap from '@/components/NetworkFlowMap'
 import NetworkTariffChangeCard from '@/components/NetworkTariffChangeCard'
+import NetworkBaselineActions from '@/components/NetworkBaselineActions'
 import {
   useDeleteNetworkScenario,
   useNetworkOptions,
@@ -900,10 +901,11 @@ function FlowTab({
         </div>
       )}
       <p className="text-xs text-muted-foreground">
-        Scenario vs. published baseline · plan generated{' '}
+        Scenario vs. source baseline · plan generated{' '}
         {new Date(result.data.generated_at).toLocaleString()} · baseline demand{' '}
         {formatNumber(baseline_overview.kpis.demand_units)} cases
       </p>
+      <NetworkBaselineActions runId={pinnedRunId} />
       {(scenario.assumptions.tariffs ?? []).length > 0 && (
         <p className="text-xs text-muted-foreground">
           Applied tariff: {(scenario.assumptions.tariffs ?? []).map((rule) =>

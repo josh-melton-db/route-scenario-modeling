@@ -10,6 +10,7 @@ from route_opt.rates import (
     contract_summary,
     quote_contract,
 )
+from route_opt.demo_dates import demo_date_anchor, snapshot_version_id
 
 from ..models import (
     RateAccessorialTemplate,
@@ -44,10 +45,17 @@ _MONTERREY_TEXAS_RATE_RULES = (
 )
 
 
-def _with_curated_network_rates(detail: RateContractDetail) -> RateContractDetail:
+def _with_curated_network_rates(
+    detail: RateContractDetail, *, synthetic_seed: bool = False
+) -> RateContractDetail:
     """Add published demo-corridor rates missing from legacy rate storage."""
 
-    if detail.contract_id != "MX_STANDARD_2026":
+    detail = _with_demo_rate_dates(detail) if synthetic_seed else detail
+    if (
+        detail.contract_id != "MX_STANDARD_2026"
+        or detail.version.version_number != 1
+        or detail.version.status != "published"
+    ):
         return detail
     existing = {rule.rule_id for rule in detail.lane_rates}
     additions = [
@@ -86,6 +94,45 @@ def _with_curated_network_rates(detail: RateContractDetail) -> RateContractDetai
     )
 
 
+def _with_demo_rate_dates(detail: RateContractDetail) -> RateContractDetail:
+    """Keep seeded published rate books valid for the frozen demo snapshot."""
+
+    seeded_version_ids = {
+        "GL_STANDARD_2026_V1",
+        "GL_PRIORITY_2026_V1",
+        "MW_SPOT_2026_V1",
+        "CAN_STANDARD_2026_V1",
+        "MX_STANDARD_2026_V1",
+    }
+    if (
+        detail.version.status != "published"
+        or detail.version.version_id not in seeded_version_ids
+        or detail.version.effective_start != "2026-01-01"
+        or detail.version.effective_end != "2026-12-31"
+    ):
+        return detail
+    anchor = demo_date_anchor()
+    effective_start = anchor.replace(month=1, day=1).isoformat()
+    effective_end = max(
+        anchor.replace(month=12, day=31), anchor + timedelta(days=27)
+    ).isoformat()
+    version = detail.version.model_copy(
+        update={
+            "version_id": snapshot_version_id(detail.version.version_id, anchor),
+            "effective_start": effective_start,
+            "effective_end": effective_end,
+            "published_at": anchor.isoformat(),
+        }
+    )
+    fuel = [
+        row.model_copy(
+            update={"effective_start": effective_start, "effective_end": effective_end}
+        )
+        for row in detail.fuel_surcharges
+    ]
+    return detail.model_copy(update={"version": version, "fuel_surcharges": fuel})
+
+
 # Region-to-contract map for governed linehaul rating. Lanes whose origin region
 # is absent here fall back to planning rates rather than a governed rate book.
 GOVERNED_LINEHAUL_CONTRACTS: dict[str, tuple[str, str]] = {
@@ -111,25 +158,32 @@ def _writer(store: Any, method_name: str) -> Any:
 
 
 def list_rate_contract_details(store: Any) -> list[RateContractDetail]:
+    synthetic_seed = store.__class__.__module__ == "backend.services.stub_store"
     rich_loader = getattr(store, "list_rate_contract_details", None)
     if callable(rich_loader):
         details = rich_loader()
         if details:
             return [
-                _with_curated_network_rates(RateContractDetail.model_validate(row))
+                _with_curated_network_rates(
+                    RateContractDetail.model_validate(row),
+                    synthetic_seed=synthetic_seed,
+                )
                 for row in details
             ]
 
     carriers = {row.carrier_id: row.carrier_name for row in store.list_carriers()}
     freshness = datetime.now(timezone.utc).isoformat()
     return [
-        _with_curated_network_rates(RateContractDetail.model_validate(
-            contract_detail_from_legacy(
-                contract.model_dump(mode="json"),
-                carriers.get(contract.carrier_id, contract.carrier_id),
-                freshness_at=freshness,
-            )
-        ))
+        _with_curated_network_rates(
+            RateContractDetail.model_validate(
+                contract_detail_from_legacy(
+                    contract.model_dump(mode="json"),
+                    carriers.get(contract.carrier_id, contract.carrier_id),
+                    freshness_at=freshness,
+                )
+            ),
+            synthetic_seed=synthetic_seed,
+        )
         for contract in store.list_carrier_contracts()
     ]
 

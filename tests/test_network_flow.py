@@ -1,20 +1,28 @@
 from copy import deepcopy
+from datetime import date
 
 from route_opt.network_flow import solve_fixed_capacity_network
-from route_opt.network_synthetic import generate_national_network_dataset
+from route_opt.network_synthetic import (
+    NATIONAL_CAPACITY_PLAN_VERSION_ID,
+    NATIONAL_DEMAND_PLAN_VERSION_ID,
+    SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID,
+    generate_national_network_dataset,
+)
 from route_opt.synthetic import generate_depots
 
 
 def _national_rows():
-    return generate_national_network_dataset(generate_depots(), seed=42)
+    return generate_national_network_dataset(
+        generate_depots(), seed=42, horizon_start=date(2026, 9, 21)
+    )
 
 
 def test_solver_respects_fixed_capacity_and_reduces_unmet_demand() -> None:
     rows = _national_rows()
     result = solve_fixed_capacity_network(
         rows,
-        demand_plan_version_id="DEMAND_US_BASELINE_V1",
-        capacity_plan_version_id="CAPACITY_US_SE_CONSTRAINED_V2",
+        demand_plan_version_id=NATIONAL_DEMAND_PLAN_VERSION_ID,
+        capacity_plan_version_id=SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID,
         horizon_start="2026-09-21",
         horizon_end="2026-09-21",
         region_id="ALL",
@@ -28,7 +36,7 @@ def test_solver_respects_fixed_capacity_and_reduces_unmet_demand() -> None:
     lane_capacity = {
         str(row["lane_id"]): int(row["capacity_units"])
         for row in rows["lane_capacity_daily"]
-        if str(row["capacity_plan_version_id"]) == "CAPACITY_US_SE_CONSTRAINED_V2"
+        if str(row["capacity_plan_version_id"]) == SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID
         and str(row["service_date"]) == "2026-09-21"
     }
 
@@ -59,8 +67,8 @@ def test_solver_uses_alternate_dc_when_primary_disabled() -> None:
     rows = _national_rows()
     result = solve_fixed_capacity_network(
         rows,
-        demand_plan_version_id="DEMAND_US_BASELINE_V1",
-        capacity_plan_version_id="CAPACITY_US_BASELINE_V1",
+        demand_plan_version_id=NATIONAL_DEMAND_PLAN_VERSION_ID,
+        capacity_plan_version_id=NATIONAL_CAPACITY_PLAN_VERSION_ID,
         horizon_start="2026-09-21",
         horizon_end="2026-09-21",
         region_id="REGION_SOUTHEAST",
@@ -101,8 +109,8 @@ def test_texas_corridor_shares_monterrey_capacity_and_tariff_reroutes() -> None:
         "LNE_DC_MEXICO_MONTERREY_TO_DPT_TOLA_DALLAS",
     }
     common = dict(
-        demand_plan_version_id="DEMAND_US_BASELINE_V1",
-        capacity_plan_version_id="CAPACITY_US_BASELINE_V1",
+        demand_plan_version_id=NATIONAL_DEMAND_PLAN_VERSION_ID,
+        capacity_plan_version_id=NATIONAL_CAPACITY_PLAN_VERSION_ID,
         horizon_start=service_date,
         horizon_end=service_date,
         region_id="REGION_TOLA",
@@ -129,7 +137,7 @@ def test_texas_corridor_shares_monterrey_capacity_and_tariff_reroutes() -> None:
     baseline_cross_border = sum(
         int(row["assigned_units"])
         for row in rows["baseline_network_flow_daily"]
-        if row["capacity_plan_version_id"] == "CAPACITY_US_BASELINE_V1"
+        if row["capacity_plan_version_id"] == NATIONAL_CAPACITY_PLAN_VERSION_ID
         and row["service_date"] == service_date
         and row["lane_id"] in cross_border_lanes
     )
@@ -155,7 +163,7 @@ def test_texas_corridor_shares_monterrey_capacity_and_tariff_reroutes() -> None:
     monterrey_capacity = next(
         int(row["capacity_units"])
         for row in rows["facility_capacity_daily"]
-        if row["capacity_plan_version_id"] == "CAPACITY_US_BASELINE_V1"
+        if row["capacity_plan_version_id"] == NATIONAL_CAPACITY_PLAN_VERSION_ID
         and row["service_date"] == service_date
         and row["facility_id"] == "DC_MEXICO_MONTERREY"
     )
@@ -172,7 +180,7 @@ def test_tariffed_corridor_uses_cross_border_when_domestic_capacity_binds() -> N
     }
     for row in rows["facility_capacity_daily"]:
         if (
-            row["capacity_plan_version_id"] == "CAPACITY_US_BASELINE_V1"
+            row["capacity_plan_version_id"] == NATIONAL_CAPACITY_PLAN_VERSION_ID
             and row["service_date"] == service_date
             and row["facility_id"] in {"DC_TOLA_DALLAS", "DC_TOLA_HOUSTON"}
         ):
@@ -180,8 +188,8 @@ def test_tariffed_corridor_uses_cross_border_when_domestic_capacity_binds() -> N
 
     result = solve_fixed_capacity_network(
         rows,
-        demand_plan_version_id="DEMAND_US_BASELINE_V1",
-        capacity_plan_version_id="CAPACITY_US_BASELINE_V1",
+        demand_plan_version_id=NATIONAL_DEMAND_PLAN_VERSION_ID,
+        capacity_plan_version_id=NATIONAL_CAPACITY_PLAN_VERSION_ID,
         horizon_start=service_date,
         horizon_end=service_date,
         region_id="REGION_TOLA",

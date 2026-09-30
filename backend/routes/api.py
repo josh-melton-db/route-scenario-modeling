@@ -7,6 +7,7 @@ from .data_editor import router as data_editor_router
 from .depot_plans import router as depot_plans_router
 from .meta import router as meta_router
 from .network import router as network_router
+from .network_baseline import router as network_baseline_router
 from .results import router as results_router
 from .rates import router as rates_router
 from .runs import router as runs_router
@@ -23,6 +24,7 @@ async def health() -> dict[str, str]:
 
 router.include_router(meta_router)
 router.include_router(network_router)
+router.include_router(network_baseline_router)
 router.include_router(depot_plans_router)
 router.include_router(baseline_router)
 router.include_router(data_editor_router)

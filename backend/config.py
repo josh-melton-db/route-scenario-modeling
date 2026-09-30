@@ -4,6 +4,8 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from route_opt.demo_dates import demo_date_anchor
+
 
 def get_catalog() -> str:
     return os.getenv("DATABRICKS_CATALOG", "demos")
@@ -15,6 +17,12 @@ def get_schema() -> str:
 
 def get_data_backend() -> str:
     return os.getenv("DATA_BACKEND", "stub").strip().lower() or "stub"
+
+
+def get_demo_date_anchor():
+    """Return the process-frozen synthetic snapshot data-as-of date."""
+
+    return demo_date_anchor()
 
 
 def get_lakebase_schema() -> str:

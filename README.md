@@ -73,6 +73,38 @@ pip install -r requirements.txt
 npm run dev:all    # Vite on :5180, FastAPI on :8002 with stub data
 ```
 
+The synthetic network uses a date anchor frozen when the backend process starts.
+By default it starts near today's local date and covers 28 days. For a repeatable
+demo, set `DEMO_DATE_ANCHOR=2026-09-30` before starting the backend. Demand,
+capacity, data-as-of timestamps, and seeded rate validity use that same anchor;
+saved network runs never move forward with the clock. Changing the anchor is a
+deliberate fixture refresh, not a reset of accepted planning history.
+
+### Network-to-depot planning
+
+Run a network scenario, then click a depot in **Plan flow** to open its stored
+daily route horizon. A named route scenario inherits optimized defaults and can
+override operating assumptions on individual dates. **Release for reassignment**
+proposes that another eligible depot serves selected cases; it does not cancel
+demand or immediately change the old routes. **Rerun network with releases**
+creates a new immutable parent run, leaving the old network and depot plans
+available for comparison. Eligibility in the demo is a labeled deterministic
+nearby/same-region assumption, not a customer-provided territory policy.
+
+On a solved network run, **Propose as baseline** and then **Accept as baseline**
+changes the default network shown on the main page. Local route readiness is
+reported separately and does not block network acceptance. **Reset to original
+story** restores the original baseline pointer after confirmation, retaining
+accepted revisions and historical plans. Promotion from a stale source baseline
+requires a new scenario based on the active revision.
+
+Run the focused browser checks against an already-running local frontend without
+starting or stopping any local apps:
+
+```bash
+E2E_BASE_URL=http://localhost:5180 npx playwright test --config playwright.local.config.ts e2e/network-lifecycle.spec.ts e2e/depot-horizon.spec.ts e2e/network-parent-navigation.spec.ts
+```
+
 To run locally against the isolated Lakebase `dev` branch using the `DEFAULT`
 Databricks profile:
 

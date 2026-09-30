@@ -16,6 +16,7 @@ from backend.services.rates import (
     create_rate_version,
     discard_rate_draft,
     get_rate_contract_detail,
+    list_rate_contract_details,
     preview_rate_quote,
     publish_rate_draft,
     save_rate_draft,
@@ -27,6 +28,42 @@ from route_opt.transportation import resolve_transportation_choices
 
 
 client = TestClient(app)
+
+
+def test_persisted_rate_versions_are_never_rebased() -> None:
+    class PersistedStore(StubStore):
+        pass
+
+    detail = next(
+        row
+        for row in list_rate_contract_details(PersistedStore())
+        if row.contract_id == "GL_STANDARD_2026"
+    )
+    assert detail.version.version_id == "GL_STANDARD_2026_V1"
+    assert detail.version.effective_start == "2026-01-01"
+    assert detail.version.effective_end == "2026-12-31"
+
+
+def test_draft_clones_displayed_anchored_rate_version() -> None:
+    store = StubStore()
+    source = get_rate_contract_detail(store, "MX_STANDARD_2026")
+    draft = create_rate_version(
+        store,
+        source.contract_id,
+        RateVersionCreateRequest(
+            source_version_id=source.version.version_id,
+            effective_start=source.version.effective_start,
+            effective_end=source.version.effective_end,
+            change_reason="Clone displayed demo version",
+        ),
+    )
+    assert draft.version.status == "draft"
+    assert [row.model_dump(exclude={"rule_id"}) for row in draft.lane_rates] == [
+        row.model_dump(exclude={"rule_id"}) for row in source.lane_rates
+    ]
+    assert [row.model_dump(exclude={"rule_id"}) for row in draft.fuel_surcharges] == [
+        row.model_dump(exclude={"rule_id"}) for row in source.fuel_surcharges
+    ]
 
 
 def test_rate_contract_api_exposes_versioned_rule_families() -> None:
@@ -377,11 +414,12 @@ def test_complete_contract_draft_to_publish_lifecycle() -> None:
 def test_new_version_end_dates_prior_version_and_draft_can_be_discarded() -> None:
     store = StubStore()
     contract_id = "GL_STANDARD_2026"
+    source_version_id = get_rate_contract_detail(store, contract_id).version.version_id
     created = create_rate_version(
         store,
         contract_id,
         RateVersionCreateRequest(
-            source_version_id="GL_STANDARD_2026_V1",
+            source_version_id=source_version_id,
             effective_start="2026-10-01",
             effective_end="2027-09-30",
             change_reason="Fall renewal",
@@ -418,7 +456,7 @@ def test_new_version_end_dates_prior_version_and_draft_can_be_discarded() -> Non
         created.version.version_id,
         RatePublishRequest(published_by="Test rate manager"),
     )
-    prior = get_rate_contract_detail(store, contract_id, "GL_STANDARD_2026_V1")
+    prior = get_rate_contract_detail(store, contract_id, source_version_id)
     assert prior.version.status == "published"
     assert prior.version.effective_end == "2026-09-30"
 

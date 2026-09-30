@@ -1,13 +1,21 @@
 from __future__ import annotations
 from functools import lru_cache
 
+from .demo_dates import demo_date_anchor
 
-@lru_cache(maxsize=1)
-def national_dataset_cached(seed: int = 42) -> dict[str, list]:
+
+@lru_cache(maxsize=4)
+def _national_dataset_cached(seed: int, anchor: date) -> dict[str, list]:
     """Single shared national dataset for overview, scenarios, and depot baselines."""
     from .synthetic import generate_depots
 
-    return generate_national_network_dataset(generate_depots(), seed=seed)  # type: ignore[return-value]
+    return generate_national_network_dataset(  # type: ignore[return-value]
+        generate_depots(), seed=seed, horizon_start=anchor
+    )
+
+
+def national_dataset_cached(seed: int = 42) -> dict[str, list]:
+    return _national_dataset_cached(seed, demo_date_anchor())
 
 
 
@@ -15,9 +23,15 @@ import math
 import random
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 from .land_mask import is_on_water, pull_to_land
+from .demo_dates import (
+    DEFAULT_DEMO_HORIZON_DAYS,
+    demo_date_anchor,
+    snapshot_published_at,
+    snapshot_version_id,
+)
 from .matrix import haversine_miles
 from .network_schemas import (
     NETWORK_TABLE_MODELS,
@@ -36,14 +50,16 @@ from .network_schemas import (
 )
 
 NETWORK_SOURCE_SYSTEM = "synthetic_upstream_planning"
-DEFAULT_NETWORK_HORIZON_START = date(2026, 9, 21)
-DEFAULT_NETWORK_HORIZON_DAYS = 7
+DEFAULT_NETWORK_HORIZON_START = demo_date_anchor()
+DEFAULT_NETWORK_HORIZON_DAYS = DEFAULT_DEMO_HORIZON_DAYS
 GREAT_LAKES_REGION_ID = "REGION_GREAT_LAKES"
-DEMAND_PLAN_VERSION_ID = "DEMAND_GL_BASELINE_V1"
-CAPACITY_PLAN_VERSION_ID = "CAPACITY_GL_BASELINE_V1"
-NATIONAL_DEMAND_PLAN_VERSION_ID = "DEMAND_US_BASELINE_V1"
-NATIONAL_CAPACITY_PLAN_VERSION_ID = "CAPACITY_US_BASELINE_V1"
-SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID = "CAPACITY_US_SE_CONSTRAINED_V2"
+DEMAND_PLAN_VERSION_ID = snapshot_version_id("DEMAND_GL_BASELINE", DEFAULT_NETWORK_HORIZON_START)
+CAPACITY_PLAN_VERSION_ID = snapshot_version_id("CAPACITY_GL_BASELINE", DEFAULT_NETWORK_HORIZON_START)
+NATIONAL_DEMAND_PLAN_VERSION_ID = snapshot_version_id("DEMAND_NA_BASELINE", DEFAULT_NETWORK_HORIZON_START)
+NATIONAL_CAPACITY_PLAN_VERSION_ID = snapshot_version_id("CAPACITY_NA_BASELINE", DEFAULT_NETWORK_HORIZON_START)
+SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID = snapshot_version_id(
+    "CAPACITY_NA_SE_CONSTRAINED", DEFAULT_NETWORK_HORIZON_START
+)
 
 
 def _country_code_for_region(region_id: str) -> str:
@@ -1088,7 +1104,8 @@ def _append_southeast_constrained_capacity_plan(
             }
         )
 
-    published_at = datetime(2026, 9, 21, 8, 0, tzinfo=timezone.utc)
+    anchor = date.fromisoformat(str(dataset["capacity_plan_versions"][0]["as_of_date"]))
+    published_at = snapshot_published_at(anchor) + timedelta(hours=1)
     constrained_version = ExternalPlanVersion(
         plan_version_id=SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID,
         plan_id="CAPACITY_US_SOUTHEAST_CONSTRAINED",
@@ -1239,7 +1256,7 @@ def generate_network_dataset(
         demand=demand,
     )
     horizon_end = horizon_start + timedelta(days=horizon_days - 1)
-    published_at = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    published_at = snapshot_published_at(horizon_start)
     demand_versions = [
         ExternalPlanVersion(
             plan_version_id=DEMAND_PLAN_VERSION_ID,
@@ -1295,7 +1312,7 @@ def generate_national_network_dataset(
     seed: int = 42,
     customers_per_depot: int = 100,
     horizon_start: date = DEFAULT_NETWORK_HORIZON_START,
-    horizon_days: int = 28,
+    horizon_days: int = DEFAULT_NETWORK_HORIZON_DAYS,
 ) -> dict[str, list[dict[str, object]]]:
     """Generate the seven-region North America planning demo with alternate DC paths."""
 
@@ -1389,7 +1406,7 @@ def generate_national_network_dataset(
     )
 
     horizon_end = horizon_start + timedelta(days=horizon_days - 1)
-    published_at = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    published_at = snapshot_published_at(horizon_start)
     demand_versions = [
         ExternalPlanVersion(
             plan_version_id=NATIONAL_DEMAND_PLAN_VERSION_ID,

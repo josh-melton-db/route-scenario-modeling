@@ -15,9 +15,13 @@ from ..models import (
     NetworkScenarioResult,
     NetworkScenarioRunResponse,
     NetworkScenarioUpdateRequest,
+    NetworkDemandChange,
+    NetworkDemandChangeCreateRequest,
+    NetworkReleaseTarget,
 )
 from ..services.network_overview import network_overview_service
 from ..services.network_scenarios import network_scenario_service
+from ..services.demand_changes import demand_change_service
 
 router = APIRouter(prefix="/network", tags=["network"])
 
@@ -103,6 +107,26 @@ def network_scenario_result(scenario_id: str) -> NetworkScenarioResult:
 @router.get("/runs/{run_id}", response_model=NetworkScenarioResult)
 def network_run_result(run_id: str) -> NetworkScenarioResult:
     return network_scenario_service.run_result(run_id)
+
+
+@router.get("/runs/{run_id}/demand-changes", response_model=list[NetworkDemandChange])
+def network_demand_changes(run_id: str) -> list[NetworkDemandChange]:
+    return demand_change_service.list(run_id)
+
+
+@router.post("/runs/{run_id}/demand-changes", response_model=NetworkDemandChange, status_code=status.HTTP_201_CREATED)
+def create_network_demand_change(run_id: str, payload: NetworkDemandChangeCreateRequest) -> NetworkDemandChange:
+    return demand_change_service.create(run_id, payload)
+
+
+@router.get("/runs/{run_id}/depots/{depot_id}/release-targets", response_model=list[NetworkReleaseTarget])
+def network_release_targets(run_id: str, depot_id: str, service_date: date) -> list[NetworkReleaseTarget]:
+    return demand_change_service.release_targets(run_id, depot_id, service_date.isoformat())
+
+
+@router.post("/runs/{run_id}/reassign", response_model=NetworkScenarioRunResponse)
+def reassign_network_demand(run_id: str) -> NetworkScenarioRunResponse:
+    return demand_change_service.reassign(run_id)
 
 
 @router.delete("/scenarios/{scenario_id}", status_code=status.HTTP_204_NO_CONTENT)

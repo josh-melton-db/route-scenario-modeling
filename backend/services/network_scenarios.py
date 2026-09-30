@@ -23,6 +23,7 @@ from ..models import (
     NetworkScenarioKpiDeltas,
     NetworkScenarioResult,
     NetworkScenarioRunResponse,
+    NetworkReleaseOverlay,
     NetworkScenarioUpdateRequest,
     NetworkScenarioValidation,
     NetworkScenarioValidationIssue,
@@ -37,6 +38,7 @@ from .network_overview import (
     network_overview_service,
 )
 from .network_run_snapshots import NetworkRunSnapshot
+from .network_assignment_projection import merge_assignment_overlays
 from .rates import governed_linehaul_contract, list_rate_contract_details
 from .store_provider import get_store
 
@@ -71,10 +73,12 @@ class NetworkScenarioRepository:
 
     @staticmethod
     def _scenario_from_row(row: dict[str, Any]) -> NetworkScenario:
+        assumptions = _json_value(row["assumptions"])
         return NetworkScenario.model_validate(
             {
                 **row,
-                "assumptions": _json_value(row["assumptions"]),
+                "source_baseline_revision_id": row.get("source_baseline_revision_id") or assumptions.get("source_baseline_revision_id"),
+                "assumptions": assumptions,
                 "validation": _json_value(row.get("validation")),
                 "created_at": str(row["created_at"]),
                 "updated_at": str(row["updated_at"]),
@@ -455,7 +459,17 @@ class NetworkScenarioService:
     def list(self) -> list[NetworkScenario]:
         return self.repository.list()
 
+    @staticmethod
+    def _is_baseline_resource(resource_id: str, kind: str) -> bool:
+        return resource_id.startswith(f"baseline-plan-{kind}.")
+
     def get(self, scenario_id: str) -> NetworkScenario:
+        if self._is_baseline_resource(scenario_id, "scenario"):
+            from .baseline_service import baseline_service
+            run_id = scenario_id.replace(
+                "baseline-plan-scenario.", "baseline-plan-run.", 1
+            )
+            return baseline_service.resolve_plan_run(run_id).scenario
         return self.repository.get(scenario_id)
 
     def create(self, request: NetworkScenarioCreateRequest) -> NetworkScenario:
@@ -463,16 +477,40 @@ class NetworkScenarioService:
         if not name:
             raise HTTPException(status_code=422, detail="Scenario name is required.")
         now = _now()
+        source_revision = request.source_baseline_revision_id
+        if source_revision is None:
+            try:
+                from .baseline_service import baseline_service
+                source_revision = baseline_service.get_state().active_revision_id
+            except (ImportError, AttributeError):
+                source_revision = None
+        assumptions_payload = request.assumptions.model_dump(mode="json")
+        if "tariffs" not in request.assumptions.model_fields_set and source_revision:
+            try:
+                from .baseline_service import baseline_service
+
+                metadata = baseline_service.get_revision(source_revision).rows.get(
+                    "baseline_revision_metadata", []
+                )
+                if metadata:
+                    assumptions_payload["tariffs"] = metadata[0].get("tariffs", [])
+            except (ImportError, AttributeError):
+                pass
+        assumptions_payload["source_baseline_revision_id"] = source_revision
+        inherited_assumptions = NetworkScenarioAssumptions.model_validate(
+            assumptions_payload
+        )
         scenario = NetworkScenario(
             scenario_id=f"NSC_{uuid.uuid4().hex[:10].upper()}",
             scenario_name=name,
             baseline_scenario_id=request.baseline_scenario_id,
+            source_baseline_revision_id=source_revision,
             demand_plan_version_id=request.demand_plan_version_id,
             capacity_plan_version_id=request.capacity_plan_version_id,
             horizon_start=request.horizon_start,
             horizon_end=request.horizon_end,
             region_id=request.region_id,
-            assumptions=request.assumptions,
+            assumptions=inherited_assumptions,
             created_at=now,
             updated_at=now,
         )
@@ -482,6 +520,8 @@ class NetworkScenarioService:
     def update(
         self, scenario_id: str, request: NetworkScenarioUpdateRequest
     ) -> NetworkScenario:
+        if self._is_baseline_resource(scenario_id, "scenario"):
+            raise HTTPException(status_code=409, detail="Baseline planning scenarios are immutable.")
         scenario = self.get(scenario_id)
         if scenario.status == "published":
             raise HTTPException(
@@ -494,14 +534,21 @@ class NetworkScenarioService:
         )
         if not name:
             raise HTTPException(status_code=422, detail="Scenario name is required.")
+        requested_assumptions = request.assumptions
+        if requested_assumptions is not None:
+            requested_assumptions = requested_assumptions.model_copy(update={
+                "source_baseline_revision_id": scenario.source_baseline_revision_id,
+                "parent_run_id": scenario.assumptions.parent_run_id,
+                "release_overlays": scenario.assumptions.release_overlays,
+            })
         changed = name != scenario.scenario_name or (
-            request.assumptions is not None
-            and request.assumptions != scenario.assumptions
+            requested_assumptions is not None
+            and requested_assumptions != scenario.assumptions
         )
         updated = scenario.model_copy(
             update={
                 "scenario_name": name,
-                "assumptions": request.assumptions or scenario.assumptions,
+                "assumptions": requested_assumptions or scenario.assumptions,
                 "status": "draft" if changed else scenario.status,
                 "revision": scenario.revision + 1 if changed else scenario.revision,
                 "validation": None if changed else scenario.validation,
@@ -514,6 +561,14 @@ class NetworkScenarioService:
         return updated
 
     def _rows(self, scenario: NetworkScenario) -> NetworkRows:
+        if scenario.source_baseline_revision_id:
+            try:
+                from .baseline_service import baseline_service
+                return baseline_service.get_revision(
+                    scenario.source_baseline_revision_id
+                ).rows
+            except ImportError:
+                pass
         return network_overview_service.load_rows(
             demand_plan_version_id=scenario.demand_plan_version_id,
             capacity_plan_version_id=scenario.capacity_plan_version_id,
@@ -561,6 +616,8 @@ class NetworkScenarioService:
             )
 
     def validate(self, scenario_id: str) -> NetworkScenario:
+        if self._is_baseline_resource(scenario_id, "scenario"):
+            raise HTTPException(status_code=409, detail="Baseline planning scenarios are immutable.")
         scenario = self.get(scenario_id)
         self._validate_input_references(scenario)
         rows = self._rows(scenario)
@@ -692,6 +749,8 @@ class NetworkScenarioService:
         return updated
 
     def delete(self, scenario_id: str) -> None:
+        if self._is_baseline_resource(scenario_id, "scenario"):
+            raise HTTPException(status_code=409, detail="Baseline planning scenarios are immutable.")
         self.get(scenario_id)
         self.repository.delete(scenario_id)
 
@@ -700,6 +759,9 @@ class NetworkScenarioService:
         return self.repository.result(scenario_id)
 
     def get_run_snapshot(self, run_id: str) -> NetworkRunSnapshot:
+        if self._is_baseline_resource(run_id, "run"):
+            from .baseline_service import baseline_service
+            return baseline_service.resolve_plan_run(run_id)
         return self.repository.run_snapshot(run_id)
 
     def run_result(self, run_id: str) -> NetworkScenarioResult:
@@ -959,7 +1021,15 @@ class NetworkScenarioService:
             )
         return unit_costs
 
-    def run(self, scenario_id: str) -> NetworkScenarioRunResponse:
+    def run(
+        self,
+        scenario_id: str,
+        *,
+        rows_override: NetworkRows | None = None,
+        release_requests: list[dict[str, Any]] | None = None,
+    ) -> NetworkScenarioRunResponse:
+        if self._is_baseline_resource(scenario_id, "scenario"):
+            raise HTTPException(status_code=409, detail="Baseline planning scenarios are immutable.")
         scenario = self.get(scenario_id)
         if scenario.status != "validated" or not (
             scenario.validation and scenario.validation.valid
@@ -970,7 +1040,16 @@ class NetworkScenarioService:
                 status_code=409,
                 detail="Resolve blocking validation issues before running the plan.",
             )
-        rows = self._rows(scenario)
+        if rows_override is None and scenario.assumptions.parent_run_id:
+            parent = self.get_run_snapshot(scenario.assumptions.parent_run_id)
+            rows = deepcopy(parent.network_rows)
+            rows["baseline_network_flow_daily"] = deepcopy(parent.flow_rows)
+            rows["network_flow_cost_daily"] = deepcopy(parent.cost_rows)
+        else:
+            rows = deepcopy(rows_override) if rows_override is not None else self._rows(scenario)
+        source_rows = deepcopy(rows)
+        if release_requests is None and scenario.assumptions.release_overlays:
+            release_requests = [row.model_dump(mode="json") if hasattr(row, "model_dump") else dict(row) for row in scenario.assumptions.release_overlays]
         tariff_by_date_lane = self._resolve_tariffs(
             rows,
             scenario.assumptions.tariffs,
@@ -999,7 +1078,17 @@ class NetworkScenarioService:
             unmet_penalty_per_case=(
                 scenario.assumptions.unmet_penalty_per_case
             ),
+            release_requests=release_requests,
         )
+        if allocation.get("network_lanes") is not None:
+            rows["dim_network_lanes"] = allocation["network_lanes"]
+        if allocation.get("assignment_overlay_rows") is not None:
+            rows["network_customer_assignments_daily"] = merge_assignment_overlays(
+                rows.get('network_customer_assignments_daily', []),
+                allocation["assignment_overlay_rows"],
+            )
+        if allocation.get("lane_capacity_rows") is not None:
+            rows["lane_capacity_daily"] = allocation["lane_capacity_rows"]
         flow_rows = allocation["flow_rows"]
         cost_rows, charges, exceptions = self._rate_flows(
             rows, flow_rows, tariff_by_date_lane
@@ -1038,7 +1127,7 @@ class NetworkScenarioService:
             metric="assigned_flow",
         )
         baseline = network_overview_service.build_overview(
-            rows, context=context.model_copy(update={"scenario_id": "baseline"})
+            source_rows, context=context.model_copy(update={"scenario_id": "baseline"})
         )
         scenario_rows = dict(rows)
         scenario_rows["baseline_network_flow_daily"] = flow_rows
@@ -1068,7 +1157,7 @@ class NetworkScenarioService:
             (str(row["service_date"]), str(row["lane_id"])): int(
                 row["assigned_units"]
             )
-            for row in rows["baseline_network_flow_daily"]
+            for row in source_rows["baseline_network_flow_daily"]
         }
         lane_destinations = {
             str(row["lane_id"]): str(row["destination_endpoint_id"])
@@ -1111,7 +1200,7 @@ class NetworkScenarioService:
         )
         baseline_cross_border_assigned_units = sum(
             int(row["assigned_units"])
-            for row in rows["baseline_network_flow_daily"]
+            for row in source_rows["baseline_network_flow_daily"]
             if scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
             and str(row["demand_plan_version_id"]) == scenario.demand_plan_version_id
             and str(row["capacity_plan_version_id"]) == scenario.capacity_plan_version_id
@@ -1122,7 +1211,7 @@ class NetworkScenarioService:
             * tariff_by_date_lane.get(
                 (str(row["service_date"])[:10], str(row["lane_id"])), (0.0, "")
             )[0]
-            for row in rows["baseline_network_flow_daily"]
+            for row in source_rows["baseline_network_flow_daily"]
             if scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
             and str(row["demand_plan_version_id"]) == scenario.demand_plan_version_id
             and str(row["capacity_plan_version_id"]) == scenario.capacity_plan_version_id
@@ -1154,7 +1243,7 @@ class NetworkScenarioService:
         )
         baseline_domestic_units = sum(
             int(row["assigned_units"])
-            for row in rows["baseline_network_flow_daily"]
+            for row in source_rows["baseline_network_flow_daily"]
             if scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
             and str(row["demand_plan_version_id"])
             == scenario.demand_plan_version_id
@@ -1195,6 +1284,46 @@ class NetworkScenarioService:
             cost_rows=cost_rows,
         )
         return NetworkScenarioRunResponse(scenario=solved, result=result)
+
+    def reassign(
+        self, run_id: str, changes: list[Any]
+    ) -> NetworkScenarioRunResponse:
+        source = self.get_run_snapshot(run_id)
+        now = _now()
+        overlays = [
+            NetworkReleaseOverlay(**{
+                "service_date": row.service_date,
+                "customer_id": row.customer_id,
+                "source_depot_id": row.depot_id,
+                "cases": row.cases,
+            })
+            for row in changes
+        ]
+        scenario = source.scenario.model_copy(
+            update={
+                "scenario_id": f"NSC_{uuid.uuid4().hex[:10].upper()}",
+                "scenario_name": f"{source.scenario.scenario_name} — reassignment",
+                "status": "validated",
+                "revision": 1,
+                "created_at": now,
+                "updated_at": now,
+                "solved_at": None,
+                "assumptions": source.scenario.assumptions.model_copy(update={
+                    "source_baseline_revision_id": source.scenario.source_baseline_revision_id,
+                    "parent_run_id": run_id,
+                    "release_overlays": overlays,
+                }),
+            }
+        )
+        self.repository.create(scenario)
+        parent_rows = deepcopy(source.network_rows)
+        parent_rows["baseline_network_flow_daily"] = deepcopy(source.flow_rows)
+        parent_rows["network_flow_cost_daily"] = deepcopy(source.cost_rows)
+        return self.run(
+            scenario.scenario_id,
+            rows_override=parent_rows,
+            release_requests=[row.model_dump(mode="json") for row in overlays],
+        )
 
 
 network_scenario_service = NetworkScenarioService()

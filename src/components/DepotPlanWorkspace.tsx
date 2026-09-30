@@ -16,6 +16,7 @@ import MapView from './MapView'
 import DualMap from './DualMap'
 import RouteSidebar from './RouteSidebar'
 import DepotPlanCalendar from './DepotPlanCalendar'
+import DepotDemandReleasePanel from './DepotDemandReleasePanel'
 import DepotOperationalOverrideForm, {
   emptyOperationalDraft,
   type OperationalDraft,
@@ -180,6 +181,16 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
       )}
 
       {actionError && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{actionError}</div>}
+      {mode === 'scenario' && (
+        <DepotDemandReleasePanel
+          key={`${runId}:${routeScenarioId}:${selectedDate}`}
+          runId={runId}
+          planSetId={planSetId}
+          depotId={planData.depot.depot_id}
+          routeScenarioId={routeScenarioId}
+          serviceDate={selectedDate}
+        />
+      )}
       {day.isLoading && <Loading label={`Loading ${selectedDate}…`} />}
       {day.data && <DayStatus detail={day.data} pending={pending} />}
       {day.data?.default_result && day.data.selected_result && day.data.selected_result.result_id !== day.data.default_result.result_id ? (

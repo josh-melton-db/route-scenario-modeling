@@ -233,6 +233,12 @@ class StubStore:
                     carrier_names[contract.carrier_id],
                 )
             )
+            if self.__class__.__module__ == "backend.services.stub_store":
+                # Store the same synthetic version identity exposed by reads so
+                # authoring can clone the selected published version directly.
+                from backend.services.rates import _with_curated_network_rates
+
+                detail = _with_curated_network_rates(detail, synthetic_seed=True)
             self._rate_contract_details[(contract.contract_id, detail.version.version_id)] = detail
 
     def list_depots(self) -> list[Depot]:

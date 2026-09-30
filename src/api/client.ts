@@ -35,6 +35,11 @@ import type {
   EditorValidationResponse,
   Kpis,
   NetworkOptions,
+  NetworkBaselineState,
+  NetworkBaselineProposal,
+  NetworkDemandChange,
+  NetworkReleaseRequest,
+  NetworkReleaseTarget,
   NetworkOverview,
   NetworkOverviewParams,
   NetworkScenario,
@@ -74,6 +79,30 @@ function qs(params: Record<string, string>): string {
 }
 
 export const api = {
+  networkBaseline: () => requestJSON<NetworkBaselineState>('/api/network/baseline'),
+  networkBaselinePlanRun: (params: NetworkOverviewParams) => requestJSON<NetworkScenarioResult>(
+    `/api/network/baseline/plan-run?${qs({ ...params })}`,
+  ),
+  proposeNetworkBaseline: (runId: string) => requestJSON<NetworkBaselineProposal>(
+    '/api/network/baseline/proposals', { method: 'POST', body: JSON.stringify({ run_id: runId }) },
+  ),
+  acceptNetworkBaseline: (proposalId: string) => requestJSON<NetworkBaselineState>(
+    `/api/network/baseline/proposals/${encodeURIComponent(proposalId)}/accept`, { method: 'POST' },
+  ),
+  resetNetworkBaseline: () => requestJSON<NetworkBaselineState>('/api/network/baseline/reset', { method: 'POST' }),
+  networkDemandChanges: (runId: string) => requestJSON<NetworkDemandChange[]>(
+    `/api/network/runs/${encodeURIComponent(runId)}/demand-changes`,
+  ),
+  networkReleaseTargets: (runId: string, depotId: string, serviceDate: string) => requestJSON<NetworkReleaseTarget[]>(
+    `/api/network/runs/${encodeURIComponent(runId)}/depots/${encodeURIComponent(depotId)}/release-targets?${qs({ service_date: serviceDate })}`,
+  ),
+  releaseNetworkDemand: (runId: string, payload: NetworkReleaseRequest) => requestJSON<NetworkDemandChange>(
+    `/api/network/runs/${encodeURIComponent(runId)}/demand-changes`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  ),
+  reassignNetworkDemand: (runId: string) => requestJSON<NetworkScenarioRunResponse>(
+    `/api/network/runs/${encodeURIComponent(runId)}/reassign`, { method: 'POST' },
+  ),
   networkOptions: () => requestJSON<NetworkOptions>('/api/network/options'),
   networkOverview: (params: NetworkOverviewParams) =>
     requestJSON<NetworkOverview>(`/api/network/overview?${qs({ ...params })}`),

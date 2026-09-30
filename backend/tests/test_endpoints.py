@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from datetime import date, timedelta
 
 from backend.main import app
 
@@ -64,9 +65,9 @@ def test_network_overview_endpoints() -> None:
     option_payload = options.json()
     assert option_payload["default_lane_type"] == "LINEHAUL"
     assert option_payload["default_region_id"] == "ALL"
-    assert option_payload["default_capacity_plan_version_id"] == (
-        "CAPACITY_US_SE_CONSTRAINED_V2"
-    )
+    assert option_payload["default_capacity_plan_version_id"] in {
+        row["plan_version_id"] for row in option_payload["capacity_plans"]
+    }
     assert len(option_payload["regions"]) == 8
     assert len(option_payload["facilities"]) == 56
     assert len(option_payload["capacity_plans"]) == 2
@@ -102,13 +103,20 @@ def test_network_overview_endpoints() -> None:
 
 
 def test_network_overview_filters_and_validation() -> None:
+    options = client.get("/api/network/options").json()
+    start = options["default_horizon_start"]
+    baseline_capacity = next(
+        row["plan_version_id"]
+        for row in options["capacity_plans"]
+        if "CONSTRAINED" not in row["plan_version_id"]
+    )
     delivery = client.get(
         "/api/network/overview",
         params={
             "lane_type": "DELIVERY",
             "metric": "cost_per_unit",
-            "horizon_start": "2026-09-21",
-            "horizon_end": "2026-09-21",
+            "horizon_start": start,
+            "horizon_end": start,
         },
     )
     assert delivery.status_code == 200
@@ -120,7 +128,7 @@ def test_network_overview_filters_and_validation() -> None:
     normal = client.get(
         "/api/network/overview",
         params={
-            "capacity_plan_version_id": "CAPACITY_US_BASELINE_V1",
+            "capacity_plan_version_id": baseline_capacity,
             "region_id": "REGION_SOUTHEAST",
         },
     )
@@ -130,10 +138,10 @@ def test_network_overview_filters_and_validation() -> None:
     texas = client.get(
         "/api/network/overview",
         params={
-            "capacity_plan_version_id": "CAPACITY_US_BASELINE_V1",
+            "capacity_plan_version_id": baseline_capacity,
             "region_id": "REGION_TOLA",
-            "horizon_start": "2026-09-21",
-            "horizon_end": "2026-09-21",
+            "horizon_start": start,
+            "horizon_end": start,
             "lane_type": "LINEHAUL",
         },
     )
@@ -222,14 +230,16 @@ def test_delete_scenario() -> None:
 
 def test_network_scenario_lifecycle() -> None:
     options = client.get("/api/network/options").json()
+    start = options["default_horizon_start"]
+    end = (date.fromisoformat(start) + timedelta(days=2)).isoformat()
     created = client.post(
         "/api/network/scenarios",
         json={
             "scenario_name": "Southeast relief",
             "demand_plan_version_id": options["default_demand_plan_version_id"],
             "capacity_plan_version_id": options["default_capacity_plan_version_id"],
-            "horizon_start": "2026-09-21",
-            "horizon_end": "2026-09-23",
+            "horizon_start": start,
+            "horizon_end": end,
             "region_id": "ALL",
         },
     )
@@ -308,14 +318,16 @@ def test_network_scenario_lifecycle() -> None:
 
 def test_network_scenario_validation_rejects_unknown_references() -> None:
     options = client.get("/api/network/options").json()
+    start = options["default_horizon_start"]
+    end = (date.fromisoformat(start) + timedelta(days=2)).isoformat()
     created = client.post(
         "/api/network/scenarios",
         json={
             "scenario_name": "Bad references",
             "demand_plan_version_id": "DEMAND_UNKNOWN",
             "capacity_plan_version_id": options["default_capacity_plan_version_id"],
-            "horizon_start": "2026-09-21",
-            "horizon_end": "2026-09-23",
+            "horizon_start": start,
+            "horizon_end": end,
         },
     )
     assert created.status_code == 404
@@ -326,8 +338,8 @@ def test_network_scenario_validation_rejects_unknown_references() -> None:
             "scenario_name": "Bad horizon",
             "demand_plan_version_id": options["default_demand_plan_version_id"],
             "capacity_plan_version_id": options["default_capacity_plan_version_id"],
-            "horizon_start": "2026-09-23",
-            "horizon_end": "2026-09-21",
+            "horizon_start": end,
+            "horizon_end": start,
         },
     )
     assert created.status_code == 422
@@ -338,8 +350,8 @@ def test_network_scenario_validation_rejects_unknown_references() -> None:
             "scenario_name": "Unknown lane",
             "demand_plan_version_id": options["default_demand_plan_version_id"],
             "capacity_plan_version_id": options["default_capacity_plan_version_id"],
-            "horizon_start": "2026-09-21",
-            "horizon_end": "2026-09-23",
+            "horizon_start": start,
+            "horizon_end": end,
             "assumptions": {"disabled_lane_ids": ["LNE_UNKNOWN"]},
         },
     )

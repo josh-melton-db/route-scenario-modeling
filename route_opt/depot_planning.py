@@ -37,6 +37,13 @@ def materialize_depot_targets(
         raise ValueError(f"Unknown depot_id {depot_id!r}.")
 
     assigned_by_customer: defaultdict[str, int] = defaultdict(int)
+    reassigned = {
+        (str(row.get("customer_id")), str(row.get("depot_id"))): int(
+            row.get("assigned_units", 0)
+        )
+        for row in network_rows.get("network_customer_assignments_daily", [])
+        if _date_text(row.get("service_date")) == service_date_text
+    }
     seen_delivery_lanes: dict[str, int] = {}
     for flow in flow_rows:
         if _date_text(flow.get("service_date")) != service_date_text:
@@ -62,9 +69,10 @@ def materialize_depot_targets(
         customer_id = str(lane.get("destination_endpoint_id", ""))
         if customer_id not in customers:
             raise ValueError(f"Delivery lane {lane_id!r} references unknown customer {customer_id!r}.")
-        if str(customers[customer_id].get("depot_id")) != depot_id:
+        home_depot = str(customers[customer_id].get("depot_id"))
+        if home_depot != depot_id and reassigned.get((customer_id, depot_id), 0) < assigned_cases:
             raise ValueError(
-                f"Customer {customer_id!r} is not assigned to delivery-lane depot {depot_id!r}."
+                f"Delivery lane {lane_id!r} lacks a solved reassignment overlay."
             )
         assigned_by_customer[customer_id] += assigned_cases
 

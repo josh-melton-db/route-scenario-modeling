@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from datetime import date, timedelta
 
 from backend.main import app
 from backend.models import NetworkScenarioResult
@@ -12,14 +13,15 @@ client = TestClient(app)
 
 def _create_scenario(name: str) -> dict[str, object]:
     options = client.get("/api/network/options").json()
+    start = options["default_horizon_start"]
     response = client.post(
         "/api/network/scenarios",
         json={
             "scenario_name": name,
             "demand_plan_version_id": options["default_demand_plan_version_id"],
             "capacity_plan_version_id": options["default_capacity_plan_version_id"],
-            "horizon_start": "2026-09-21",
-            "horizon_end": "2026-09-23",
+            "horizon_start": start,
+            "horizon_end": (date.fromisoformat(start) + timedelta(days=2)).isoformat(),
             "region_id": "REGION_TOLA",
         },
     )

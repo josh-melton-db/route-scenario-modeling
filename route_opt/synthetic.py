@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import random
-from datetime import date
 
 try:
     from faker import Faker
@@ -10,6 +9,7 @@ except Exception:  # pragma: no cover - Faker is available in Databricks/job env
     Faker = None  # type: ignore[assignment]
 
 from .cost import CostParameters
+from .demo_dates import demo_date_anchor, first_weekday_on_or_after
 from .network_synthetic import (
     generate_national_network_dataset,
     generate_network_dataset,
@@ -189,6 +189,7 @@ def generate_demand_and_orders(
     demand_rows: list[dict[str, object]] = []
     order_rows: list[dict[str, object]] = []
     order_idx = 1
+    route_date = first_weekday_on_or_after(demo_date_anchor(), 1).isoformat()
     for customer in customers:
         eligible = str(customer["eligible_delivery_days"]).split(",")
         for day in DAYS:
@@ -217,7 +218,7 @@ def generate_demand_and_orders(
                     "customer_id": customer["customer_id"],
                     "depot_id": customer["depot_id"],
                     "delivery_day": day,
-                    "route_date": str(date(2026, 7, 7)),
+                    "route_date": route_date,
                     "demand_cases": cases,
                     "product_family": "cartons",
                     **_source_fields(),
