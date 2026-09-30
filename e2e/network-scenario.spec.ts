@@ -11,7 +11,7 @@ test.describe('network scenario save, validate, and run', () => {
     test.setTimeout(180_000)
 
     await page.goto('/network')
-    await expect(page.getByRole('heading', { name: 'Network baseline' })).toBeVisible()
+    await expect(page.getByLabel('Network baseline filters')).toBeVisible({ timeout: 30_000 })
 
     // The network level starts minimal: no depot-level navigation.
     await expect(page.getByRole('link', { name: 'Depot', exact: true })).toBeHidden()
@@ -69,6 +69,19 @@ test.describe('network scenario save, validate, and run', () => {
     await expect(page.getByText('Depots with changed flow')).toBeVisible()
     await expect(page.getByText('Unmet cases').first()).toBeVisible()
 
+    // Editing a tariff and pressing the header Run action must solve that
+    // unsaved draft, not silently rerun the previous revision.
+    await page.getByRole('link', { name: 'Scenario', exact: true }).click()
+    await page.getByRole('button', { name: 'Add tariff rule' }).click()
+    await page.getByLabel('USD / case').fill('0.10')
+    await page.getByRole('button', { name: 'Run fixed-capacity plan' }).click()
+    await expect(page.getByText('Baseline vs. scenario')).toBeVisible({ timeout: 120_000 })
+    const rerunScenario = await (await page.request.get(`/api/network/scenarios/${scenarioId}`)).json()
+    const rerunResult = await (await page.request.get(`/api/network/scenarios/${scenarioId}/result`)).json()
+    expect(rerunScenario.revision).toBe(3)
+    expect(rerunScenario.assumptions.tariffs[0].amount_per_case).toBe(0.1)
+    expect(rerunResult.tariff_total_cost).toBeGreaterThan(0)
+
     // Depot-level navigation stays hidden while working a network scenario.
     await expect(page.getByRole('link', { name: 'Inputs', exact: true })).toBeHidden()
 
@@ -76,7 +89,7 @@ test.describe('network scenario save, validate, and run', () => {
     await page.getByRole('link', { name: 'Scenario', exact: true }).click()
     await page.getByRole('button', { name: 'Delete scenario' }).click()
     await expect(page).toHaveURL(/\/network(\?|$)/)
-    await expect(page.getByRole('heading', { name: 'Network baseline' })).toBeVisible()
+    await expect(page.getByLabel('Network baseline filters')).toBeVisible({ timeout: 30_000 })
   })
 
   test.afterEach(async ({ page }) => {

@@ -5,6 +5,7 @@ import ConstraintPanel from '@/components/ConstraintPanel'
 import ErrorState from '@/components/ErrorState'
 import RunStatusBanner from '@/components/RunStatusBanner'
 import { useRunStatus } from '@/api/queries'
+import { buildRouteWorkspaceHref, readParentRouteContext } from '@/lib/networkLinks'
 
 const resultStatuses = new Set(['succeeded', 'infeasible'])
 
@@ -13,6 +14,7 @@ export default function OptimizationRunsPage() {
   const [searchParams] = useSearchParams()
   const scenarioId = searchParams.get('scenarioId')
   const navigate = useNavigate()
+  const parentContext = readParentRouteContext(searchParams)
   const run = useRunStatus(runId, scenarioId)
   const precheckFailed =
     run.data?.validation?.valid === false ||
@@ -28,10 +30,12 @@ export default function OptimizationRunsPage() {
     ) {
       return
     }
-    navigate(`/analyze?compare=${encodeURIComponent(run.data.scenario_id)}`, {
+    navigate(buildRouteWorkspaceHref('/analyze', parentContext, {
+      compare: run.data.scenario_id,
+    }), {
       replace: true,
     })
-  }, [navigate, precheckFailed, run.data?.scenario_id, run.data?.status])
+  }, [navigate, precheckFailed, run.data?.scenario_id, run.data?.status, searchParams])
 
   if (run.error) return <ErrorState title="Could not load run" error={run.error} />
 
@@ -63,7 +67,7 @@ export default function OptimizationRunsPage() {
                 </p>
               </div>
               <Link
-                to="/scenario"
+                to={buildRouteWorkspaceHref('/scenario', parentContext)}
                 className="rounded-md border border-amber-300/40 px-3 py-2 text-sm font-semibold text-amber-50 hover:bg-amber-400/10"
               >
                 Return to scenario builder

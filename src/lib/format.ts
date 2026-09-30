@@ -2,11 +2,11 @@ export function formatNumber(value: number, maximumFractionDigits = 0): string {
   return value.toLocaleString(undefined, { maximumFractionDigits })
 }
 
-export function formatCurrency(value: number): string {
+export function formatCurrency(value: number, maximumFractionDigits = 0): string {
   return value.toLocaleString(undefined, {
     style: 'currency',
     currency: 'USD',
-    maximumFractionDigits: 0,
+    maximumFractionDigits,
   })
 }
 

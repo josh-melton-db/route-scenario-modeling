@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from route_opt.network_flow import solve_fixed_capacity_network
 from route_opt.network_synthetic import generate_national_network_dataset
 from route_opt.synthetic import generate_depots
@@ -89,3 +91,106 @@ def test_solver_uses_alternate_dc_when_primary_disabled() -> None:
         for row in result["unmet_rows"]
         if row["unmet_units"] > 0
     )
+
+
+def test_texas_corridor_shares_monterrey_capacity_and_tariff_reroutes() -> None:
+    rows = _national_rows()
+    service_date = "2026-09-21"
+    cross_border_lanes = {
+        "LNE_DC_MEXICO_MONTERREY_TO_DPT_TOLA_SAN_ANTONIO",
+        "LNE_DC_MEXICO_MONTERREY_TO_DPT_TOLA_DALLAS",
+    }
+    common = dict(
+        demand_plan_version_id="DEMAND_US_BASELINE_V1",
+        capacity_plan_version_id="CAPACITY_US_BASELINE_V1",
+        horizon_start=service_date,
+        horizon_end=service_date,
+        region_id="REGION_TOLA",
+    )
+
+    untariffed = solve_fixed_capacity_network(rows, **common)
+    tariffed = solve_fixed_capacity_network(
+        rows,
+        **common,
+        tariff_per_case_by_date_lane={
+            (service_date, lane_id): 0.10 for lane_id in cross_border_lanes
+        },
+    )
+    cross_border_before = sum(
+        row["assigned_units"]
+        for row in untariffed["allocation_rows"]
+        if row["lane_id"] in cross_border_lanes
+    )
+    cross_border_after = sum(
+        row["assigned_units"]
+        for row in tariffed["allocation_rows"]
+        if row["lane_id"] in cross_border_lanes
+    )
+    baseline_cross_border = sum(
+        int(row["assigned_units"])
+        for row in rows["baseline_network_flow_daily"]
+        if row["capacity_plan_version_id"] == "CAPACITY_US_BASELINE_V1"
+        and row["service_date"] == service_date
+        and row["lane_id"] in cross_border_lanes
+    )
+    assert cross_border_before == baseline_cross_border > 0
+    assert 0 < cross_border_after < cross_border_before
+
+    # The Texas focus also solves Monterrey's three domestic depots. Their flow
+    # and Texas flow share the one dated DC capacity arc, preventing reuse.
+    solved_depots = {row["depot_id"] for row in tariffed["unmet_rows"]}
+    assert len(solved_depots) == 9
+    assert {
+        "DPT_MX_MONTERREY",
+        "DPT_MX_SALTILLO",
+        "DPT_MX_CHIHUAHUA",
+    } <= solved_depots
+    assert "DPT_MX_GUADALAJARA" not in solved_depots
+    assert "DPT_CA_TORONTO" not in solved_depots
+    monterrey_outbound = sum(
+        row["assigned_units"]
+        for row in tariffed["allocation_rows"]
+        if row["lane_id"].startswith("LNE_DC_MEXICO_MONTERREY_TO_DPT_")
+    )
+    monterrey_capacity = next(
+        int(row["capacity_units"])
+        for row in rows["facility_capacity_daily"]
+        if row["capacity_plan_version_id"] == "CAPACITY_US_BASELINE_V1"
+        and row["service_date"] == service_date
+        and row["facility_id"] == "DC_MEXICO_MONTERREY"
+    )
+    assert monterrey_outbound <= monterrey_capacity
+
+
+def test_tariffed_corridor_uses_cross_border_when_domestic_capacity_binds() -> None:
+    # Keep capacity perturbations local even if the data source becomes cached.
+    rows = deepcopy(_national_rows())
+    service_date = "2026-09-21"
+    cross_border_lanes = {
+        "LNE_DC_MEXICO_MONTERREY_TO_DPT_TOLA_SAN_ANTONIO",
+        "LNE_DC_MEXICO_MONTERREY_TO_DPT_TOLA_DALLAS",
+    }
+    for row in rows["facility_capacity_daily"]:
+        if (
+            row["capacity_plan_version_id"] == "CAPACITY_US_BASELINE_V1"
+            and row["service_date"] == service_date
+            and row["facility_id"] in {"DC_TOLA_DALLAS", "DC_TOLA_HOUSTON"}
+        ):
+            row["capacity_units"] = int(row["capacity_units"] * 0.55)
+
+    result = solve_fixed_capacity_network(
+        rows,
+        demand_plan_version_id="DEMAND_US_BASELINE_V1",
+        capacity_plan_version_id="CAPACITY_US_BASELINE_V1",
+        horizon_start=service_date,
+        horizon_end=service_date,
+        region_id="REGION_TOLA",
+        tariff_per_case_by_date_lane={
+            (service_date, lane_id): 10.0 for lane_id in cross_border_lanes
+        },
+    )
+    assert sum(
+        row["assigned_units"]
+        for row in result["allocation_rows"]
+        if row["lane_id"] in cross_border_lanes
+    ) > 0

@@ -9,6 +9,11 @@ from typing import Any
 from ortools.graph.python import min_cost_flow
 
 
+_EXTERNAL_DCS_BY_FOCUS_REGION: dict[str, frozenset[str]] = {
+    "REGION_TOLA": frozenset({"DC_MEXICO_MONTERREY"}),
+}
+
+
 def _date_text(value: object) -> str:
     return value.isoformat() if isinstance(value, date) else str(value)[:10]
 
@@ -57,6 +62,7 @@ def solve_fixed_capacity_network(
     disabled_lane_ids: set[str] | None = None,
     lane_cost_adjustments_pct: Mapping[str, float] | None = None,
     lane_unit_costs: Mapping[str, float] | None = None,
+    tariff_per_case_by_date_lane: Mapping[tuple[str, str], float] | None = None,
     unmet_penalty_per_case: float = 250.0,
 ) -> dict[str, list[dict[str, Any]]]:
     """Assign fixed demand through fixed supplied capacity.
@@ -71,21 +77,47 @@ def solve_fixed_capacity_network(
     disabled_lanes = disabled_lane_ids or set()
     cost_adjustments = lane_cost_adjustments_pct or {}
     unit_costs = lane_unit_costs or {}
+    tariffs = tariff_per_case_by_date_lane or {}
+    if any(float(amount) < 0 for amount in tariffs.values()):
+        raise ValueError("Tariff amounts must be nonnegative.")
 
     facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
     lanes = {str(row["lane_id"]): row for row in rows["dim_network_lanes"]}
-    scoped_depots = {
+    focus_depots = {
         facility_id
         for facility_id, facility in facilities.items()
         if facility["facility_type"] == "depot"
         and (region_id == "ALL" or str(facility["region_id"]) == region_id)
     }
-    scoped_dcs = {
+    regional_dcs = {
         facility_id
         for facility_id, facility in facilities.items()
         if facility["facility_type"] == "distribution_center"
         and (region_id == "ALL" or str(facility["region_id"]) == region_id)
     }
+
+    # A regional focus selects demand, not an independent claim on capacity.
+    # Include cross-border sources that can serve the focus, then include all
+    # external demand already assigned to those DCs in the published plan.
+    participating_dcs = set(regional_dcs)
+    if region_id == "ALL":
+        participating_dcs.update(
+            facility_id
+            for facility_id, facility in facilities.items()
+            if facility["facility_type"] == "distribution_center"
+        )
+    else:
+        permitted_external_dcs = _EXTERNAL_DCS_BY_FOCUS_REGION.get(
+            region_id, frozenset()
+        )
+        for lane in lanes.values():
+            origin_id = str(lane["origin_endpoint_id"])
+            if (
+                str(lane["lane_type"]) == "LINEHAUL"
+                and str(lane["destination_endpoint_id"]) in focus_depots
+                and origin_id in permitted_external_dcs
+            ):
+                participating_dcs.add(origin_id)
 
     demand_rows = [
         row
@@ -102,6 +134,14 @@ def solve_fixed_capacity_network(
         depot_id = str(row["depot_id"])
         demand_by_date_depot[(service_date, depot_id)] += int(row["demand_units"])
         demand_by_date_depot_customers[(service_date, depot_id)].append(row)
+
+    scoped_depots = set(focus_depots)
+    scoped_depots.update(
+        str(row["depot_id"])
+        for row in demand_rows
+        if str(row["distribution_center_id"]) in participating_dcs
+    )
+    scoped_dcs = participating_dcs
 
     facility_capacity = {
         (_date_text(row["service_date"]), str(row["facility_id"])): int(
@@ -222,13 +262,19 @@ def solve_fixed_capacity_network(
                 base_unit_cost = float(
                     unit_costs.get(
                         lane_id,
-                        max(450.0, float(lane["distance_miles"]) * 3.4)
+                        lane.get("planning_cost_per_case")
+                        if lane.get("planning_cost_per_case") is not None
+                        else max(450.0, float(lane["distance_miles"]) * 3.4)
                         * 1.12
                         / 900,
                     )
                 )
                 adjustment = float(cost_adjustments.get(lane_id, 0))
-                adjusted_unit_cost = max(0.0001, base_unit_cost * (1 + adjustment / 100))
+                tariff = float(tariffs.get((service_date, lane_id), 0))
+                adjusted_unit_cost = max(
+                    0.0001,
+                    base_unit_cost * (1 + adjustment / 100) + tariff,
+                )
                 arc = solver.add_arc_with_capacity_and_unit_cost(
                     node(f"dc:{origin_id}"),
                     assigned_node,

@@ -24,7 +24,80 @@ from ..models import (
     RateValidationIssue,
     RateValidationResponse,
     RateVersionCreateRequest,
+    LaneRateRule,
 )
+
+
+_MONTERREY_TEXAS_RATE_RULES = (
+    (
+        "MX_STANDARD_2026_LANE_MONTERREY_DALLAS",
+        "DC_MEXICO_MONTERREY",
+        "DPT_TOLA_DALLAS",
+        "Monterrey DC → Dallas depot committed corridor",
+    ),
+    (
+        "MX_STANDARD_2026_LANE_MONTERREY_SAN_ANTONIO",
+        "DC_MEXICO_MONTERREY",
+        "DPT_TOLA_SAN_ANTONIO",
+        "Monterrey DC → San Antonio depot committed corridor",
+    ),
+)
+
+
+def _with_curated_network_rates(detail: RateContractDetail) -> RateContractDetail:
+    """Add published demo-corridor rates missing from legacy rate storage."""
+
+    if detail.contract_id != "MX_STANDARD_2026":
+        return detail
+    existing = {rule.rule_id for rule in detail.lane_rates}
+    additions = [
+        {
+            "rule_id": rule_id,
+            "lane_name": lane_name,
+            "origin": origin,
+            "destination": destination,
+            "lane_type": "LINEHAUL",
+            "origin_endpoint_id": origin,
+            "origin_endpoint_type": "facility",
+            "destination_endpoint_id": destination,
+            "destination_endpoint_type": "facility",
+            "priority": 1000,
+            # $398.23 plus the contract's 13% fuel rule is $450/load, or
+            # $0.50/case at the network solver's governed 900-case load basis.
+            "flat_rate": 398.23,
+            "rate_per_mile": 0,
+            "rate_per_stop": 0,
+            "included_stops": 1,
+            "minimum_charge": 0,
+            "mileage_rounding": "exact",
+        }
+        for rule_id, origin, destination, lane_name in _MONTERREY_TEXAS_RATE_RULES
+        if rule_id not in existing
+    ]
+    if not additions:
+        return detail
+    return detail.model_copy(
+        update={
+            "lane_rates": [
+                *detail.lane_rates,
+                *[LaneRateRule.model_validate(row) for row in additions],
+            ]
+        }
+    )
+
+
+# Region-to-contract map for governed linehaul rating. Lanes whose origin region
+# is absent here fall back to planning rates rather than a governed rate book.
+GOVERNED_LINEHAUL_CONTRACTS: dict[str, tuple[str, str]] = {
+    "REGION_GREAT_LAKES": ("GL_STANDARD_2026", "GL_STANDARD_2026_V1"),
+    "REGION_CANADA": ("CAN_STANDARD_2026", "CAN_STANDARD_2026_V1"),
+    "REGION_MEXICO": ("MX_STANDARD_2026", "MX_STANDARD_2026_V1"),
+}
+
+
+def governed_linehaul_contract(region_id: str) -> tuple[str, str] | None:
+    """Return (contract_id, version_id) governing linehaul for a region."""
+    return GOVERNED_LINEHAUL_CONTRACTS.get(region_id)
 
 
 def _writer(store: Any, method_name: str) -> Any:
@@ -42,18 +115,21 @@ def list_rate_contract_details(store: Any) -> list[RateContractDetail]:
     if callable(rich_loader):
         details = rich_loader()
         if details:
-            return [RateContractDetail.model_validate(row) for row in details]
+            return [
+                _with_curated_network_rates(RateContractDetail.model_validate(row))
+                for row in details
+            ]
 
     carriers = {row.carrier_id: row.carrier_name for row in store.list_carriers()}
     freshness = datetime.now(timezone.utc).isoformat()
     return [
-        RateContractDetail.model_validate(
+        _with_curated_network_rates(RateContractDetail.model_validate(
             contract_detail_from_legacy(
                 contract.model_dump(mode="json"),
                 carriers.get(contract.carrier_id, contract.carrier_id),
                 freshness_at=freshness,
             )
-        )
+        ))
         for contract in store.list_carrier_contracts()
     ]
 

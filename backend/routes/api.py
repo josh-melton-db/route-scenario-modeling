@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from .baseline import router as baseline_router
 from .data_editor import router as data_editor_router
+from .depot_plans import router as depot_plans_router
 from .meta import router as meta_router
 from .network import router as network_router
 from .results import router as results_router
@@ -22,6 +23,7 @@ async def health() -> dict[str, str]:
 
 router.include_router(meta_router)
 router.include_router(network_router)
+router.include_router(depot_plans_router)
 router.include_router(baseline_router)
 router.include_router(data_editor_router)
 router.include_router(scenarios_router)

@@ -214,11 +214,15 @@ class StubStore:
         self._carriers = [
             Carrier(carrier_id="GL_LOGISTICS", carrier_name="Great Lakes Logistics"),
             Carrier(carrier_id="MIDWEST_EXPRESS", carrier_name="Midwest Express"),
+            Carrier(carrier_id="CAN_NORTHLINK", carrier_name="Northern Link Logistics"),
+            Carrier(carrier_id="MX_TRANSPORTES", carrier_name="Transportes del Norte"),
         ]
         self._carrier_contracts = [
             CarrierContract(contract_id="GL_STANDARD_2026", carrier_id="GL_LOGISTICS", contract_name="GL Standard 2026", capacity_stops=12, rate_per_mile=4.25, rate_per_stop=45, minimum_charge=350, fuel_surcharge_pct=12, effective_start="2026-01-01", effective_end="2026-12-31"),
             CarrierContract(contract_id="GL_PRIORITY_2026", carrier_id="GL_LOGISTICS", contract_name="GL Priority 2026", capacity_stops=20, rate_per_mile=5.10, rate_per_stop=55, minimum_charge=425, fuel_surcharge_pct=10, effective_start="2026-01-01", effective_end="2026-12-31"),
             CarrierContract(contract_id="MW_SPOT_2026", carrier_id="MIDWEST_EXPRESS", contract_name="Midwest Spot 2026", capacity_stops=8, rate_per_mile=4.70, rate_per_stop=50, minimum_charge=400, fuel_surcharge_pct=14, effective_start="2026-01-01", effective_end="2026-12-31"),
+            CarrierContract(contract_id="CAN_STANDARD_2026", carrier_id="CAN_NORTHLINK", contract_name="Canada Standard 2026", capacity_stops=12, rate_per_mile=4.85, rate_per_stop=52, minimum_charge=410, fuel_surcharge_pct=11, effective_start="2026-01-01", effective_end="2026-12-31"),
+            CarrierContract(contract_id="MX_STANDARD_2026", carrier_id="MX_TRANSPORTES", contract_name="Mexico Standard 2026", capacity_stops=12, rate_per_mile=4.60, rate_per_stop=48, minimum_charge=390, fuel_surcharge_pct=13, effective_start="2026-01-01", effective_end="2026-12-31"),
         ]
         carrier_names = {row.carrier_id: row.carrier_name for row in self._carriers}
         self._rate_contract_details: dict[tuple[str, str], RateContractDetail] = {}

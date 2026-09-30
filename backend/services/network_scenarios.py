@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import threading
 import uuid
+from copy import deepcopy
 from datetime import date, datetime, timezone
 from typing import Any, cast
 
@@ -25,6 +26,7 @@ from ..models import (
     NetworkScenarioUpdateRequest,
     NetworkScenarioValidation,
     NetworkScenarioValidationIssue,
+    NetworkTariffRule,
     RateChargeLine,
     RateContractDetail,
 )
@@ -34,7 +36,8 @@ from .network_overview import (
     estimate_lane_daily_cost,
     network_overview_service,
 )
-from .rates import list_rate_contract_details
+from .network_run_snapshots import NetworkRunSnapshot
+from .rates import governed_linehaul_contract, list_rate_contract_details
 from .store_provider import get_store
 
 
@@ -56,6 +59,7 @@ class NetworkScenarioRepository:
     def __init__(self) -> None:
         self._scenarios: dict[str, NetworkScenario] = {}
         self._results: dict[str, NetworkScenarioResult] = {}
+        self._run_snapshots: dict[str, NetworkRunSnapshot] = {}
         self._lock = threading.RLock()
 
     @property
@@ -239,18 +243,60 @@ class NetworkScenarioRepository:
             )
         return NetworkScenarioResult.model_validate(_json_value(row["result_payload"]))
 
+    def run_snapshot(self, run_id: str) -> NetworkRunSnapshot:
+        if not self._uses_lakebase:
+            with self._lock:
+                snapshot = self._run_snapshots.get(run_id)
+                if snapshot is None:
+                    raise HTTPException(status_code=404, detail="Network run not found.")
+                return snapshot.copy()
+        row = lakebase_store.postgres.query_one(
+            f"SELECT scenario_payload, result_payload, network_rows_payload, "
+            f"flow_rows_payload, cost_rows_payload "
+            f"FROM {self._table('network_run_snapshots')} WHERE run_id = %s",
+            (run_id,),
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Network run not found.")
+        return NetworkRunSnapshot(
+            scenario=NetworkScenario.model_validate(_json_value(row["scenario_payload"])),
+            result=NetworkScenarioResult.model_validate(
+                _json_value(row["result_payload"])
+            ),
+            network_rows=cast(
+                NetworkRows, _json_value(row["network_rows_payload"])
+            ),
+            flow_rows=cast(
+                list[dict[str, Any]], _json_value(row["flow_rows_payload"])
+            ),
+            cost_rows=cast(
+                list[dict[str, Any]], _json_value(row["cost_rows_payload"])
+            ),
+        )
+
     def save_result(
         self,
         scenario: NetworkScenario,
         result: NetworkScenarioResult,
         *,
+        network_rows: NetworkRows,
         flow_rows: list[dict[str, Any]],
         cost_rows: list[dict[str, Any]],
     ) -> None:
+        if not result.run_id:
+            raise ValueError("A solved network result must have a run ID.")
+        snapshot = NetworkRunSnapshot(
+            scenario=scenario.model_copy(deep=True),
+            result=result.model_copy(deep=True),
+            network_rows=deepcopy(network_rows),
+            flow_rows=deepcopy(flow_rows),
+            cost_rows=deepcopy(cost_rows),
+        )
         if not self._uses_lakebase:
             with self._lock:
                 self._scenarios[scenario.scenario_id] = scenario.model_copy(deep=True)
                 self._results[scenario.scenario_id] = result.model_copy(deep=True)
+                self._run_snapshots[result.run_id] = snapshot
             return
         cost_by_key = {
             (str(row["service_date"]), str(row["lane_id"])): row
@@ -268,6 +314,30 @@ class NetworkScenarioRepository:
                     (scenario.scenario_id,),
                     connection=connection,
                 )
+            lakebase_store.postgres.execute(
+                f"""
+                INSERT INTO {self._table('network_run_snapshots')} (
+                  run_id, scenario_id, scenario_payload, result_payload,
+                  network_rows_payload, flow_rows_payload, cost_rows_payload,
+                  created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    result.run_id,
+                    scenario.scenario_id,
+                    lakebase_store.postgres.jsonb(
+                        snapshot.scenario.model_dump(mode="json")
+                    ),
+                    lakebase_store.postgres.jsonb(
+                        snapshot.result.model_dump(mode="json")
+                    ),
+                    lakebase_store.postgres.jsonb(snapshot.network_rows),
+                    lakebase_store.postgres.jsonb(snapshot.flow_rows),
+                    lakebase_store.postgres.jsonb(snapshot.cost_rows),
+                    result.generated_at,
+                ),
+                connection=connection,
+            )
             lakebase_store.postgres.execute(
                 f"""
                 INSERT INTO {self._table('network_scenario_results')} (
@@ -290,9 +360,10 @@ class NetworkScenarioRepository:
                 f"""
                 INSERT INTO {self._table('network_flow_results')} (
                   scenario_id, revision, service_date, lane_id, lane_type,
-                  assigned_units, total_cost, rate_source, contract_id,
+                  assigned_units, total_cost, freight_total, tariff_total,
+                  tariff_rule_ids, rate_source, contract_id,
                   contract_version_id, rate_book_snapshot_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
@@ -307,6 +378,21 @@ class NetworkScenarioRepository:
                                 (str(row["service_date"]), str(row["lane_id"])),
                                 {},
                             ).get("total_cost", 0)
+                        ),
+                        float(
+                            cost_by_key.get(
+                                (str(row["service_date"]), str(row["lane_id"])), {}
+                            ).get("freight_total", 0)
+                        ),
+                        float(
+                            cost_by_key.get(
+                                (str(row["service_date"]), str(row["lane_id"])), {}
+                            ).get("tariff_total", 0)
+                        ),
+                        lakebase_store.postgres.jsonb(
+                            cost_by_key.get(
+                                (str(row["service_date"]), str(row["lane_id"])), {}
+                            ).get("tariff_rule_ids", [])
                         ),
                         cost_by_key.get(
                             (str(row["service_date"]), str(row["lane_id"])), {}
@@ -483,6 +569,40 @@ class NetworkScenarioService:
         assumptions = scenario.assumptions
         issues: list[NetworkScenarioValidationIssue] = []
 
+        seen_tariff_ids: set[str] = set()
+        for rule in assumptions.tariffs:
+            if rule.rule_id in seen_tariff_ids:
+                issues.append(
+                    NetworkScenarioValidationIssue(
+                        severity="error",
+                        code="duplicate_tariff_rule_id",
+                        scope="scenario",
+                        entity_id=rule.rule_id,
+                        message="Tariff rule IDs must be unique within a scenario.",
+                    )
+                )
+            seen_tariff_ids.add(rule.rule_id)
+        for index, left in enumerate(assumptions.tariffs):
+            for right in assumptions.tariffs[index + 1 :]:
+                if (
+                    left.origin_country == right.origin_country
+                    and left.destination_country == right.destination_country
+                    and left.effective_start <= right.effective_end
+                    and right.effective_start <= left.effective_end
+                ):
+                    issues.append(
+                        NetworkScenarioValidationIssue(
+                            severity="error",
+                            code="overlapping_tariff_rules",
+                            scope="scenario",
+                            entity_id=right.rule_id,
+                            message=(
+                                f"Tariff rules {left.rule_id} and {right.rule_id} "
+                                "overlap for the same directed country pair."
+                            ),
+                        )
+                    )
+
         for facility_id in assumptions.disabled_facility_ids:
             if facility_id not in facilities:
                 issues.append(
@@ -579,14 +699,23 @@ class NetworkScenarioService:
         self.get(scenario_id)
         return self.repository.result(scenario_id)
 
+    def get_run_snapshot(self, run_id: str) -> NetworkRunSnapshot:
+        return self.repository.run_snapshot(run_id)
+
+    def run_result(self, run_id: str) -> NetworkScenarioResult:
+        return self.get_run_snapshot(run_id).result
+
     @staticmethod
     def _governed_contract(
-        contracts: list[RateContractDetail], service_date: str
+        contracts: list[RateContractDetail], service_date: str, region_id: str
     ) -> RateContractDetail | None:
+        governed = governed_linehaul_contract(region_id)
+        if governed is None:
+            return None
         candidates = [
             row
             for row in contracts
-            if row.contract_id == "GL_STANDARD_2026"
+            if row.contract_id == governed[0]
             and contract_status(row.model_dump(mode="json"), service_date)
             == "published"
         ]
@@ -596,6 +725,7 @@ class NetworkScenarioService:
         self,
         rows: NetworkRows,
         flow_rows: list[dict[str, Any]],
+        tariff_by_date_lane: dict[tuple[str, str], tuple[float, str]],
     ) -> tuple[
         list[dict[str, Any]],
         list[NetworkFlowChargeDetail],
@@ -618,14 +748,16 @@ class NetworkScenarioService:
             contract_id = None
             contract_version_id = None
             snapshot_id = None
+            tariff_rate, tariff_rule_id = tariff_by_date_lane.get(
+                (service_date, lane_id), (0.0, "")
+            )
+            tariff_total = round(assigned * tariff_rate, 2)
 
             if lane["lane_type"] == "LINEHAUL" and assigned > 0:
                 loads = max(1, math.ceil(assigned / 900))
                 origin = facilities[str(lane["origin_endpoint_id"])]
-                contract = (
-                    self._governed_contract(contracts, service_date)
-                    if str(origin["region_id"]) == "REGION_GREAT_LAKES"
-                    else None
+                contract = self._governed_contract(
+                    contracts, service_date, str(origin["region_id"])
                 )
                 charge_lines: list[RateChargeLine] = []
                 if contract is not None:
@@ -691,6 +823,7 @@ class NetworkScenarioService:
                             rule_id="PLANNING_FUEL_FALLBACK",
                         ),
                     ]
+                freight_total = round(total_cost, 2)
                 charge_details.append(
                     NetworkFlowChargeDetail(
                         service_date=service_date,
@@ -701,7 +834,10 @@ class NetworkScenarioService:
                         contract_id=contract_id,
                         contract_version_id=contract_version_id,
                         rate_book_snapshot_id=snapshot_id,
-                        total_cost=total_cost,
+                        freight_total=freight_total,
+                        tariff_total=tariff_total,
+                        tariff_rule_ids=([tariff_rule_id] if tariff_rule_id else []),
+                        total_cost=round(freight_total + tariff_total, 2),
                         charge_lines=charge_lines,
                     )
                 )
@@ -710,7 +846,10 @@ class NetworkScenarioService:
                 {
                     "service_date": service_date,
                     "lane_id": lane_id,
-                    "total_cost": round(total_cost, 2),
+                    "freight_total": round(total_cost, 2),
+                    "tariff_total": tariff_total,
+                    "tariff_rule_ids": ([tariff_rule_id] if tariff_rule_id else []),
+                    "total_cost": round(total_cost + tariff_total, 2),
                     "rate_source": rate_source,
                     "contract_id": contract_id,
                     "contract_version_id": contract_version_id,
@@ -734,6 +873,92 @@ class NetworkScenarioService:
         ]
         return cost_rows, charge_details, exceptions
 
+    @staticmethod
+    def _resolve_tariffs(
+        rows: NetworkRows,
+        rules: list[NetworkTariffRule],
+        horizon_start: str,
+        horizon_end: str,
+    ) -> dict[tuple[str, str], tuple[float, str]]:
+        facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
+        resolved: dict[tuple[str, str], tuple[float, str]] = {}
+        for lane in rows["dim_network_lanes"]:
+            if str(lane["lane_type"]) != "LINEHAUL":
+                continue
+            origin = facilities.get(str(lane["origin_endpoint_id"]))
+            destination = facilities.get(str(lane["destination_endpoint_id"]))
+            if origin is None or destination is None:
+                continue
+            origin_country = str(origin.get("country_code", ""))
+            destination_country = str(destination.get("country_code", ""))
+            lane_id = str(lane["lane_id"])
+            for rule in rules:
+                if (
+                    rule.origin_country != origin_country
+                    or rule.destination_country != destination_country
+                ):
+                    continue
+                start = max(horizon_start, rule.effective_start)
+                end = min(horizon_end, rule.effective_end)
+                if start > end:
+                    continue
+                current = date.fromisoformat(start)
+                last = date.fromisoformat(end)
+                while current <= last:
+                    resolved[(current.isoformat(), lane_id)] = (
+                        rule.amount_per_case,
+                        rule.rule_id,
+                    )
+                    current = date.fromordinal(current.toordinal() + 1)
+        return resolved
+
+    def _solver_lane_unit_costs(
+        self,
+        rows: NetworkRows,
+        service_date: str,
+    ) -> dict[str, float]:
+        """Build linear freight estimates from governed full-load quotes."""
+
+        facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
+        contracts = list_rate_contract_details(get_store())
+        unit_costs: dict[str, float] = {}
+        for lane in rows["dim_network_lanes"]:
+            if str(lane["lane_type"]) != "LINEHAUL":
+                continue
+            lane_id = str(lane["lane_id"])
+            fallback = (
+                max(450.0, float(lane["distance_miles"]) * 3.4) * 1.12 / 900
+            )
+            origin = facilities.get(str(lane["origin_endpoint_id"]))
+            if origin is None:
+                unit_costs[lane_id] = fallback
+                continue
+            contract = self._governed_contract(
+                contracts, service_date, str(origin["region_id"])
+            )
+            if contract is None:
+                unit_costs[lane_id] = fallback
+                continue
+            quote = quote_contract(
+                contract.model_dump(mode="json"),
+                {
+                    "service_date": service_date,
+                    "origin": str(lane["origin_endpoint_id"]),
+                    "destination": str(lane["destination_endpoint_id"]),
+                    "miles": float(lane["distance_miles"]),
+                    "stops": 1,
+                    "cases": 900,
+                    "period_volume": 1,
+                    "commitment_policy": "honor",
+                },
+            )
+            unit_costs[lane_id] = (
+                float(quote["total_cost"]) / 900
+                if quote["matched_lane_rule_id"]
+                else fallback
+            )
+        return unit_costs
+
     def run(self, scenario_id: str) -> NetworkScenarioRunResponse:
         scenario = self.get(scenario_id)
         if scenario.status != "validated" or not (
@@ -746,6 +971,13 @@ class NetworkScenarioService:
                 detail="Resolve blocking validation issues before running the plan.",
             )
         rows = self._rows(scenario)
+        tariff_by_date_lane = self._resolve_tariffs(
+            rows,
+            scenario.assumptions.tariffs,
+            scenario.horizon_start,
+            scenario.horizon_end,
+        )
+        lane_unit_costs = self._solver_lane_unit_costs(rows, scenario.horizon_start)
         allocation = solve_fixed_capacity_network(
             rows,
             demand_plan_version_id=scenario.demand_plan_version_id,
@@ -760,12 +992,18 @@ class NetworkScenarioService:
             lane_cost_adjustments_pct=(
                 scenario.assumptions.lane_cost_adjustments_pct
             ),
+            lane_unit_costs=lane_unit_costs,
+            tariff_per_case_by_date_lane={
+                key: value[0] for key, value in tariff_by_date_lane.items()
+            },
             unmet_penalty_per_case=(
                 scenario.assumptions.unmet_penalty_per_case
             ),
         )
         flow_rows = allocation["flow_rows"]
-        cost_rows, charges, exceptions = self._rate_flows(rows, flow_rows)
+        cost_rows, charges, exceptions = self._rate_flows(
+            rows, flow_rows, tariff_by_date_lane
+        )
         for unmet in allocation["unmet_rows"]:
             if int(unmet["unmet_units"]) <= 0:
                 continue
@@ -850,7 +1088,82 @@ class NetworkScenarioService:
             }
         )
         generated_at = _now()
+        facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
+        lanes = {str(row["lane_id"]): row for row in rows["dim_network_lanes"]}
+        def is_cross_border_depot_flow(row: dict[str, Any]) -> bool:
+            lane = lanes.get(str(row["lane_id"]))
+            if lane is None or str(lane["lane_type"]) != "LINEHAUL":
+                return False
+            origin = facilities.get(str(lane["origin_endpoint_id"]))
+            destination = facilities.get(str(lane["destination_endpoint_id"]))
+            return bool(
+                origin
+                and destination
+                and origin["facility_type"] == "distribution_center"
+                and destination["facility_type"] == "depot"
+                and origin.get("country_code") != destination.get("country_code")
+            )
+
+        cross_border_assigned_units = sum(
+            int(row["assigned_units"])
+            for row in flow_rows
+            if is_cross_border_depot_flow(row)
+        )
+        baseline_cross_border_assigned_units = sum(
+            int(row["assigned_units"])
+            for row in rows["baseline_network_flow_daily"]
+            if scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
+            and str(row["demand_plan_version_id"]) == scenario.demand_plan_version_id
+            and str(row["capacity_plan_version_id"]) == scenario.capacity_plan_version_id
+            and is_cross_border_depot_flow(row)
+        )
+        baseline_tariff_exposure = sum(
+            int(row["assigned_units"])
+            * tariff_by_date_lane.get(
+                (str(row["service_date"])[:10], str(row["lane_id"])), (0.0, "")
+            )[0]
+            for row in rows["baseline_network_flow_daily"]
+            if scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
+            and str(row["demand_plan_version_id"]) == scenario.demand_plan_version_id
+            and str(row["capacity_plan_version_id"]) == scenario.capacity_plan_version_id
+        )
+        tariff_destination_ids = {
+            str(lanes[lane_id]["destination_endpoint_id"])
+            for _, lane_id in tariff_by_date_lane
+            if lane_id in lanes
+        }
+
+        def is_domestic_tariff_alternative(lane_id: str) -> bool:
+            lane = lanes.get(lane_id)
+            if lane is None or str(lane["lane_type"]) != "LINEHAUL":
+                return False
+            origin = facilities.get(str(lane["origin_endpoint_id"]))
+            destination = facilities.get(str(lane["destination_endpoint_id"]))
+            return bool(
+                origin
+                and destination
+                and str(lane["destination_endpoint_id"]) in tariff_destination_ids
+                and str(origin.get("country_code", ""))
+                == str(destination.get("country_code", ""))
+            )
+
+        scenario_domestic_units = sum(
+            int(row["assigned_units"])
+            for row in flow_rows
+            if is_domestic_tariff_alternative(str(row["lane_id"]))
+        )
+        baseline_domestic_units = sum(
+            int(row["assigned_units"])
+            for row in rows["baseline_network_flow_daily"]
+            if scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
+            and str(row["demand_plan_version_id"])
+            == scenario.demand_plan_version_id
+            and str(row["capacity_plan_version_id"])
+            == scenario.capacity_plan_version_id
+            and is_domestic_tariff_alternative(str(row["lane_id"]))
+        )
         result = NetworkScenarioResult(
+            run_id=f"network-run-{uuid.uuid4()}",
             scenario_id=scenario.scenario_id,
             revision=scenario.revision,
             generated_at=generated_at,
@@ -858,6 +1171,12 @@ class NetworkScenarioService:
             baseline_overview=baseline,
             kpi_deltas=deltas,
             affected_depot_ids=affected,
+            freight_total_cost=round(sum(row.freight_total for row in charges), 2),
+            tariff_total_cost=round(sum(row.tariff_total for row in charges), 2),
+            baseline_tariff_exposure=round(baseline_tariff_exposure, 2),
+            cross_border_assigned_units=cross_border_assigned_units,
+            baseline_cross_border_assigned_units=baseline_cross_border_assigned_units,
+            domestic_shift_units=scenario_domestic_units - baseline_domestic_units,
             charge_details=charges,
             exceptions=exceptions,
         )
@@ -871,6 +1190,7 @@ class NetworkScenarioService:
         self.repository.save_result(
             solved,
             result,
+            network_rows=rows,
             flow_rows=flow_rows,
             cost_rows=cost_rows,
         )

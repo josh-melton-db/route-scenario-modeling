@@ -100,6 +100,11 @@ def network_scenario_result(scenario_id: str) -> NetworkScenarioResult:
     return network_scenario_service.result(scenario_id)
 
 
+@router.get("/runs/{run_id}", response_model=NetworkScenarioResult)
+def network_run_result(run_id: str) -> NetworkScenarioResult:
+    return network_scenario_service.run_result(run_id)
+
+
 @router.delete("/scenarios/{scenario_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_network_scenario(scenario_id: str) -> Response:
     network_scenario_service.delete(scenario_id)

@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { Loader2 } from 'lucide-react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import type {
   NetworkOverviewParams,
   NetworkOptions,
@@ -13,6 +13,7 @@ import NetworkDetailDrawer from '@/components/NetworkDetailDrawer'
 import NetworkFlowMap from '@/components/NetworkFlowMap'
 import NetworkInsightRail from '@/components/NetworkInsightRail'
 import NetworkKpiStrip from '@/components/NetworkKpiStrip'
+import { buildDepotAnalysisHref } from '@/lib/networkLinks'
 
 const queryNames: Record<keyof NetworkOverviewParams, string> = {
   demand_plan_version_id: 'demandPlan',
@@ -26,6 +27,7 @@ const queryNames: Record<keyof NetworkOverviewParams, string> = {
 
 export default function NetworkPage() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const options = useNetworkOptions()
   const context = useMemo(
     () => (options.data ? contextFromUrl(searchParams, options.data) : null),
@@ -109,13 +111,42 @@ export default function NetworkPage() {
         selectedFacility.facility_id,
         context.horizon_start,
         context.horizon_end,
-        searchParams,
       )
     : null
   const dcAnalysisHref =
     selectedFacility?.facility_type === 'distribution_center'
       ? `/dc/${encodeURIComponent(selectedFacility.facility_id)}`
       : null
+
+  const facilities = overview.data.facilities
+
+  const openFacility = (facilityId: string | null) => {
+    if (!facilityId) {
+      selectEntity('facility', null)
+      return
+    }
+    const facility = facilities.find((row) => row.facility_id === facilityId)
+    if (!facility) return
+
+    if (facility.facility_type === 'distribution_center') {
+      selectEntity('facility', facilityId)
+      return
+    }
+
+    const href = facility.depot_analysis_available
+      ? buildDepotAnalysisHref(
+          facility.facility_id,
+          context.horizon_start,
+          context.horizon_end,
+        )
+      : null
+    if (href) {
+      navigate(href)
+      return
+    }
+
+    selectEntity('facility', facilityId)
+  }
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
@@ -130,16 +161,17 @@ export default function NetworkPage() {
           This view is partial. Available facts are shown with their latest published freshness.
         </div>
       )}
-      <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid min-h-0 gap-4 xl:h-[calc(100svh-16rem)] xl:min-h-[560px] xl:grid-cols-[minmax(0,1fr)_340px]">
         <NetworkFlowMap
           facilities={overview.data.facilities}
           lanes={overview.data.lanes}
           selectedFacilityId={selectedFacility?.facility_id ?? null}
           selectedLaneId={selectedLane?.lane_id ?? null}
-          onSelectFacility={(id) => selectEntity('facility', id)}
+          onSelectFacility={openFacility}
           onSelectLane={(id) => selectEntity('lane', id)}
         />
         <NetworkInsightRail
+          summary={overview.data.summary}
           insights={overview.data.insights}
           onSelect={(entityType, entityId) => selectEntity(entityType, entityId)}
         />
@@ -147,6 +179,7 @@ export default function NetworkPage() {
       <NetworkDetailDrawer
         facility={selectedFacility}
         lane={selectedLane}
+        facilities={facilities}
         depotAnalysisHref={depotAnalysisHref}
         dcAnalysisHref={dcAnalysisHref}
         onClose={() => {
@@ -182,34 +215,6 @@ function contextFromUrl(
       ? (metric as NetworkOverviewParams['metric'])
       : options.default_metric,
   }
-}
-
-function buildDepotAnalysisHref(
-  depotId: string,
-  horizonStart: string,
-  horizonEnd: string,
-  networkParams: URLSearchParams,
-) {
-  const serviceDate = firstWeekdayInRange(horizonStart, horizonEnd, 2)
-  if (!serviceDate) return null
-  const returnPath = `/network?${networkParams.toString()}`
-  const params = new URLSearchParams({
-    depot: depotId,
-    date: serviceDate,
-    networkScenario: 'baseline',
-    networkReturn: returnPath,
-  })
-  return `/analyze?${params.toString()}`
-}
-
-function firstWeekdayInRange(start: string, end: string, weekday: number) {
-  const current = new Date(`${start}T12:00:00`)
-  const final = new Date(`${end}T12:00:00`)
-  while (current <= final) {
-    if (current.getDay() === weekday) return current.toISOString().slice(0, 10)
-    current.setDate(current.getDate() + 1)
-  }
-  return null
 }
 
 function NetworkLoading({ contextBar = false }: { contextBar?: boolean }) {

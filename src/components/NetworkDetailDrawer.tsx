@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Building2,
   ExternalLink,
+  Lightbulb,
   MapPin,
   Route,
   ScrollText,
@@ -13,10 +14,15 @@ import type {
   NetworkLaneAggregate,
 } from '@/api/types'
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format'
+import { laneSoWhat } from '@/lib/laneSoWhat'
+import { cn } from '@/lib/utils'
 
 interface NetworkDetailDrawerProps {
   facility: NetworkFacilityAggregate | null
   lane: NetworkLaneAggregate | null
+  facilities: NetworkFacilityAggregate[]
+  /** Scenario-supplied shortfall by facility; falls back to demand minus assigned. */
+  unmetByFacility?: Record<string, number>
   depotAnalysisHref: string | null
   dcAnalysisHref: string | null
   onClose: () => void
@@ -26,6 +32,8 @@ interface NetworkDetailDrawerProps {
 export default function NetworkDetailDrawer({
   facility,
   lane,
+  facilities,
+  unmetByFacility,
   depotAnalysisHref,
   dcAnalysisHref,
   onClose,
@@ -70,7 +78,12 @@ export default function NetworkDetailDrawer({
           {facility ? (
             <FacilityDetails facility={facility} />
           ) : lane ? (
-            <LaneDetails lane={lane} onSelectFacility={onSelectFacility} />
+            <LaneDetails
+              lane={lane}
+              facilities={facilities}
+              unmetByFacility={unmetByFacility}
+              onSelectFacility={onSelectFacility}
+            />
           ) : null}
         </div>
 
@@ -85,9 +98,9 @@ export default function NetworkDetailDrawer({
           ) : facility?.facility_type === 'distribution_center' && dcAnalysisHref ? (
             <Link
               to={dcAnalysisHref}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-accent"
             >
-              View distribution center <ExternalLink className="h-4 w-4" />
+              Distribution center summary <ExternalLink className="h-4 w-4" />
             </Link>
           ) : facility?.facility_type === 'depot' ? (
             <div className="rounded-md border border-border bg-background/40 p-3 text-xs text-muted-foreground">
@@ -141,13 +154,58 @@ function FacilityDetails({ facility }: { facility: NetworkFacilityAggregate }) {
 
 function LaneDetails({
   lane,
+  facilities,
+  unmetByFacility,
   onSelectFacility,
 }: {
   lane: NetworkLaneAggregate
+  facilities: NetworkFacilityAggregate[]
+  unmetByFacility?: Record<string, number>
   onSelectFacility: (facilityId: string) => void
 }) {
+  const unmetFor = (facilityId: string) => {
+    const reported = unmetByFacility?.[facilityId]
+    if (reported !== undefined) return reported
+    const row = facilities.find((candidate) => candidate.facility_id === facilityId)
+    return row ? Math.max(0, row.demand_units - row.assigned_units) : 0
+  }
+  const soWhat = laneSoWhat({
+    lane,
+    originUnmetUnits:
+      lane.origin_endpoint_type === 'facility'
+        ? unmetFor(lane.origin_endpoint_id)
+        : 0,
+    destinationUnmetUnits:
+      lane.destination_endpoint_type === 'facility'
+        ? unmetFor(lane.destination_endpoint_id)
+        : 0,
+  })
+
   return (
     <div className="space-y-5">
+      <section
+        className={cn(
+          'rounded-md border p-3',
+          soWhat.tone === 'critical' && 'border-destructive/50 bg-destructive/5',
+          soWhat.tone === 'warning' && 'border-warning/40 bg-warning/5',
+          soWhat.tone === 'info' && 'border-border bg-background/40',
+          soWhat.tone === 'good' && 'border-success/40 bg-success/5',
+        )}
+      >
+        <h3
+          className={cn(
+            'flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide',
+            soWhat.tone === 'critical' && 'text-destructive',
+            soWhat.tone === 'warning' && 'text-warning',
+            soWhat.tone === 'info' && 'text-primary',
+            soWhat.tone === 'good' && 'text-success',
+          )}
+        >
+          <Lightbulb className="h-3.5 w-3.5" /> So what
+        </h3>
+        <p className="mt-1.5 text-xs font-medium leading-5">{soWhat.headline}</p>
+        <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{soWhat.detail}</p>
+      </section>
       <section className="rounded-md border border-border bg-background/40 p-3">
         <div className="flex items-center gap-2 text-xs">
           <MapPin className="h-3.5 w-3.5 text-primary" />

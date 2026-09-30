@@ -24,6 +24,7 @@ from .config import get_data_backend
 from .routes.api import router as api_router
 from .services.lakebase_migrations import migrate_lakebase
 from .services.lakebase_store import lakebase_store
+from .services.depot_plans import depot_plan_service
 from .services.solve_runs import solve_run_manager
 
 api_app = FastAPI(title="Route Scenario Modeling API")
@@ -41,6 +42,7 @@ async def _recover_abandoned_lakebase_runs() -> None:
     while True:
         await asyncio.sleep(30)
         solve_run_manager.recover_pending_runs()
+        depot_plan_service.recover_pending_plans()
 
 
 @asynccontextmanager
@@ -50,7 +52,10 @@ async def _app_lifespan(_: FastAPI):
         # Deploy first so the Databricks App service principal owns this schema.
         migrate_lakebase(lakebase_store.postgres)
         solve_run_manager.recover_pending_runs()
+        depot_plan_service.recover_pending_plans()
         recovery_task = asyncio.create_task(_recover_abandoned_lakebase_runs())
+    else:
+        depot_plan_service.recover_pending_plans()
     try:
         yield
     finally:

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { GitBranch, GitCompareArrows, Loader2, Play, Trash2 } from 'lucide-react'
 import ConstraintPanel from '@/components/ConstraintPanel'
 import CustomScenarioBuilder from '@/components/CustomScenarioBuilder'
@@ -8,6 +8,7 @@ import ErrorState from '@/components/ErrorState'
 import ScenarioHistory from '@/components/ScenarioHistory'
 import ScenarioCombobox from '@/components/ScenarioCombobox'
 import TransportationOptionsPanel from '@/components/TransportationOptionsPanel'
+import DepotPlanWorkspace from '@/components/DepotPlanWorkspace'
 import {
   useBaselineNetwork,
   useCreateScenarioRun,
@@ -22,10 +23,20 @@ import {
   useRecentScenarios,
 } from '@/api/queries'
 import type { CostOverride, DraftScenarioChange, PricingContext, ScenarioHistoryItem } from '@/api/types'
+import { useRouteContext } from '@/state/useRouteContext'
+import { buildRouteWorkspaceHref, readParentRouteContext } from '@/lib/networkLinks'
 import { useScenarioDraft } from '@/state/useScenarioDraft'
 
 export default function ScenarioBuilderPage() {
+  const location = useLocation()
+  return new URLSearchParams(location.search).get('networkRun')
+    ? <DepotPlanWorkspace mode="scenario" />
+    : <LegacyScenarioBuilderPage />
+}
+
+function LegacyScenarioBuilderPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [selectedScenarioId, setSelectedScenarioId] = useState('baseline')
   const [branchSourceId, setBranchSourceId] = useState<string | null>(null)
@@ -39,11 +50,16 @@ export default function ScenarioBuilderPage() {
   const deleteScenario = useDeleteScenario()
   const scenarios = useRecentScenarios(50)
   const draft = useScenarioDraft()
+  const setFacility = useRouteContext((state) => state.setFacility)
   const rateContracts = useRateContracts(draft.pricingContext.service_date)
   const baselineNetwork = useBaselineNetwork(draft.depot_id, draft.delivery_day)
 
   useEffect(() => {
     draft.reset()
+    const facility = useRouteContext.getState().facility
+    if (facility.facilityType === 'depot') {
+      draft.setDepotDay(facility.facilityId, useScenarioDraft.getState().delivery_day)
+    }
   }, [draft.reset])
 
   useEffect(() => {
@@ -158,7 +174,11 @@ export default function ScenarioBuilderPage() {
         throw new Error('The scenario was created without a run to track.')
       }
       navigate(
-        `/runs/${started.run.run_id}?scenarioId=${started.run.scenario_id}`,
+        buildRouteWorkspaceHref(
+          `/runs/${started.run.run_id}`,
+          readParentRouteContext(new URLSearchParams(location.search)),
+          { scenarioId: started.run.scenario_id },
+        ),
       )
     } catch (err) {
       setSubmitError(String(err))
@@ -180,7 +200,11 @@ export default function ScenarioBuilderPage() {
             <>
               <button
                 type="button"
-                onClick={() => navigate(`/analyze?primary=${encodeURIComponent(selectedScenarioId)}&compare=baseline`)}
+                onClick={() => navigate(buildRouteWorkspaceHref(
+                  '/analyze',
+                  readParentRouteContext(new URLSearchParams(location.search)),
+                  { primary: selectedScenarioId, compare: 'baseline' },
+                ))}
                 className="inline-flex h-10 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium hover:bg-accent/50"
               >
                 <GitCompareArrows className="h-4 w-4" />
@@ -219,7 +243,15 @@ export default function ScenarioBuilderPage() {
           days={days.data ?? []}
           depotId={draft.depot_id}
           deliveryDay={draft.delivery_day}
-          onChange={draft.setDepotDay}
+          onChange={(depotId, day) => {
+            draft.setDepotDay(depotId, day)
+            const depot = depots.data?.find((row) => row.depot_id === depotId)
+            setFacility({
+              facilityId: depotId,
+              facilityName: depot?.name ?? depotId,
+              facilityType: 'depot',
+            })
+          }}
         />
       </div>
 

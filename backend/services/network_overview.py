@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from route_opt.network_synthetic import national_dataset_cached
 from ..config import get_data_backend
+from .rates import governed_linehaul_contract
 from ..models import (
     NetworkFacilityAggregate,
     NetworkFacilityOption,
@@ -66,6 +67,8 @@ def estimate_lane_daily_cost(lane: Mapping[str, Any], assigned_units: int) -> fl
     lane_type = str(lane["lane_type"])
     if lane_type == "LINEHAUL":
         loads = max(1, math.ceil(assigned_units / 900))
+        if lane.get("planning_cost_per_case") is not None:
+            return loads * 900 * float(lane["planning_cost_per_case"])
         return max(450.0, distance * 3.40) * loads * 1.12
     if lane_type == "MARKET":
         return assigned_units * 0.08 + distance * 2.25
@@ -510,10 +513,19 @@ class NetworkOverviewService:
         lane_aggregates: list[NetworkLaneAggregate] = []
         for lane_id, lane in lanes.items():
             origin = facilities.get(str(lane["origin_endpoint_id"]))
-            if origin is None or (
-                context.region_id != "ALL"
-                and str(origin["region_id"]) != context.region_id
-            ):
+            if origin is None:
+                continue
+            # Attribute DC-to-depot flow to the demand region. A Texas depot
+            # supplied from Monterrey must count as assigned Texas demand.
+            destination = facilities.get(str(lane["destination_endpoint_id"]))
+            flow_region = (
+                str(destination["region_id"])
+                if lane["lane_type"] == "LINEHAUL"
+                and destination is not None
+                and destination["facility_type"] == "depot"
+                else str(origin["region_id"])
+            )
+            if context.region_id != "ALL" and flow_region != context.region_id:
                 continue
             if context.lane_type != "ALL" and lane["lane_type"] != context.lane_type:
                 continue
@@ -535,10 +547,12 @@ class NetworkOverviewService:
                 str(lane["destination_endpoint_type"]),
                 str(lane["destination_endpoint_id"]),
             )
-            is_covered_linehaul = (
-                lane["lane_type"] == "LINEHAUL"
-                and str(origin["region_id"]) == "REGION_GREAT_LAKES"
+            governed_contract = (
+                governed_linehaul_contract(str(origin["region_id"]))
+                if lane["lane_type"] == "LINEHAUL"
+                else None
             )
+            is_covered_linehaul = governed_contract is not None
             lane_aggregates.append(
                 NetworkLaneAggregate(
                     lane_id=lane_id,
@@ -572,11 +586,9 @@ class NetworkOverviewService:
                         if lane["lane_type"] == "LINEHAUL"
                         else "not_required"
                     ),
-                    contract_id=(
-                        "GL_STANDARD_2026" if is_covered_linehaul else None
-                    ),
+                    contract_id=(governed_contract[0] if governed_contract else None),
                     contract_version_id=(
-                        "GL_STANDARD_2026_V1" if is_covered_linehaul else None
+                        governed_contract[1] if governed_contract else None
                     ),
                     included_in_network_cost=lane["lane_type"] != "MARKET",
                 )
@@ -601,10 +613,19 @@ class NetworkOverviewService:
 
         facility_aggregates: list[NetworkFacilityAggregate] = []
         local_detail_ids = set(facilities)
+        external_supply_ids = {
+            row.origin_endpoint_id
+            for row in lane_aggregates
+            if row.lane_type == "LINEHAUL"
+            and row.assigned_units > 0
+            and str(facilities[row.origin_endpoint_id]["region_id"])
+            != context.region_id
+        }
         for facility_id, facility in facilities.items():
             if (
                 context.region_id != "ALL"
                 and str(facility["region_id"]) != context.region_id
+                and facility_id not in external_supply_ids
             ):
                 continue
             if facility["facility_type"] == "distribution_center":

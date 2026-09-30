@@ -9,6 +9,7 @@ import type {
   EditorPatchRequest,
   EditorPreviewRequest,
   NetworkOverviewParams,
+  DepotPlanOverrideRequest,
   RateContractCreateRequest,
   RateDraftUpdateRequest,
   RatePublishRequest,
@@ -31,6 +32,13 @@ export const queryKeys = {
   networkScenario: (scenarioId: string) => ['network-scenario', scenarioId] as const,
   networkScenarioResult: (scenarioId: string) =>
     ['network-scenario-result', scenarioId] as const,
+  networkRunResult: (runId: string) => ['network-run-result', runId] as const,
+  depotPlanBootstrap: (runId: string, depotId: string) =>
+    ['depot-plan-bootstrap', runId, depotId] as const,
+  depotPlan: (planSetId: string, routeScenarioId: string) =>
+    ['depot-plan', planSetId, routeScenarioId] as const,
+  depotPlanDay: (planSetId: string, serviceDate: string, routeScenarioId: string) =>
+    ['depot-plan-day', planSetId, serviceDate, routeScenarioId] as const,
   depots: ['depots'] as const,
   days: ['days'] as const,
   carriers: ['carriers'] as const,
@@ -452,11 +460,91 @@ export function useNetworkScenario(scenarioId: string) {
   })
 }
 
-export function useNetworkScenarioResult(scenarioId: string, enabled = true) {
+export function useNetworkScenarioResult(
+  scenarioId: string,
+  enabled = true,
+  runId?: string | null,
+) {
   return useQuery({
-    queryKey: queryKeys.networkScenarioResult(scenarioId),
-    queryFn: () => api.networkScenarioResult(scenarioId),
+    queryKey: runId
+      ? queryKeys.networkRunResult(runId)
+      : queryKeys.networkScenarioResult(scenarioId),
+    queryFn: () => runId
+      ? api.networkRunResult(runId)
+      : api.networkScenarioResult(scenarioId),
     enabled: Boolean(scenarioId) && enabled,
+  })
+}
+
+const hasPendingDepotDays = (data: { coverage: { queued_days: number; running_days: number } } | undefined) =>
+  Boolean(data && (data.coverage.queued_days > 0 || data.coverage.running_days > 0))
+
+export function useDepotPlanBootstrap(
+  runId: string,
+  depotId: string,
+  priorityDate?: string,
+) {
+  return useQuery({
+    queryKey: queryKeys.depotPlanBootstrap(runId, depotId),
+    queryFn: () => api.createDepotPlan(runId, depotId, priorityDate),
+    enabled: Boolean(runId && depotId),
+    staleTime: Infinity,
+  })
+}
+
+export function useDepotPlan(planSetId: string, routeScenarioId: string) {
+  return useQuery({
+    queryKey: queryKeys.depotPlan(planSetId, routeScenarioId),
+    queryFn: () => api.depotPlan(planSetId, routeScenarioId),
+    enabled: Boolean(planSetId),
+    refetchInterval: (query) => hasPendingDepotDays(query.state.data) ? 1500 : false,
+  })
+}
+
+export function useDepotPlanDay(
+  planSetId: string,
+  serviceDate: string,
+  routeScenarioId: string,
+) {
+  return useQuery({
+    queryKey: queryKeys.depotPlanDay(planSetId, serviceDate, routeScenarioId),
+    queryFn: () => api.depotPlanDay(planSetId, serviceDate, routeScenarioId),
+    enabled: Boolean(planSetId && serviceDate),
+    refetchInterval: (query) => {
+      const data = query.state.data
+      return data && (data.default_status === 'queued' || data.default_status === 'running' || data.override_status === 'queued' || data.override_status === 'running') ? 1500 : false
+    },
+  })
+}
+
+export function useCreateDepotPlanScenario(planSetId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (scenarioName: string) => api.createDepotPlanScenario(planSetId, scenarioName),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['depot-plan', planSetId] }),
+  })
+}
+
+export function useOptimizeDepotPlanDay(planSetId: string, serviceDate: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: DepotPlanOverrideRequest) =>
+      api.optimizeDepotPlanDay(planSetId, serviceDate, payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['depot-plan', planSetId] })
+      void queryClient.invalidateQueries({ queryKey: ['depot-plan-day', planSetId, serviceDate] })
+    },
+  })
+}
+
+export function useResetDepotPlanDay(planSetId: string, routeScenarioId: string, serviceDate: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.resetDepotPlanDay(planSetId, routeScenarioId, serviceDate),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['depot-plan', planSetId] })
+      void queryClient.invalidateQueries({ queryKey: ['depot-plan-day', planSetId, serviceDate] })
+    },
   })
 }
 

@@ -96,11 +96,11 @@ export default function NetworkFlowMap({
         return colors.success
       }
       const arcWidth = (lane: NetworkLaneAggregate) => {
-        const base = 2 + Math.sqrt(lane.assigned_units / maxFlow) * 8
+        const base = 5 + Math.sqrt(lane.assigned_units / maxFlow) * 11
         return lane.lane_id === selectedLaneId ? base + 3 : base
       }
       const localWidth = (lane: NetworkLaneAggregate) => {
-        const base = 1 + Math.sqrt(lane.assigned_units / maxFlow) * 5
+        const base = 4 + Math.sqrt(lane.assigned_units / maxFlow) * 7
         return lane.lane_id === selectedLaneId ? base + 2 : base
       }
       const linehaul = lanes.filter((lane) => lane.lane_type === 'LINEHAUL')
@@ -128,8 +128,8 @@ export default function NetworkFlowMap({
             0.3 + Math.min(1, lane.assigned_units / maxFlow) * 0.3,
           getTilt: 20,
           widthUnits: 'pixels',
-          widthMinPixels: 2,
-          widthMaxPixels: 13,
+          widthMinPixels: 5,
+          widthMaxPixels: 19,
           pickable: true,
           autoHighlight: true,
           greatCircle: false,
@@ -150,8 +150,8 @@ export default function NetworkFlowMap({
           getColor: unmetColor,
           getWidth: localWidth,
           widthUnits: 'pixels',
-          widthMinPixels: 1,
-          widthMaxPixels: 7,
+          widthMinPixels: 4,
+          widthMaxPixels: 13,
           capRounded: true,
           jointRounded: true,
           pickable: true,
@@ -203,7 +203,7 @@ export default function NetworkFlowMap({
   )
 
   return (
-    <div className="relative h-[620px] min-h-0 overflow-hidden rounded-lg border border-border bg-card">
+    <div className="relative h-[620px] min-h-[620px] overflow-hidden rounded-lg border border-border bg-card xl:h-full">
       <DeckGL
         viewState={viewState}
         controller
@@ -227,12 +227,10 @@ export default function NetworkFlowMap({
           }
           if ('facility_id' in object) {
             onSelectFacility(String((object as NetworkFacilityAggregate).facility_id))
-            onSelectLane(null)
             return
           }
           if ('lane_id' in object) {
             onSelectLane(String((object as NetworkLaneAggregate).lane_id))
-            onSelectFacility(null)
           }
         }}
         getTooltip={({ object }) => {
@@ -292,15 +290,15 @@ export default function NetworkFlowMap({
           </span>
         </div>
         <div className="mt-2 flex items-center gap-2 border-t border-border pt-2 text-muted-foreground">
-          <span className="h-1 w-3 rounded bg-muted-foreground" /> Thin
-          <span className="h-2.5 w-6 rounded bg-muted-foreground" /> Thick = volume
+          <span className="h-1.5 w-4 rounded bg-muted-foreground" /> Thin
+          <span className="h-3 w-7 rounded bg-muted-foreground" /> Thick = volume
         </div>
         <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full border-2 border-white bg-primary" /> DC
+            <span className="h-2.5 w-2.5 rounded-full bg-primary" /> DC
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full border-2 border-white bg-success" /> Depot
+            <span className="h-2.5 w-2.5 rounded-full bg-success" /> Depot
           </span>
         </div>
       </div>

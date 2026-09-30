@@ -8,6 +8,10 @@ import type {
   CarrierContract,
   OperatingParameterSet,
   CostParameterSet,
+  DepotPlanDayDetail,
+  DepotPlanOverrideRequest,
+  DepotPlanRouteScenario,
+  DepotPlanSet,
   RateContractDetail,
   RateAuthoringOptions,
   RateContractCreateRequest,
@@ -102,6 +106,41 @@ export const api = {
   networkScenarioResult: (scenarioId: string) =>
     requestJSON<NetworkScenarioResult>(
       `/api/network/scenarios/${encodeURIComponent(scenarioId)}/result`,
+    ),
+  networkRunResult: (runId: string) =>
+    requestJSON<NetworkScenarioResult>(
+      `/api/network/runs/${encodeURIComponent(runId)}`,
+    ),
+  createDepotPlan: (runId: string, depotId: string, priorityDate?: string) =>
+    requestJSON<DepotPlanSet>(
+      `/api/network/runs/${encodeURIComponent(runId)}/depots/${encodeURIComponent(depotId)}/plans${priorityDate ? `?${qs({ priority_date: priorityDate })}` : ''}`,
+      { method: 'POST' },
+    ),
+  depotPlan: (planSetId: string, routeScenarioId = 'default') =>
+    requestJSON<DepotPlanSet>(
+      `/api/depot-plans/${encodeURIComponent(planSetId)}?${qs({ route_scenario_id: routeScenarioId })}`,
+    ),
+  depotPlanDay: (planSetId: string, serviceDate: string, routeScenarioId = 'default') =>
+    requestJSON<DepotPlanDayDetail>(
+      `/api/depot-plans/${encodeURIComponent(planSetId)}/days/${encodeURIComponent(serviceDate)}?${qs({ route_scenario_id: routeScenarioId })}`,
+    ),
+  createDepotPlanScenario: (planSetId: string, scenarioName: string) =>
+    requestJSON<DepotPlanRouteScenario>(
+      `/api/depot-plans/${encodeURIComponent(planSetId)}/scenarios`,
+      { method: 'POST', body: JSON.stringify({ scenario_name: scenarioName }) },
+    ),
+  optimizeDepotPlanDay: (
+    planSetId: string,
+    serviceDate: string,
+    payload: DepotPlanOverrideRequest,
+  ) => requestJSON<DepotPlanDayDetail>(
+    `/api/depot-plans/${encodeURIComponent(planSetId)}/days/${encodeURIComponent(serviceDate)}/optimize`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  ),
+  resetDepotPlanDay: (planSetId: string, routeScenarioId: string, serviceDate: string) =>
+    requestJSON<DepotPlanDayDetail>(
+      `/api/depot-plans/${encodeURIComponent(planSetId)}/scenarios/${encodeURIComponent(routeScenarioId)}/days/${encodeURIComponent(serviceDate)}`,
+      { method: 'DELETE' },
     ),
   deleteNetworkScenario: async (scenarioId: string) => {
     const res = await fetch(

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
@@ -867,11 +868,37 @@ class NetworkOverview(StrictModel):
     is_partial: bool = False
 
 
+NetworkCountryCode = Literal["US", "MX", "CA"]
+
+
+class NetworkTariffRule(StrictModel):
+    rule_id: str = Field(min_length=1)
+    origin_country: NetworkCountryCode
+    destination_country: NetworkCountryCode
+    effective_start: str
+    effective_end: str
+    amount_per_case: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_rule(self) -> "NetworkTariffRule":
+        try:
+            start = date.fromisoformat(self.effective_start)
+            end = date.fromisoformat(self.effective_end)
+        except ValueError as exc:
+            raise ValueError("Tariff effective dates must use YYYY-MM-DD.") from exc
+        if end < start:
+            raise ValueError("Tariff effective end must not precede effective start.")
+        if self.origin_country == self.destination_country:
+            raise ValueError("Tariff origin and destination countries must differ.")
+        return self
+
+
 class NetworkScenarioAssumptions(StrictModel):
     disabled_facility_ids: list[str] = Field(default_factory=list)
     disabled_lane_ids: list[str] = Field(default_factory=list)
     lane_cost_adjustments_pct: dict[str, float] = Field(default_factory=dict)
     unmet_penalty_per_case: float = Field(default=250.0, ge=0)
+    tariffs: list[NetworkTariffRule] = Field(default_factory=list)
 
 
 class NetworkScenarioValidationIssue(StrictModel):
@@ -964,11 +991,15 @@ class NetworkFlowChargeDetail(StrictModel):
     contract_id: str | None = None
     contract_version_id: str | None = None
     rate_book_snapshot_id: str | None = None
+    freight_total: float = Field(default=0, ge=0)
+    tariff_total: float = Field(default=0, ge=0)
+    tariff_rule_ids: list[str] = Field(default_factory=list)
     total_cost: float = Field(ge=0)
     charge_lines: list[RateChargeLine] = Field(default_factory=list)
 
 
 class NetworkScenarioResult(StrictModel):
+    run_id: str | None = None
     scenario_id: str
     revision: int = Field(ge=1)
     generated_at: str
@@ -976,6 +1007,15 @@ class NetworkScenarioResult(StrictModel):
     baseline_overview: NetworkOverview
     kpi_deltas: NetworkScenarioKpiDeltas
     affected_depot_ids: list[str] = Field(default_factory=list)
+    freight_total_cost: float = Field(default=0, ge=0)
+    tariff_total_cost: float = Field(default=0, ge=0)
+    baseline_tariff_exposure: float = Field(default=0, ge=0)
+    cross_border_assigned_units: int = Field(default=0, ge=0)
+    baseline_cross_border_assigned_units: int = Field(default=0, ge=0)
+    domestic_shift_units: int = 0
+    optimization_freight_cost_basis: str = (
+        "governed_full_load_per_case_with_planning_fallback"
+    )
     charge_details: list[NetworkFlowChargeDetail] = Field(default_factory=list)
     exceptions: list[NetworkScenarioException] = Field(default_factory=list)
 

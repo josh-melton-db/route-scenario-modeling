@@ -9,19 +9,19 @@ import type { NetworkInsight } from '@/api/types'
 import { cn } from '@/lib/utils'
 
 export default function NetworkInsightRail({
+  summary,
   insights,
   onSelect,
 }: {
+  summary: string
   insights: NetworkInsight[]
   onSelect: (entityType: 'facility' | 'lane', entityId: string) => void
 }) {
   return (
-    <aside className="flex min-h-0 flex-col rounded-lg border border-border bg-card">
+    <aside className="flex min-h-0 flex-col rounded-lg border border-border bg-card xl:h-full">
       <div className="border-b border-border px-4 py-3">
         <h2 className="text-sm font-semibold">Planning insights</h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Exceptions and opportunities in the selected plan context.
-        </p>
+        <p className="mt-1 text-xs text-muted-foreground">{summary}</p>
       </div>
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
         {insights.length === 0 ? (

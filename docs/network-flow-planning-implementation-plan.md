@@ -1,674 +1,230 @@
 # Network Flow Planning Implementation Plan
 
-## Purpose
+## Purpose and boundary
 
-This plan extends the route scenario modeling application from depot-level route planning into a coordinated US network planning experience. The finished application will let a planner compare nationwide flows, create a network scenario across multiple distribution centers and depots, generate detailed depot plans, and reconcile those plans back into one governed network result.
+Extend the existing North American network baseline and scenario flow into a network design workbench. Planners start from published demand and capacity, stack proposed changes, solve and compare the network, then optimize routes for individual depots and service dates within that network run. The application consumes immutable published input plans. Scenario demand changes are overlays; they never rewrite an upstream plan.
 
-Demand forecasting and capacity planning are explicitly outside the application boundary. The application consumes immutable, versioned demand and capacity plans produced elsewhere. For the demo, deterministic synthetic data will represent those upstream outputs.
+This is the network-scale counterpart to route scenario modeling. Reuse its interaction pattern and appropriate UI components, while retaining a separate network scenario model and solver. Network decisions concern DCs, depots, lanes, territories, and daily flows. Depot decisions concern vehicles, drivers, stops, and local carrier sourcing.
 
-The recommended product flow is:
+The [transportation modeling roadmap](transportation-modeling-roadmap.md) places network design next, followed by robustness analysis and stress testing. Tariff exposure is the first network design narrative and later becomes one shock in a stress test.
 
-```text
-Published demand plan ──┐
-Published capacity plan ├─> Network flow scenario ─> Depot plans ─> Reconciliation
-Rates and topology ─────┘              │                  │               │
-                                      └──── compare and publish ──────────┘
-```
+## Current state (September 2026)
 
-## Agreed product decisions
+- The baseline page shows a seven-region North American network: five US regions, Canada, and Mexico. Synthetic demand, facility and lane capacities, baseline flows, maps, insights, and governed linehaul rate books are present.
+- A network scenario can disable facilities or lanes, change individual lane optimization costs, set an unmet-demand penalty, validate, solve fixed-capacity DC-to-depot flow, and compare flow and costs with baseline. It has Scenario, Plan flow, Lane changes, Rate audit, and Exceptions tabs.
+- Facility and depot drill-downs exist. A `networkScenario` URL parameter is written into depot links, but the depot page ignores it and its Network nav link returns to the baseline. Depot routes are not generated from the selected network run's allocation.
+- The synthetic baseline includes a curated Monterrey-to-Dallas/San Antonio corridor and a domestic alternative. Facilities have country codes. Published corridor rate rules quote $450 per 900-case load.
+- A TOLA solve can use Monterrey while counting its other depot demand against one daily DC capacity pool. Other regional solves remain scoped; DC-to-DC lanes are still not transfer arcs in the fixed-capacity solver.
+- The scenario editor has a tariff change card alongside existing facility and lane controls. A directed, dated USD-per-case tariff feeds the solver and appears separately in charge detail and result totals. Freight cost in the objective is a full-load per-case estimate from governed rates or planning fallback; actual freight charge lines retain load-based pricing, so the freight objective is an approximation.
+- Regional linehaul reporting attributes inbound DC-to-depot flow to the destination depot's region. Active external source DCs appear in the regional map data.
+- The result includes baseline and scenario cross-border case counts, domestic shift against the published baseline, separate tariff expense, and applied tariff rule IDs. The published baseline still uses planning estimates for most linehaul freight while scenario charges use governed contracts where covered; wider baseline freight normalization is follow-on work before treating total-cost deltas as precise tariff-only effects.
+- Network scenarios have one `region_id`, default to fixed published input dates, and retain only the latest result per scenario. A `baseline_scenario_id` field exists but is not immutable run lineage. Multi-region focus, accepted-baseline revisions, child depot plans, and return navigation remain planned work.
+- The local depot baseline is a generated Tuesday route layout, not a route optimization of each network service date. Local stub route runs use prepared result variants. The existing route scenario and route types are keyed mainly by weekday rather than an exact date.
 
-- The application is a planning product, not a live logistics control tower.
-- Demand and capacity can be displayed and used as constraints, but this application does not forecast demand or determine required capacity.
-- A network scenario coordinates flow across multiple distribution centers and depots.
-- A network scenario governs detailed child scenarios for the affected depots and service dates.
-- Network and depot plans synchronize through explicit versioned operations. They do not silently overwrite one another.
-- The physical hierarchy is `Region -> Distribution center -> Depot -> Customer`.
-- The domain supports distribution-center linehaul, depot-to-market flow, and depot-to-customer delivery detail.
-- All demo data is synthetic, internally consistent, reproducible, and trusted for the purposes of the demo.
-- Permissions and approval policy are outside the initial implementation scope.
+These are implementation facts, not completed roadmap claims. Preserve the existing baseline and result views as the remaining capabilities are added.
 
-## Scope
+## Target workflow
 
-### In scope
+1. **Choose a starting plan.** Use the active published baseline revision and its demand/capacity versions. Choose a start date and horizon (28 days by default, other lengths selectable) plus one or more focus regions. Pin the resulting dates and source revision to the scenario; saved-scenario branching can follow later.
+2. **Stack changes.** Add named cards to a network scenario. Each card has its own scope, inputs, plain-language summary, and remove/edit action. Changes are saved as a versioned scenario definition; execution uses their combined effect.
+3. **Validate.** Check referenced facilities and lanes, applicable dates, units, border direction, rate coverage, capacity feasibility, and conflicting changes. Separate blocking errors from modeling warnings.
+4. **Run and compare.** Solve daily flow under supplied capacity. Show baseline and scenario maps at the same metric and scale, with assigned and unmet cases, lane and facility utilization, service outlook, total cost, and cost components. Explain why the solver changed each material lane.
+5. **Inspect downstream impact.** Open any depot in that exact network run. Its depot plan covers every date of the parent horizon. Generate and persist one optimized default route result per date, prioritizing the selected date while the rest run in the background. Show queued, running, solved, and failed days honestly.
+6. **Model a day.** Select any date, branch from that date's optimized default, change deliveries or operating assumptions, optimize again, and choose the result for that day. Untouched dates keep their optimized defaults. Roll up the selected daily results over the full horizon.
+7. **Feed back and reconcile.** A released delivery remains required network demand and becomes a reassignment request. Rerun the parent when demand or assignment changes, mark affected child results stale, and regenerate them against the new parent revision. Report assigned, routed, released, and unmet cases, service, and costs without double counting linehaul and last-mile charges.
+8. **Promote or reset.** Propose a solved network run as the new baseline; Accept freezes the full validated network snapshot and makes it the default on the main page. Show route-plan coverage, but do not require every depot-day to be optimized before acceptance. Reset switches the active-baseline pointer back to the immutable original seed without deleting scenario history.
 
-- Consume published demand and capacity snapshots.
-- Display network demand, capacity, assigned flow, utilization, service, and cost.
-- Compare a baseline network with a network scenario.
-- Optimize flow allocation through a fixed topology and fixed supplied capacities.
-- Model facility or lane availability, allocation rules, service requirements, transportation costs, and contract choices.
-- Detect infeasibility and report unmet demand or constraint violations.
-- Generate detailed depot scenarios from a solved network scenario.
-- Run affected depot scenarios in parallel with the existing route solver.
-- Rate private-fleet and carrier activity with reproducible charge details.
-- Reconcile depot results into facility, regional, lane, and network totals.
-- Track parent-child versions and synchronization status.
-- Publish a coordinated network plan with immutable input and rate-book references.
+Keep the current network Scenario, Plan flow, Lane changes, Rate audit, and Exceptions surfaces. Refactor the Scenario tab into a change builder; expose comparison and tariff effects prominently in Plan flow and Lane changes. Do not force depot-level forms into the network page.
 
-### Out of scope
+## Plan hierarchy and ownership
 
-- Demand forecasting, seasonality modeling, and forecast selection algorithms.
-- Capacity acquisition, capacity sizing, fleet purchasing, or recommendations to add capacity.
-- Inventory placement and replenishment optimization beyond transportation flow balance.
-- Live shipment monitoring, real-time dispatch, tendering, or execution-system updates.
-- Automated incident response and operational rerouting.
-- Automated two-way changes to upstream demand or capacity plans.
-- Permissions, approval routing, and persona-specific access control.
-- Generative AI features from the Logistics Control Center example.
-
-## Planning hierarchy and lane semantics
-
-### Facility hierarchy
-
-| Level | Meaning | Planning role |
-| --- | --- | --- |
-| Region | Logical geographic grouping | Filters, aggregation, and comparison |
-| Distribution center | Primary network flow node | Receives, transfers, and allocates demand |
-| Depot | Local delivery origin | Owns detailed daily route plans |
-| Customer | Delivery destination | Owns demand, service windows, and delivery requirements |
-
-A facility can have more than one operational role, but it has one stable `facility_id`. A distribution center that also dispatches local delivery routes remains one facility with both roles rather than two records joined by name.
-
-### Lane types
-
-| Lane type | Grain | Purpose |
-| --- | --- | --- |
-| `LINEHAUL` | Facility to facility | DC-to-DC and DC-to-depot transportation |
-| `MARKET` | Depot to market or service territory | Aggregated demand allocation and coverage |
-| `DELIVERY` | Depot to customer route leg | Detailed route sequence and costing |
-
-Region is not a physical lane endpoint. Regional flows are calculated by aggregating facility-level lanes.
-
-Contract lane rules must reference canonical endpoint IDs and endpoint types. Display names can change and must not be used as joins or rate-matching keys.
-
-## Demo scope and narrative
-
-The initial demo should contain:
-
-- 4 US regions.
-- 8 distribution centers, two per region.
-- 24 depots, three per distribution center.
-- Approximately 2,400 customers, around 100 per depot.
-- A four-week network planning horizon in daily buckets.
-- A detailed seven-day depot-planning window.
-- Multiple transportation modes and governed carrier rate books.
-- Millions of synthetic upstream demand or order records, reduced to readable facility and lane aggregates for the application.
-
-The interactive solver should generate child plans only for materially affected depots by default. A `Generate all depot plans` action can demonstrate parallel execution across the full network.
-
-### Primary demo scenario
-
-Southeast demand grows while the Atlanta distribution center has reduced supplied capacity. The planner selects the published demand and capacity plans, creates a network scenario, and changes permitted flow paths or allocation policies. The network flow solve shifts volume through Nashville and Charlotte. The application then generates affected depot plans, solves their detailed routes, applies carrier contracts, and reconciles the resulting cost and service performance back into the network scenario.
-
-The application reports insufficient supplied capacity as unmet demand or an infeasible constraint. It does not recommend purchasing capacity or change the upstream capacity plan.
-
-## Synthetic data design
-
-Synthetic data must be generated from a common set of constraints instead of independently randomizing dashboard KPIs.
-
-```text
-Customer demand
-  -> depot and market demand
-  -> DC-to-depot supply requirement
-  -> DC-to-DC balancing flow
-  -> facility and lane utilization
-  -> route and carrier costs
-  -> regional and network KPI rollups
-```
-
-### Required properties
-
-- Use a fixed random seed and configurable scale factors.
-- Publish demand and capacity as immutable plan versions with source metadata.
-- Ensure customer demand sums to depot, distribution-center, regional, and network demand.
-- Ensure assigned flow never exceeds supplied facility or lane capacity.
-- Preserve unmet demand explicitly when the network is infeasible.
-- Derive utilization, service, and cost from generated facts rather than generating them independently.
-- Generate coordinates and hierarchy assignments before lanes so all endpoints are valid.
-- Generate realistic alternate paths so network scenarios have meaningful choices.
-- Generate effective-dated contract coverage for every intended carrier lane and deliberate gaps for validation demonstrations.
-- Generate multiple published input snapshots, including a normal plan and a regional-growth or constrained-capacity plan.
-
-### Input plan metadata
-
-Every demand and capacity snapshot must include:
-
-- Stable plan ID and revision.
-- Display name.
-- Source system.
-- Published timestamp.
-- As-of timestamp.
-- Horizon start and end.
-- Time grain.
-- Unit of measure.
-- Record count and validation status.
-
-The UI will display this lineage wherever a planner selects or inspects an input plan.
-
-## Data architecture
-
-Unity Catalog remains the governed store for synthetic upstream inputs, network dimensions, time-series aggregates, and published results. Lakebase remains the low-latency transactional store for scenario drafts, run state, version links, and authoring workflows.
-
-### Governed network dimensions
-
-- `dim_regions`
-  - `region_id`, `region_name`, display order, geometry or map bounds.
-- `dim_facilities`
-  - `facility_id`, name, facility type, region, parent facility, latitude, longitude, timezone, operating roles, active dates.
-- `dim_markets`
-  - `market_id`, name, region, centroid, service attributes.
-- `dim_network_lanes`
-  - `lane_id`, lane type, origin endpoint, destination endpoint, mode, distance, transit time, active dates.
-- `facility_hierarchy`
-  - Ancestor and descendant IDs, relationship type, and effective dates when a simple parent relationship is insufficient.
-
-### External planning inputs
-
-- `demand_plan_versions`
-- `demand_plan_daily`
-  - Plan version, service date, market, depot or customer, demand units, priority, and service requirement.
-- `capacity_plan_versions`
-- `facility_capacity_daily`
-  - Plan version, facility, service date, throughput capacity, and unit.
-- `lane_capacity_daily`
-  - Plan version, lane, service date, supplied capacity, and unit.
-
-These records are read-only to this application. Scenario records reference their version IDs.
-
-### Network scenario state
-
-- `network_scenarios`
-  - Scenario identity, baseline, demand plan version, capacity plan version, horizon, status, revision, and timestamps.
-- `network_scenario_changes`
-  - Facility availability, lane availability, topology choices, allocation policies, service settings, and other in-scope overrides.
-- `network_flow_results`
-  - Scenario, service date, lane, assigned volume, utilization, transit time, service result, cost, and rate snapshot.
-- `network_facility_results`
-  - Scenario, service date, facility, inbound flow, outbound flow, throughput, utilization, cost, and service metrics.
-- `network_scenario_kpis`
-  - Network and regional KPI aggregates.
-- `network_scenario_exceptions`
-  - Unmet demand, capacity violations, missing rates, disconnected nodes, and other validation or solve exceptions.
-
-### Parent-child plan links
-
-Add `network_depot_plan_links` with:
-
-- `network_scenario_id`
-- `network_revision`
-- `depot_id`
-- `service_date`
-- `depot_scenario_id`
-- `input_revision`
-- `result_revision`
-- `sync_status`
-- `generated_at`
-- `completed_at`
-
-Existing depot scenario definitions and result tables should remain the source of detailed routes. The link records connect them to their governing network scenario without duplicating route payloads.
-
-### Rate and cost integration
-
-- Network linehaul and market flows use the existing governed contract-resolution and charge-calculation services.
-- Depot delivery scenarios continue to rate outsourced routes through the same service.
-- Every result stores the contract version and rate-book snapshot used during calculation.
-- Network rollups separate linehaul cost from local delivery cost to prevent double counting.
-- Published plans retain immutable rate references even after newer contract versions are published.
-
-## Network flow solve
-
-The network solver assigns externally supplied demand through the permitted network while respecting externally supplied capacity. It is a flow-allocation solver, not a demand forecast or capacity-sizing solver.
-
-### Inputs
-
-- Demand plan version.
-- Capacity plan version.
-- Network topology and active lane set.
-- Facility and lane availability overrides.
-- Service and allocation policies.
-- Effective carrier contracts and costs.
-- Existing published plan when branching a scenario.
-
-### Constraints
-
-- Flow conservation at network nodes.
-- Supplied facility throughput limits.
-- Supplied lane capacity limits.
-- Demand satisfaction or an explicit unmet-demand variable.
-- Valid origin, destination, mode, and effective-date combinations.
-- Required facility or market assignments where configured.
-- Service-time or transit-time bounds where configured.
-
-### Objective
-
-Minimize transparent transportation cost plus configured penalties for unmet demand and service misses. Capacity expansion must never appear as a solver decision variable.
-
-### Outputs
-
-- Assigned flow by lane and date.
-- Facility inbound and outbound volume.
-- Demand assigned to each depot or left unmet.
-- Utilization derived from assigned flow and supplied capacity.
-- Transparent cost and applied contract detail.
-- Constraint violations and explanations.
-- Depot planning targets for affected facilities and dates.
-
-## Scenario lifecycle and synchronization
-
-### Network scenario lifecycle
-
-```text
-Draft -> Validated -> Solving -> Solved -> Depot plans running
-      -> Reconciliation required -> Reconciled -> Published
-```
-
-A failed or infeasible run retains its validation and solver diagnostics. Publication requires a solved network flow, completed required child plans, successful reconciliation, and no blocking exceptions.
-
-### Child synchronization states
-
-- `not_generated`: No child exists for the network revision.
-- `current`: Child inputs match the parent revision.
-- `running`: A child solve is active.
-- `completed`: A child result exists and matches its inputs.
-- `out_of_sync`: The parent changed after the child was generated.
-- `conflict`: Both parent inputs and child-owned changes changed since the last synchronization.
-- `failed`: Child validation or solve failed.
-
-### Ownership rules
-
-The network scenario owns:
-
-- Demand and capacity plan references.
-- Assigned depot demand.
-- Facility and lane availability.
-- Network flow and linehaul decisions.
-- Targets passed to depot planning.
-
-The depot scenario owns:
-
-- Route construction and stop sequence.
-- Fleet and driver usage.
-- Private-fleet versus carrier fulfillment.
-- Local delivery cost and service results.
-- Permitted user edits within the supplied depot target.
-
-### Synchronization operations
-
-- `Generate`: Create a child plan from the current network revision.
-- `Rebase`: Regenerate network-owned child inputs while preserving compatible child-owned edits.
-- `Resolve conflict`: Show incompatible changes and require an explicit selection.
-- `Reconcile`: Aggregate completed child outputs into the parent and calculate variances.
-- `Publish`: Freeze the coordinated network and child plan revisions.
-
-There is no automatic bidirectional overwrite. A parent edit marks affected children out of sync; a child edit marks the parent reconciliation stale.
-
-## User experience and routes
-
-### Navigation
-
-Recommended primary navigation:
-
-```text
-Network | Depot | Scenarios | Rates | Inputs
-```
-
-- `/` redirects to `/network`.
-- The existing `/analyze` route becomes the depot-level analysis workspace.
-- Global planning context is reflected in URL parameters so links are durable and browser navigation behaves predictably.
-
-### Network overview page
-
-Route: `/network`
-
-Components:
-
-- `NetworkContextBar`
-  - Baseline or scenario, comparison scenario, demand plan, capacity plan, horizon, region, lane type, and displayed metric.
-- `NetworkKpiStrip`
-  - Demand, assigned flow, unmet demand, total cost, cost per unit, on-time service, and utilization.
-- `NetworkFlowMap`
-  - Facilities sized by throughput and lanes weighted by flow.
-  - Metric layers for demand, capacity, assigned flow, utilization, service risk, cost per unit, and contract coverage.
-- `NetworkInsightRail`
-  - Bottlenecks, unmet demand, high-cost lanes, underutilized supplied capacity, service risks, and contract gaps.
-- `FacilityDetailDrawer`
-  - Demand, supplied capacity, assigned flow, utilization, cost, service, connected facilities, depots, and scenario changes.
-- `LaneDetailDrawer`
-  - Flow, supplied capacity, utilization, mode, service, cost, rate coverage, and origin/destination navigation.
-
-Facility actions:
-
-- `Open depot analysis`
-- `Create or open depot plan`
-- `View child plans`
-
-Lane actions:
-
-- `Inspect rate book`
-- `Open origin facility`
-- `Open destination facility`
-- `Add lane change to scenario`
-
-### Network scenario page
-
-Route: `/scenarios/:scenarioId/network`
-
-Tabs:
-
-- `Overview`
-  - KPI deltas, baseline-versus-scenario map, summary, and validation status.
-- `Flows`
-  - Lane map and table with flow, capacity, utilization, service, cost, and contract details.
-- `Facilities`
-  - Regional, DC, and depot performance with expandable hierarchy.
-- `Depot plans`
-  - Child status, synchronization state, result metrics, actions, and batch progress.
-- `Assumptions`
-  - Input plan versions, topology changes, availability changes, policies, and rate context.
-
-Primary actions change with lifecycle:
-
-- `Validate`
-- `Run network plan`
-- `Generate depot plans`
-- `Run affected depot plans`
-- `Reconcile`
-- `Publish`
-
-### Depot analysis integration
-
-Example route:
-
-```text
-/analyze?depot=DPT_SE_ATL_01&date=2026-09-22&networkScenario=NSC_1042
-```
-
-Required changes:
-
-- Initialize depot, date, primary scenario, and comparison scenario from URL state.
-- Preserve network scenario context when navigating between pages.
-- Add a breadcrumb back to the governing network scenario.
-- Display the supplied network target and child synchronization status.
-- Show actual versus target demand, cost, and service after the depot solve.
-- Provide `Return results to network plan` after a successful child run.
-
-### Scenario list
-
-The Scenarios page should list both scopes with a scope badge:
-
-- `Network`
-- `Depot`
-
-Child depot scenarios show their governing network scenario and synchronization status. Standalone depot scenarios remain supported.
-
-## API additions
-
-### Read APIs
-
-- `GET /api/network/options`
-  - Regions, facilities, lanes, available demand plans, capacity plans, dates, and metrics.
-- `GET /api/network/overview`
-  - Network KPIs, facility aggregates, lane aggregates, and insights for a selected context.
-- `GET /api/network/scenarios/{scenario_id}`
-- `GET /api/network/scenarios/{scenario_id}/results`
-- `GET /api/network/scenarios/{scenario_id}/depot-plans`
-- `GET /api/network/scenarios/{scenario_id}/reconciliation`
-
-### Mutation APIs
-
-- `POST /api/network/scenarios`
-- `PATCH /api/network/scenarios/{scenario_id}`
-- `POST /api/network/scenarios/{scenario_id}/validate`
-- `POST /api/network/scenarios/{scenario_id}/runs`
-- `POST /api/network/scenarios/{scenario_id}/depot-plans/generate`
-- `POST /api/network/scenarios/{scenario_id}/depot-plans/run`
-- `POST /api/network/scenarios/{scenario_id}/depot-plans/{depot_scenario_id}/rebase`
-- `POST /api/network/scenarios/{scenario_id}/reconcile`
-- `POST /api/network/scenarios/{scenario_id}/publish`
-
-Network and batch child solves should use the existing durable run pattern: immediately return a run ID, persist stage state, and let the client poll until a terminal state.
-
-## Reuse from Logistics Control Center
-
-The repository at `examples/logistics-control-center` is a reference implementation, not a second application to deploy alongside this one.
-
-| Reference asset | Action |
+| Record | Identity and contents |
 | --- | --- |
-| Deck.gl facility and arc layers | Refactor into the current map component conventions |
-| Lane selection, auto-fit, tooltips, and legend | Reuse with canonical network types |
-| KPI and right-side detail layout | Adapt to planning metrics and shared styling |
-| Lane and incident detail components | Retain only planning-relevant lane patterns |
-| Reroute panel | Replace with network-scenario actions |
-| Mock API and artificial delays | Do not copy |
-| Standalone header, router, and app shell | Do not copy |
-| Hard-coded airport-code lane parsing | Replace with canonical endpoint relationships |
-| Package-scaled reroute costing | Replace with governed rate calculation |
-| Streaming incident pipeline | Defer unless a future operational scope requires it |
-| Genie and Knowledge Assistant | Exclude from the initial planning implementation |
-
-Both applications already use compatible React, Deck.gl, MapLibre, and router versions. Consolidating the map code into the current application is preferable to an iframe, microfrontend, or second backend.
-
-## Implementation phases
+| Original baseline | Immutable seeded network flow, demand/capacity/rate references, dates, and baseline revision ID. It remains available after promotion. |
+| Active baseline | One persisted pointer to an original or accepted baseline revision. New network scenarios start from this revision. |
+| Network scenario | Editable named change set, source baseline revision, focus regions, horizon, and revision. Focus regions describe intended scope, not exclusive ownership of shared DC capacity. |
+| Network run | Immutable run ID plus scenario revision, source baseline revision, demand/capacity/rate snapshots, effective changes, daily customer/depot assignments, lane flow, unmet demand, costs, and exceptions. Keep old runs when a scenario is rerun. |
+| Depot plan set | Parent network run ID and depot ID, with one day slot for every date in that run's horizon, including dates with zero deliveries. |
+| Depot route scenario | Named, horizon-wide selection of one route result per date in the depot plan set. Its initial selection is the optimized default on every date; date-level modeling replaces selected results only on changed dates. |
+| Daily route plan | Exact service date, parent run revision, customer/order targets, optimized default result, zero or more route scenario revisions, and the selected result revision. |
 
-Implementation status as of September 21, 2026:
-
-- Phase 1 is implemented: canonical schemas, four-region deterministic data, alternate DC paths, normal and Southeast-constrained published inputs, canonical rate endpoints, reconciliation, and validation.
-- Phase 2 is implemented: the read-only network overview, governed context API, URL-backed filters and deep links, planning map, KPI and insight surfaces, entity details, and depot round-trip navigation.
-- Phase 3 is implemented as a thin end-to-end vertical slice: network scenario authoring (facility/lane assumptions, unmet penalty), validation against published plans, a fixed-capacity min-cost-flow solve that never invents capacity, governed-contract rating with explicit planning-fallback exceptions, Lakebase persistence with revisions, and the five-tab scenario workspace (Scenario, Plan flow, Lane changes, Rate audit, Exceptions). Depot-plan fan-out and reconciliation remain future work.
-- Navigation is now two-level: the app lands on the network overview (minimal nav plus a scenario picker; selecting a scenario reveals the Scenario/Plan flow/Lane changes/Rate audit/Exceptions tabs), while clicking a depot or DC from the map drills into the lower level carrying Depot/Scenarios/Rates/Inputs. All 24 depots serve generated route-level analysis; DCs get a summary page linking into their depots.
+The network run owns demand, permitted customer-to-depot assignment, DC-to-depot flow, facility/lane capacity, and linehaul/tariff charges. The depot plan owns route construction, stop order, fleet/carrier choices, local service, and last-mile cost. A depot route scenario covers the entire selected horizon while storing routes by date; a date edit stores changed inputs and a solved result without editing its optimized default in place. On an untouched date, the selected result is the default. A baseline depot plan pins the specific baseline revision opened under the same contract and does not silently follow later pointer changes.
 
-### Phase 1 Canonical data and synthetic generation
+Use exact service dates as keys throughout route APIs, solver inputs, results, and storage. Weekday labels are derived for display and recurring rules only. A link into depot planning must carry the parent network run or accepted-baseline revision, depot ID, and selected date. The Network nav action and all depot tabs return to that exact parent, even after a reload or direct link; a transient client store is insufficient.
 
-Deliverables:
+### Daily route optimization and reconciliation
 
-- Add canonical region, facility, market, and lane definitions.
-- Build deterministic synthetic demand and capacity plan generators.
-- Generate internally reconciled baseline flows and depot demand.
-- Add demand and capacity plan metadata and validation.
-- Map current depot IDs into the canonical facility hierarchy.
-- Extend contract lane endpoints with canonical IDs and lane type.
-- Seed a normal plan and a constrained Southeast plan.
+- Materialize customer/order/date targets from the network run's assigned delivery flow, not from an unrelated Tuesday baseline. Multiple inbound DC sources for one depot do not duplicate downstream customer demand. Preserve stable order IDs and exact case totals.
+- For a depot plan set, queue an actual route optimization of the default inputs for every date in the network horizon. Prioritize the opened date, persist each result and failure state, and let a planner optimize any date individually. A default result is labeled optimized only after the solver succeeds; no sweep layout or canned stub result may masquerade as a solve.
+- Present a date strip/calendar with daily status, assigned cases, routed cases, unserved cases, cost, and change marker. The selected date shows optimized default versus the chosen scenario. Horizon KPIs aggregate the selected result on each date and show how many dates have solved defaults and reviewed overrides. Until all dates have a result, label the horizon totals partial and report the covered dates.
+- A change applies to the selected date by default. A future multi-date authoring control may apply a rule to a chosen set of dates. A delivery moved to another date changes both dates and requires both daily routes to be rerun. It also requires a parent network rerun if daily network demand or allocation changes.
+- A route-only change (sequence, vehicle, driver, or carrier choice within the same assigned cases) changes local cost and service, then refreshes the horizon rollup; it does not rerun network flow. Adding demand or releasing a delivery creates a proposed parent change. Release means eligible for another depot, never silent deletion or cancellation. If no eligible depot can serve it within supplied capacity, report the cases as unmet. Explicit cancellation, if added later, has a separate action and audit reason.
+- Reconciliation compares the network's assigned customer/depot/date cases with routed and route-unserved cases; pending releases are visible separately until the parent is rerun. Reassigning a customer requires the network model to consider eligible destination depots and their delivery capacity and cost; the current DC-to-depot sourcing solver alone cannot perform this step. Invalidate only affected depot-days when a new parent run changes assignments, and retain prior results for comparison.
+- Daily route solves are independent. The 28-day rollup summarizes those results; it does not optimize driver rest, vehicle sharing, weekly capacity, or carrier commitments across dates or depots. Shared-resource or cross-date solving is a later extension.
 
-Acceptance criteria:
+### Promotion, reset, and date lifecycle
 
-- Every lane endpoint resolves to a valid canonical node.
-- Demand totals reconcile at every hierarchy level.
-- Capacity units and time grains are explicit.
-- Re-running with the same seed produces the same data.
-- Published input snapshots cannot be edited through the application.
+- `Propose as baseline` identifies one solved, immutable network run. `Accept` validates the full resulting network flow, freezes an accepted baseline revision, and atomically moves the active-baseline pointer. Reject or require an explicit rebase if the proposal's source baseline is no longer active. A region-focused run must carry unchanged network rows plus any changed dependency rows; never promote a partial map aggregation as a full baseline.
+- A run with an unresolved release request or invalid network flow cannot be accepted. Missing or incomplete depot route results do not block acceptance. Show route coverage and readiness on the accepted network plan so a network decision is not mistaken for fully executable local routes. Freeze references to any selected child results included in an accepted snapshot; later child edits do not mutate it.
+- Existing scenarios and depot plans retain their original source and parent run IDs when the active baseline changes. Reset baseline restores the original seeded revision by pointer change and keeps accepted snapshots and history for inspection. Resetting the baseline and regenerating demo data are separate operations.
+- For synthetic demos, generate a dated input snapshot from a configurable anchor near the current date, with 28 days as the default horizon. Rebase tariff/rate effective dates and route orders consistently. Freeze its dates and version IDs once generated; do not slide an existing scenario forward each midnight. Display the snapshot's actual data-as-of date and, for an accepted plan, its separate acceptance time rather than the current wall clock. A deliberate demo-data refresh creates a new original fixture version with the same deterministic story and new dates.
 
-### Phase 2 Read-only network overview
+## Network change catalog
 
-Deliverables:
+| Change card | Planner input | Network effect | Status |
+| --- | --- | --- | --- |
+| Add tariff | Origin country, destination country, effective dates, rate basis and value; optionally eligible goods | Adds a border-specific cost to eligible assigned volume and can change DC-to-depot allocation | Implemented for USD per case |
+| Change facility availability | DC or depot, dates, enabled/disabled | Sets eligible throughput to zero while retaining published capacity for comparison | Existing disable behavior; add dated scope |
+| Change facility throughput | Facility, dates, scenario limit or percentage | Applies a scenario ceiling to supplied capacity | New; do not rewrite the published plan |
+| Restrict or price a lane | Lane or corridor, dates, availability or cost assumption | Changes eligible arcs or transport cost | Existing per-lane behavior; add corridor/date scope |
+| Move or open a facility | Facility role, location, effective date, feasible connections, scenario throughput | Recomputes candidate lanes, distances, transit and costs before solving | New; reuse the route builder's map interaction, not its depot-only payload |
+| Shift territory or demand allocation | Market/depot assignment or permitted source DCs | Changes which depot serves demand or which DCs may supply it | New; requires explicit demand conservation |
+| Release delivery for reassignment | Customer/order, service date, source depot, case quantity, reason | Returns required cases to the network allocation problem and excludes the source depot for those cases | New; rerun the network and affected daily routes |
+| Add delivery demand | Customer/order, service date, eligible depots, case quantity | Adds scenario-only demand without modifying the upstream published plan | New; rerun the network and affected daily routes |
 
-- Add `/network` and make it the default landing page.
-- Create network option and overview APIs.
-- Add shared URL-backed planning context.
-- Implement `NetworkFlowMap`, KPI strip, insight rail, and detail drawers.
-- Add durable facility and lane deep links.
-- Connect `Open depot analysis` to the existing analysis page.
+The current unmet-demand penalty remains an advanced scenario setting rather than a change card. Each card states its applicable dates, region/facility/lane scope, and whether it changes demand, assignment, capacity, or only cost. Adding a tariff does not itself cancel or create a delivery. A region filter is not a tariff rule boundary; rule applicability comes from its own direction, dates, and eligible lanes.
 
-Acceptance criteria:
+## First demonstrable scenario: Monterrey to Texas
 
-- Network totals match underlying synthetic facts.
-- Filters update the map, KPIs, and insights consistently.
-- Facility and lane selections are addressable in the URL.
-- A planner can move from network to depot analysis and back without losing context.
-
-### Phase 3 Network scenario authoring and solve
-
-Deliverables:
+Seed a bounded, reproducible flow from the Monterrey DC to selected Texas depots. Give those depots a plausible domestic alternative with finite spare DC and lane capacity. The starting allocation should favor some cross-border supply; domestic supply must become competitive after a tariff. Preserve a second case in which domestic capacity is constrained, so a planner can see when paying the tariff is preferable to unmet demand.
 
-- Add network scenario tables and APIs.
-- Add the scenario detail page and its five tabs.
-- Implement validation for plan versions, topology, capacity constraints, rates, and effective dates.
-- Implement fixed-capacity network flow optimization.
-- Rate assigned transportation flows through existing contract services.
-- Persist results, charge details, exceptions, and run stages.
-- Add baseline-versus-scenario comparison.
-
-Acceptance criteria:
-
-- The solver never creates or expands capacity.
-- Assigned flow respects supplied capacity or is recorded as unmet.
-- Costs are reproducible from stored charge lines and rate snapshots.
-- An infeasible scenario returns actionable diagnostics.
-- Baseline and scenario maps use identical metric definitions.
-
-### Phase 4 Depot plan generation and parallel execution
-
-Deliverables:
-
-- Add parent-child link and synchronization state.
-- Generate depot scenario inputs from solved network assignments.
-- Add affected-depot detection.
-- Add batch generation and run actions.
-- Run child scenarios in parallel using durable run orchestration.
-- Add parent breadcrumbs and target context to depot pages.
-- Implement rebase and conflict detection.
+Planner sequence:
 
-Acceptance criteria:
+1. Inspect the baseline Monterrey-to-Texas corridor and the domestic alternative, including cases, capacity, freight cost, and cost coverage.
+2. Create a network scenario from that baseline and add a Mexico-to-US tariff with an effective date and explicit cost basis.
+3. Validate and run. Compare cross-border cases, cases reassigned to US DCs, tariff expense, freight expense, total cost, and unmet demand. Selecting a changed lane should explain the decision and show its before/after volume.
+4. Open an affected Texas depot from that exact run. Inspect its optimized default for a selected date and the full date strip for the parent horizon. Change that day's fleet or deliveries, rerun its route optimization, and compare local cost and service with the default.
+5. Release one delivery for reassignment, rerun the network, and show its new depot or explicit unmet status. Reoptimize the affected daily route plans and show the old plans as stale against the new run.
+6. Propose and accept the solved network run as baseline. Verify the main network page uses it and shows depot route coverage. Reset to the original seeded baseline and show that the accepted plan remains in history.
 
-- Every generated child references one network revision and one service date.
-- Parent changes mark only affected children out of sync.
-- Child-owned edits are never silently discarded.
-- Batch status shows queued, running, completed, infeasible, and failed children.
-- Standalone depot scenarios continue to work.
+Toronto-to-Detroit is the next corridor after this one is proven. Both directions across a border are distinct tariff scopes; do not infer a tariff from region labels or from a carrier's country alone.
 
-### Phase 5 Reconciliation and coordinated publication
+## Modeling rules and financial truth
 
-Deliverables:
+- **Border identity:** Store country codes on facilities (and any applicable goods-origin attribute). Determine a shipment's border crossing from the source and destination of the actual assigned flow. A US-origin shipment to a US depot should not incur a Mexico-to-US tariff merely because a carrier or contract is Mexican.
+- **Tariff basis:** The first release uses an explicit dollars-per-case assumption. Model it as a separate landed-cost component, not a change to the published carrier rate. A later percentage tariff requires declared goods value with currency and provenance. Label synthetic assumptions clearly.
+- **Optimization and reporting:** The solver and result calculation must consume the same effective tariff rule. Tariff expense must reconcile exactly to charged assigned cases. Persist freight, fuel/accessorial, tariff, and unmet-demand penalty separately. Show the tariff's effect even when no rerouting occurs. The solver uses a linear full-load freight estimate while reported contract charges are load-based; disclose that approximation and keep the tariff component exact. Do not present an arbitrary lane-cost multiplier as a tariff.
+- **Flow and capacity:** Never invent throughput or lane capacity. A scenario capacity limit may reduce the published ceiling. An increase above the published ceiling requires an explicit new-capacity scenario capability and should not silently mutate the published snapshot.
+- **Geographic scope:** A scenario may name one or more focus regions. The first tariff case focuses on Texas but must admit permitted Monterrey supply. Include participating DCs, eligible lanes, and all demand competing for their daily capacity in one solve; every DC capacity limit is applied once per day. List dependency regions affected outside the chosen focus. A filtered map must not launch independent regional solves or hide external impacts. A promotion validates the full network result.
+- **Demand conservation:** Distinguish published demand, scenario-added demand, assigned demand, released cases pending reassignment, and unmet demand. A release forbids the original depot for the affected order/date but leaves its demand intact. Reassign only to explicitly eligible depots with feasible delivery paths and capacity; otherwise report unmet. The current solver optimizes DC-to-depot sourcing for fixed depot demand, so customer-to-depot reassignment needs an explicit model extension.
+- **Date grain:** Network flow and depot routes share exact service dates. A selected horizon must lie within the published demand and capacity version coverage, or a new input version must be generated. No silent extrapolation. Route results for a date use that date's orders and rated contracts; weekday-only baselines and fixed-date defaults cannot stand in for a dated result.
+- **Network cost:** Use governed contracts where covered and visibly label planning fallback where not. Keep linehaul, tariff, and local delivery costs separate so depot reconciliation does not double count them.
+- **Scenario lineage:** A branch needs a defined source baseline revision and comparison target. Changes to the source after branching must not silently change a solved result. Save effective rules and rate references used for each run. A new scenario after promotion must solve against the accepted baseline's flow rather than silently reverting to the original seed.
 
-- Aggregate child routes, costs, service, carrier allocation, and exceptions.
-- Compare targets with detailed results.
-- Add network reconciliation status and variance views.
-- Prevent publication when required children are stale or incomplete.
-- Publish immutable parent and child revision references.
-- Display the published network result on the overview page.
+## Implementation sequence
 
-Acceptance criteria:
+### 1. Preserve the delivered network slice and correct its lineage
 
-- Depot totals reconcile to facility, region, and network totals.
-- Linehaul and local delivery costs are not double counted.
-- A child change marks reconciliation stale.
-- Published results retain exact input-plan and rate-book versions.
-- The primary demo narrative completes without manual data correction.
+The seven-region data, fixed-capacity network solver, cross-border tariff, governed rate audit, and five-tab comparison are the starting point. Keep their cost and capacity checks. Replace latest-result-only storage with immutable network run revisions; retain the existing scenario-level result endpoint as a latest-run compatibility view. Introduce immutable baseline revisions and a persisted active-baseline pointer. A new scenario reads that pointer; a scenario's source revision and each run's input/rate snapshots remain fixed. Add a selectable horizon (28 days by default, limited to published input coverage) and a list of focus regions. Solve the combined dependency graph once for every date, respecting each shared DC capacity pool.
 
-### Phase 6 Demo hardening
+Fix depot deep links and route-tab navigation early: carry run/baseline revision, depot, and date in durable URL state, and return to the exact parent Plan flow view. On a parent rerun, preserve the old run and its child plans while flagging them as tied to the earlier revision. Update the stale current-state copy in the UI only when those links actually work.
 
-Deliverables:
+### 2. Build dated depot inputs and optimized defaults
 
-- Add fixture and Lakebase-backed development paths.
-- Add end-to-end tests for the primary narrative.
-- Add scale tests for network aggregation and parallel child runs.
-- Add loading, empty, partial, stale, infeasible, and failure states.
-- Add data lineage and freshness indicators.
-- Validate responsive behavior and dense-map performance.
-- Update deployment resources and documentation.
+Materialize an order/customer/depot/service-date target for every assigned delivery from the parent network run. Extend route input and result contracts with exact service dates, parent run ID, scenario revision, and deterministic order IDs; stop using weekday as the unique plan key. Adapt the route solver to run against those network-derived inputs in local demo mode as well as the persistent backend. Optimize and persist a default result for every date of the opened depot plan set, prioritizing the selected date and tracking per-day progress and failures. A date with no assigned deliveries has an explicit empty result and zero cases.
 
-Acceptance criteria:
+The date picker allows every day of the parent horizon. A named depot route scenario spans that horizon; on one day, reuse the existing route change-card UX to branch from that day's optimized default, run another actual solve, and select the revised result for that scenario. Untouched days continue to select their defaults. Store route rows and charge details by plan-set/day/result revision and store the scenario's per-date result references separately; calculate horizon KPIs from those references. Support comparing a changed day with its default and showing the parent network target alongside it. Avoid a single blob of 28 copied route plans for each scenario.
 
-- The frontend production build passes.
-- Backend and solver tests pass.
-- The complete workflow is repeatable from a clean synthetic seed.
-- Map interaction remains responsive at the target facility and lane count.
-- Run failures can be diagnosed from persisted stages and logs.
+### 3. Add feedback and network reassignment
 
-## Testing strategy
+Add a release-for-reassignment change tied to a stable order/customer and service date. Keep the published demand record unchanged and carry the release as a scenario overlay. Extend network allocation beyond fixed customer-to-depot assignments: eligible destination depots and delivery connections must be known, destination depot capacity must be enforced, and the solver must either reassign the cases or show them as unmet. Scenario-added deliveries likewise add explicit demand before solving. A route-only change refreshes local results and rollups; an assignment or date-volume change creates a new parent network run and selectively invalidates affected depot-days. Handle a requested move between service dates as changes to both dates.
 
-### Data tests
+Persist pending changes and reconciliation results. Show conservation from required demand through network-assigned or network-unmet cases, then from assigned cases through routed or route-unserved cases. Keep pending releases visible until a parent rerun resolves them. Preserve child edits when compatible; surface conflicts when a new network assignment changes an edited order or date. Roll up local route cost beside linehaul and tariff cost with explicit charge categories.
 
-- Referential integrity across regions, facilities, markets, lanes, depots, and customers.
-- Demand reconciliation across all hierarchy levels.
-- Capacity and assigned-flow unit compatibility.
-- No assigned flow above supplied capacity.
-- Effective-date and contract coverage validation.
-- Deterministic synthetic generation.
+### 4. Add promotion, reset, and a repeatable demo clock
 
-### Solver tests
+Add a two-step proposal/acceptance flow for one solved run revision. Acceptance checks global flow conservation, capacity, effective rates, and unresolved network changes; it does not require completed child routes. Store a full accepted baseline snapshot and its route coverage, then atomically switch the active pointer used by the main network page and future scenarios. Keep previous baselines, runs, and child plans addressable. Reset switches the pointer to the original seeded snapshot; it does not delete history.
 
-- Balanced feasible network.
-- Insufficient lane capacity.
-- Insufficient facility capacity.
-- Disconnected market or depot.
-- Disabled facility or lane.
-- Alternate path selection.
-- Unmet-demand penalty behavior.
-- Transparent and repeatable rated costs.
+Generate a fresh synthetic input snapshot from a configurable demo anchor when explicitly requested or first seeded. Keep its demand, capacity, tariff/rate dates, and depot order dates aligned and deterministic. Do not shift existing snapshots as real time passes. The nav as-of label reads the active data snapshot's publication date. A new synthetic snapshot may have a different horizon, but an existing run and all its child dates remain pinned.
 
-### Synchronization tests
+### 5. Expand network design and robustness
 
-- Initial child generation.
-- Parent change affecting one child.
-- Parent change affecting many children.
-- Compatible rebase with child edits.
-- Conflicting parent and child edits.
-- Stale reconciliation after a child rerun.
-- Publication with current children.
-- Publication blocked by stale or failed children.
+Add facility relocation/opening and territory changes with explicit topology, distance, capacity, and customer-assignment effects. Run repeatable tariff, demand, capacity, outage, and travel-time shocks against a chosen network design. Cross-depot and cross-date route resource optimization, including shared vehicles, driver rest, and weekly commitments, is a later extension; daily route solves and their 28-day rollup are the agreed first increment.
 
-### End-to-end tests
+## Acceptance checks
 
-- Open baseline network and drill into a depot.
-- Create and solve the Southeast network scenario.
-- Generate and run affected depot plans.
-- Inspect carrier costs and charge lines in a child result.
-- Reconcile and publish the network scenario.
-- Compare the published scenario against baseline on the network map.
+- The Monterrey/Texas scenario visibly reallocates cases when the tariff changes and has an explainable binding-capacity case.
+- Tariff expense in totals equals the sum of tariff charges on qualifying assigned flows; no domestic flow receives the charge.
+- Each scenario flow stays within its dated lane and facility capacities; shared DC capacity is enforced once even when several focus regions use it. Unmet demand remains explicit.
+- Rate audit identifies the freight contract or fallback independently of the tariff rule.
+- Baseline and scenario comparisons use the same horizon, units, and metric definitions; map lane selections explain material changes.
+- From a solved scenario, opening a depot and returning through Network restores the same network run and tab after navigation or reload. Switching depot tabs keeps its parent run and selected service date.
+- A 28-day parent run yields 28 addressable daily slots for an opened depot. A shorter or longer valid selected horizon yields exactly that many slots. Each nonempty day has an actual optimized default result or a visible pending/failure state, and any date can be optimized independently.
+- A selected day's route scenario changes only that day unless a deliberate date move changes two days. Untouched dates retain optimized defaults; horizon KPI totals equal the sum of the selected daily results. Repeated daily solves preserve revision history.
+- Route input cases equal the network run's customer/depot/date assignment. A release leaves total required demand unchanged, reassigns within eligible capacity when possible, and otherwise appears as unmet. Adding a delivery changes scenario demand explicitly. No released or added order appears twice.
+- A parent rerun keeps the old result inspectable, marks only affected depot-days stale, and never silently overwrites child-owned edits. Route-only changes do not rerun network flow.
+- A solved network run can be proposed and accepted with incomplete daily-route coverage. The main page then uses the accepted network snapshot and displays coverage clearly. An unresolved release or invalid global flow blocks acceptance. Reset restores the original baseline while preserving the accepted result and scenarios.
+- Synthetic generation with the same seed and anchor is reproducible. A deliberate date refresh changes input version IDs and effective dates consistently, while existing runs and links stay pinned. Backend, solver, and end-to-end checks cover lineage, daily route solves, release/reassignment, promotion, and reset.
 
-## Principal risks and mitigations
+## Agreed first-release decisions
 
-### Grain and unit mismatch
+- Tariff input is dollars per case. Show it as its own cost component, with its border direction and effective dates.
+- New network scenarios start from the active published baseline revision. Existing scenarios and solved runs stay pinned to their source revision. Branching from a saved nonbaseline scenario remains later work.
+- A network scenario can focus on one or more regions, but the solver includes competing external demand and supply so each DC's daily capacity is counted once. Reallocation may cross the Mexico/US border.
+- Network-level comparison is solved before depot route generation. Each opened depot then has a plan for every date in the chosen network horizon, 28 days by default. Every nonempty date gets a stored optimized default; a selected date may have its own optimized route scenario. Daily solves are independent, with no cross-date or cross-depot resource optimization in this increment.
+- Remove shipment means release for reassignment while preserving required cases. Explicit cancellation is separate. Additions and releases feed a new parent network run; local-only route changes do not.
+- Network promotion is a two-step proposal and acceptance of a full validated run. It may occur before all child depot-days are optimized, with route coverage displayed. Resetting the active baseline returns to the immutable original story and retains history.
+- Demo dates derive from a frozen, refreshable synthetic input snapshot rather than a permanently fixed September 2026 window or the viewer's wall clock.
 
-Network plans operate at facility and market flow grain while depot plans operate at routes and stops. Use explicit units, daily buckets, and parent target records. Never infer conversions from labels.
+## Next-increment data and API contract
 
-### Cyclic parent-child updates
+- Extend network scenario creation and persistence with source baseline revision, selected horizon, and focus region IDs. Keep existing published demand/capacity version references. The existing run action should return an immutable run ID and revision; a run-ID read path must retrieve historical results after later reruns.
+- Persist baseline revisions and one active-baseline pointer. Acceptance stores the complete flow snapshot and its source/run references. The network overview reads the active pointer by default; comparison endpoints can still request the original or a named historical revision. Add proposal, acceptance, reset, and baseline-history actions with revision checks so two simultaneous accepts cannot silently overwrite each other.
+- Persist network customer/depot/date assignments and release/addition overlays at order grain, alongside existing lane/date flow and rate details. Record eligible reassignment depots, resolution status, and any unmet cases. Validate globally before accepting a regional proposal.
+- Add a depot plan-set read/create operation keyed by parent run (or accepted baseline revision) and depot, horizon-wide depot route scenarios with per-date selected-result references, and daily result/optimize operations keyed by exact service date. Persist default and scenario result revisions, status, parent target, routes, stops, charge lines, and stale/conflict state. The API must not substitute weekday routes for an exact-date request.
+- Network and depot navigation encodes the parent revision, depot, and date in the URL. Existing standalone route pages may remain reachable, but newly created route scenarios in this workflow always attach to a parent network run or baseline revision. Scope route scenario lists and comparisons to that parent and depot.
+- The local demo path must execute the actual date-specific route solver and save its outputs; prepared stub results can remain for legacy examples but cannot satisfy child-plan generation. Use durable queued/running/failed state when background route optimization outlives a request. Preserve the same domain contracts across stub and persistent backends.
 
-Automatic two-way synchronization can make results non-reproducible. Use immutable revisions, owned fields, explicit rebase, and explicit reconciliation.
+The implementation owner should reconcile network, route, and rate field names before parallel work, then verify the full demo from tariff solve through depot-day optimization, release, acceptance, and reset.
 
-### Cost double counting
+## Parallel implementation workstreams (September 30, 2026)
 
-Linehaul and local delivery costs can overlap. Classify every charge by network segment and roll up from canonical charge lines.
+The first wave implements prerequisites that are independent enough to build concurrently. It does not claim that the entire hierarchy is already operational. Work in the current dirty workspace, preserve existing changes, and do not commit, change local app ports, restart other apps, or deploy resources.
 
-### Map density
+| Workstream | First-wave deliverable | Write scope |
+| --- | --- | --- |
+| A — Network run history | Immutable run IDs, complete input/output snapshots, historical reads, and backward-compatible latest-result reads | Backend network models, network scenario service/repository, network routes, network persistence migrations, focused new backend tests |
+| B — Dated depot solver | Pure Python customer/date materialization and actual local OR-Tools route optimization using caller-supplied fleet capacity | New route_opt/depot_planning module and focused new solver tests; no backend or frontend edits |
+| C — Durable navigation | Preserve parent scenario/run/depot/date through depot tabs, runs, and Network return; load the pinned network result on return | Frontend network links/context, layout, affected depot/scenario pages, frontend API types/queries, focused navigation tests |
+| Owner — Integration | Review the contracts below, reconcile returned patches, then connect immutable network targets to stored depot plan sets and daily route APIs | This plan and subsequent integration files; do not overlap active worker scopes |
 
-The underlying dataset can be large, but the national map must remain readable. Aggregate by facility and lane, filter by hierarchy and metric, and reveal delivery detail only after drill-down.
+### Shared first-wave contracts
 
-### Split persistence
+- Add optional run_id to NetworkScenarioResult for compatibility with legacy results; every newly solved run must have a nonempty immutable ID. Existing scenario-level run/result endpoints remain usable. GET /api/network/runs/{run_id} returns the NetworkScenarioResult for that exact historical run.
+- The network scenario service exposes get_run_snapshot(run_id) for internal child-plan generation. Its snapshot contains scenario, result, network_rows (the exact input rows), flow_rows, and cost_rows. Store those snapshots by run ID, independently of the mutable latest-result row, so editing or deleting the scenario cannot destroy a child's source.
+- The pure depot engine takes network_rows, assigned flow_rows, depot ID, exact service date, and an explicit supplied fleet. It returns that date's materialized targets plus Route/Kpis-compatible solved output, assigned/routed/unserved cases, and diagnostics. Fleet capacity must not grow implicitly to make the result feasible. Preserve zero assigned cases and do not copy the first Tuesday to other dates. Date-level defaults may use independent solves; no cross-depot/date optimization.
+- Depot links retain networkScenario, networkRun, depot, and date in URL state. Returning to /network/scenarios/{scenario_id}/flow?run={run_id} loads the historical run through the run-ID read path. Legacy links without a run ID still work, but navigation fixes alone must not label published depot routes as scenario-derived optimization.
 
-Unity Catalog and Lakebase serve different purposes. Keep governed inputs and published aggregates in Unity Catalog; keep mutable workflow state in Lakebase; store immutable IDs linking the two.
+### Dependent next wave and explicit exclusions
 
-### Interactive solve duration
+After these foundations pass their focused checks, the owner connects full-horizon depot plan sets, background default solves, named horizon-wide route scenarios and per-date overrides, and partial-coverage rollups. Baseline proposal/accept/reset follows immutable history; dynamic fixtures and selectable/multi-region horizons must preserve snapshot coverage and shared capacity. These remain in scope for implementation, but are not independent worker tasks in the first wave.
 
-Network and multi-depot solves may exceed a request lifecycle. Use durable runs, parallel child tasks, stage-level progress, retry-safe writes, and resumable reconciliation.
+Release-for-reassignment and additions follow the explicit customer-to-depot eligibility extension, demand-conservation checks, and child invalidation rules. Do not fake reassignment by reducing total demand or by changing only the source DC. Cross-date/cross-depot shared-resource optimization and robustness experiments remain later extensions.
 
-### Misleading synthetic data
+## Second parallel wave: stored depot horizons and daily overrides
 
-Randomly generated KPIs can contradict one another. Generate demand, capacity, flows, routes, and costs through a single reconciled pipeline and validate invariants before seeding the application.
+Implementation status (September 30, 2026): all three workers have completed this wave. Owner verification passed 21 combined repository/API/job/service/history/dated-engine tests (including actual daily solver execution), the production frontend build, and `git diff --check`. Workers also reported two passing mocked horizon UI tests. The running local backend health check passes. A live browser walkthrough against the real backend remains unverified; do not treat mocked UI tests as proof of that integration. No other local applications were restarted or changed during owner verification.
 
-## Default implementation choices
+Wave one is implemented and its combined checks pass. Wave two integrates the dated solver into the local app for a pinned solved network run. Original-baseline plan sets follow the baseline-revision registry; legacy unpinned depot pages remain usable. Network-demand additions/releases, customer reassignment, carrier sourcing changes, promotion/reset, and multi-region/date fixture changes remain subsequent work. This wave models route operating assumptions without changing the parent's assigned demand.
 
-Unless requirements change, implementation should proceed with these defaults:
+| Worker | Deliverable | Exclusive write scope |
+| --- | --- | --- |
+| A — Depot storage and REST | Validated daily-plan contracts, transactional plan-set repository, API routes, migrations, and focused repository/endpoint tests | New backend/depot_plan_models.py, services/depot_plan_repository.py, routes/depot_plans.py; routes/api.py; services/lakebase_migrations.py; new storage/API tests |
+| B — Daily execution | Full-horizon generation, background actual solves, date-specific override revisions, selection/reset, and rollups | New backend/services/depot_plans.py, services/depot_plan_jobs.py if useful; backend/main.py for recovery; new service/job tests. No edits to A's models/repository/routes or frontend |
+| C — Depot horizon UX | Parent-linked date selection, stored default/scenario maps, operational override modeling, statuses, partial coverage, and API hooks | Frontend API files; new DepotPlanWorkspace/date components; BaselinePage/ScenarioBuilderPage integration; route context/navigation as needed; new focused e2e tests |
+| Owner | Shared-contract review and cross-stream integration/verification | This document and later integration corrections after worker handoff |
 
-- Daily network flow buckets over four weeks.
-- Detailed child scenarios for seven service days.
-- Cases as the initial normalized demand unit, with unit metadata retained for future extension.
-- Affected-depot child generation by default.
-- Fixed external demand and capacity snapshots within a scenario revision.
-- Explicit unmet demand instead of invented capacity.
-- Network linehaul and depot delivery costs reported separately and together.
-- One consolidated React and FastAPI application.
-- Unity Catalog for governed data and Lakebase for interactive state.
-- No live incident response or generative AI in the initial implementation.
+### Frozen interface for this wave
 
-## Definition of done
+- Plan status values are queued, running, completed, infeasible, failed. Infeasible is a finished solve with explicit unserved cases and retained routes/diagnostics, not an invented successful delivery. A zero-assigned date has a completed empty result. No unknown or failed date is counted as zero-cost delivery coverage.
+- PlanSet response: plan_set_id, parent_run_id, depot (existing Depot shape), horizon_start, horizon_end, route_scenario_id (currently requested selection), scenarios [{route_scenario_id, scenario_name, is_default}], days [DaySummary], coverage {total_days, solved_days, queued_days, running_days, failed_days}, kpis (existing Kpis shape or null), is_partial, resource_source. Default scenario ID is 'default'; named scenarios reference untouched daily defaults without duplicating them.
+- DaySummary: service_date, status, default_status, assigned_cases, routed_cases/unserved_cases/total_cost (nullable before result), is_overridden, selected_result_id (nullable), error (nullable). DayDetail: plan_set_id, service_date, route_scenario_id, default_status, override_status (nullable), default_result (nullable), selected_result (nullable), error (nullable).
+- DayResult: result_id, service_date, status, routes (existing Route shape), kpis (existing Kpis shape), assigned_cases, routed_cases, unserved_cases, diagnostics, matrix_source, created_at. Persist all previous results; a named scenario's selected result changes only after its new solve finishes. Pending override state is visible while its prior selected/default result remains inspectable.
+- Override request: route_scenario_id (must be named, not 'default'), driver_delta (default 0), allow_overtime, max_route_minutes, max_stops_per_route, new_depot_location (all optional except scenario ID). These are date-specific operational changes. Added/removed demand and release requests are not accepted by this endpoint. Snapshot supplied fleet once per plan; any fixture fleet profile is explicitly labeled synthetic and fixed, not calculated to guarantee demand feasibility.
+- POST /api/network/runs/{run_id}/depots/{depot_id}/plans with optional priority_date returns PlanSet and queues all dates in the parent's actual horizon. Creation is idempotent for that run/depot. GET /api/depot-plans/{plan_set_id}?route_scenario_id=default returns its current summary/rollup. GET /api/depot-plans/{plan_set_id}/days/{service_date}?route_scenario_id=default returns DayDetail.
+- POST /api/depot-plans/{plan_set_id}/scenarios with scenario_name creates a named horizon-wide scenario. POST /api/depot-plans/{plan_set_id}/days/{service_date}/optimize with OverrideRequest queues a date solve and returns DayDetail. DELETE /api/depot-plans/{plan_set_id}/scenarios/{route_scenario_id}/days/{service_date} restores that scenario's selection to the stored default without deleting history.
+- Service methods: get_or_create_plan(run_id, depot_id, priority_date=None), get_plan(plan_set_id, route_scenario_id='default'), get_day(plan_set_id, service_date, route_scenario_id='default'), create_scenario(plan_set_id, scenario_name), optimize_day(plan_set_id, service_date, request), reset_day_override(plan_set_id, route_scenario_id, service_date), recover_pending_plans(). Routes call the service; workers do not change each other's files.
+- Repository methods: find(parent_run_id, depot_id), create(record), get(plan_set_id), mutate(plan_set_id, callback), list_pending(). Records are JSON-compatible dictionaries. mutate atomically locks a record, applies a callback in place, and returns a detached copy. Use thread locks for stub storage and row locking/transactions for Lakebase; do not invoke a solver while holding a repository lock. Repository uniqueness handles simultaneous create requests. Backend model module exposes PlanSet, DaySummary, DayDetail, DayResult, Coverage, RouteScenario, CreatePlanRequest, CreateRouteScenarioRequest, and OverrideRequest with the above fields.
+- The UI uses the new workspace on existing /analyze and /scenario surfaces only when networkRun is present. Carry depotPlan and routePlanScenario alongside existing parent/depot/date URL context. Legacy pages continue to use their original APIs. New workspace never calls weekday baseline APIs for a pinned daily plan. Date switching does not discard unsaved edits; show default versus selected daily solution and partial horizon totals while background work continues.
 
-The network planning capability is complete when a planner can:
-
-1. Open a nationwide baseline using published demand and capacity plans.
-2. Understand flow, utilization, service, and cost from region to route detail.
-3. Create and solve a multi-DC network flow scenario without modifying upstream plans.
-4. Generate and execute the affected depot scenarios.
-5. Inspect detailed private-fleet and carrier costs with applied rate rules.
-6. Reconcile depot results into the network result with visible variances.
-7. Resolve stale plans or conflicts explicitly.
-8. Publish a reproducible coordinated plan and compare it with baseline.
+Workers use deterministic mocked or small injected snapshots for focused tests and do not restart other local apps or choose a Databricks profile. The owner verifies the combined backend/frontend slice before claiming that full-horizon planning is integrated.

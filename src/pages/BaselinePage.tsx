@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Loader2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { Loader2 } from 'lucide-react'
 import type { KpiDeltas, Kpis } from '@/api/types'
 import CarrierCostAnalysis from '@/components/CarrierCostAnalysis'
 import CostBreakdown from '@/components/CostBreakdown'
@@ -13,6 +13,7 @@ import MapView from '@/components/MapView'
 import RouteSidebar from '@/components/RouteSidebar'
 import ScenarioCombobox from '@/components/ScenarioCombobox'
 import TransportationAllocation from '@/components/TransportationAllocation'
+import DepotPlanWorkspace from '@/components/DepotPlanWorkspace'
 import {
   useBaselineKpis,
   useBaselineNetwork,
@@ -21,8 +22,17 @@ import {
   useRecentScenarios,
   useScenarioResults,
 } from '@/api/queries'
+import { useRouteContext } from '@/state/useRouteContext'
+import { readParentRouteContext } from '@/lib/networkLinks'
 
 export default function BaselinePage() {
+  const [searchParams] = useSearchParams()
+  return searchParams.get('networkRun')
+    ? <DepotPlanWorkspace mode="analyze" />
+    : <LegacyBaselinePage />
+}
+
+function LegacyBaselinePage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [depotId, setDepotId] = useState(
     () => searchParams.get('depot') || 'DPT_NORTH',
@@ -37,6 +47,8 @@ export default function BaselinePage() {
   const primaryScenarioId = searchParams.get('primary') || 'baseline'
   const comparisonScenarioId = searchParams.get('compare') || ''
 
+  const setFacility = useRouteContext((state) => state.setFacility)
+  const setParent = useRouteContext((state) => state.setParent)
   function updateSelection(primary: string, comparison: string) {
     const next = new URLSearchParams(searchParams)
     if (primary !== 'baseline') next.set('primary', primary)
@@ -59,6 +71,21 @@ export default function BaselinePage() {
       ? comparisonScenarioId
       : undefined,
   )
+
+  useEffect(() => {
+    const depot = depots.data?.find((row) => row.depot_id === depotId)
+    setFacility({
+      facilityId: depotId,
+      facilityName: depot?.name ?? depotId,
+      facilityType: 'depot',
+    })
+  }, [depotId, depots.data, setFacility])
+
+  useEffect(() => {
+    const parent = readParentRouteContext(searchParams)
+    if (parent.networkScenario) setParent(parent)
+  }, [searchParams, setParent])
+
   const error =
     depots.error ?? days.error ?? network.error ?? kpis.error ?? scenarios.error ??
     primaryResult.error ?? comparisonResult.error
@@ -70,19 +97,6 @@ export default function BaselinePage() {
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-      {safeNetworkReturn(searchParams.get('networkReturn')) && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2">
-          <Link
-            to={safeNetworkReturn(searchParams.get('networkReturn')) as string}
-            className="inline-flex items-center gap-2 text-xs font-medium text-primary hover:underline"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" /> Back to network baseline
-          </Link>
-          <span className="text-xs text-muted-foreground">
-            Depot analysis · supplied by network plan
-          </span>
-        </div>
-      )}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex flex-wrap items-end gap-3">
           <ScenarioCombobox
@@ -270,12 +284,6 @@ function deliveryDayFromDate(value: string | null) {
   const parsed = new Date(`${value}T12:00:00`)
   if (Number.isNaN(parsed.valueOf())) return null
   return parsed.toLocaleDateString('en-US', { weekday: 'long' })
-}
-
-function safeNetworkReturn(value: string | null) {
-  return value?.startsWith('/network') || value?.startsWith('/dc/')
-    ? value
-    : null
 }
 
 function scenarioName(id: string, scenarios: { scenario_id: string; scenario_name: string }[]) {

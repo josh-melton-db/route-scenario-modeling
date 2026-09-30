@@ -6,7 +6,7 @@ from typing import Iterable
 
 from .postgres import PostgresService
 
-MIGRATION_VERSION = "2026_09_21_network_scenarios_v7"
+MIGRATION_VERSION = "2026_09_30_depot_plan_sets_v11"
 
 
 def _statements(postgres: PostgresService) -> Iterable[str]:
@@ -287,7 +287,9 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
     """
     yield f"""INSERT INTO {table("carriers")} (carrier_id, carrier_name) VALUES
         ('GL_LOGISTICS', 'Great Lakes Logistics'),
-        ('MIDWEST_EXPRESS', 'Midwest Express')
+        ('MIDWEST_EXPRESS', 'Midwest Express'),
+        ('CAN_NORTHLINK', 'Northern Link Logistics'),
+        ('MX_TRANSPORTES', 'Transportes del Norte')
         ON CONFLICT (carrier_id) DO NOTHING
     """
     yield f"""INSERT INTO {table("carrier_contracts")} (
@@ -296,7 +298,9 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
     ) VALUES
         ('GL_STANDARD_2026', 'GL_LOGISTICS', 'GL Standard 2026', 12, 4.25, 45, 350, 12, '2026-01-01', '2026-12-31'),
         ('GL_PRIORITY_2026', 'GL_LOGISTICS', 'GL Priority 2026', 20, 5.10, 55, 425, 10, '2026-01-01', '2026-12-31'),
-        ('MW_SPOT_2026', 'MIDWEST_EXPRESS', 'Midwest Spot 2026', 8, 4.70, 50, 400, 14, '2026-01-01', '2026-12-31')
+        ('MW_SPOT_2026', 'MIDWEST_EXPRESS', 'Midwest Spot 2026', 8, 4.70, 50, 400, 14, '2026-01-01', '2026-12-31'),
+        ('CAN_STANDARD_2026', 'CAN_NORTHLINK', 'Canada Standard 2026', 12, 4.85, 52, 410, 11, '2026-01-01', '2026-12-31'),
+        ('MX_STANDARD_2026', 'MX_TRANSPORTES', 'Mexico Standard 2026', 12, 4.60, 48, 390, 13, '2026-01-01', '2026-12-31')
         ON CONFLICT (contract_id) DO NOTHING
     """
     yield f"""INSERT INTO {table("contract_versions")} (
@@ -328,9 +332,27 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
         origin_endpoint_id, origin_endpoint_type, destination_endpoint_id,
         destination_endpoint_type, priority, flat_rate,
         rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding
+    ) VALUES
+        ('MX_STANDARD_2026_LANE_MONTERREY_DALLAS', 'MX_STANDARD_2026_V1',
+         'Monterrey DC → Dallas depot committed corridor',
+         'DC_MEXICO_MONTERREY', 'DPT_TOLA_DALLAS', 'LINEHAUL',
+         'DC_MEXICO_MONTERREY', 'facility', 'DPT_TOLA_DALLAS', 'facility',
+         1000, 398.23, 0, 0, 1, 0, 'exact'),
+        ('MX_STANDARD_2026_LANE_MONTERREY_SAN_ANTONIO', 'MX_STANDARD_2026_V1',
+         'Monterrey DC → San Antonio depot committed corridor',
+         'DC_MEXICO_MONTERREY', 'DPT_TOLA_SAN_ANTONIO', 'LINEHAUL',
+         'DC_MEXICO_MONTERREY', 'facility', 'DPT_TOLA_SAN_ANTONIO', 'facility',
+         1000, 398.23, 0, 0, 1, 0, 'exact')
+        ON CONFLICT (rule_id) DO NOTHING
+    """
+    yield f"""INSERT INTO {table("contract_lane_rates")} (
+        rule_id, version_id, lane_name, origin, destination, lane_type,
+        origin_endpoint_id, origin_endpoint_type, destination_endpoint_id,
+        destination_endpoint_type, priority, flat_rate,
+        rate_per_mile, rate_per_stop, included_stops, minimum_charge, mileage_rounding
     )
         SELECT contract_id || '_LANE_REGIONAL', contract_id || '_V1',
-               'Great Lakes regional fallback', '*', '*', NULL,
+               'Regional fallback rate', '*', '*', NULL,
                NULL, NULL, NULL, NULL, 10,
                GREATEST(75, minimum_charge * 0.28), rate_per_mile * 1.05,
                rate_per_stop, 0, minimum_charge * 1.1, 'up_to_mile'
@@ -707,6 +729,30 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
         )
     """
     yield f"""
+        CREATE TABLE IF NOT EXISTS {table("network_run_snapshots")} (
+            run_id TEXT PRIMARY KEY,
+            scenario_id TEXT NOT NULL,
+            scenario_payload JSONB NOT NULL,
+            result_payload JSONB NOT NULL,
+            network_rows_payload JSONB NOT NULL,
+            flow_rows_payload JSONB NOT NULL,
+            cost_rows_payload JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("depot_plan_sets")} (
+            plan_set_id TEXT PRIMARY KEY,
+            parent_run_id TEXT NOT NULL,
+            depot_id TEXT NOT NULL,
+            payload JSONB NOT NULL,
+            has_pending BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (parent_run_id, depot_id)
+        )
+    """
+    yield f"""
         CREATE TABLE IF NOT EXISTS {table("network_flow_results")} (
             scenario_id TEXT NOT NULL,
             revision INTEGER NOT NULL,
@@ -715,6 +761,9 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             lane_type TEXT NOT NULL,
             assigned_units INTEGER NOT NULL,
             total_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+            freight_total DOUBLE PRECISION NOT NULL DEFAULT 0,
+            tariff_total DOUBLE PRECISION NOT NULL DEFAULT 0,
+            tariff_rule_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
             rate_source TEXT,
             contract_id TEXT,
             contract_version_id TEXT,
@@ -722,6 +771,9 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             PRIMARY KEY (scenario_id, service_date, lane_id)
         )
     """
+    yield f"ALTER TABLE {table('network_flow_results')} ADD COLUMN IF NOT EXISTS freight_total DOUBLE PRECISION NOT NULL DEFAULT 0"
+    yield f"ALTER TABLE {table('network_flow_results')} ADD COLUMN IF NOT EXISTS tariff_total DOUBLE PRECISION NOT NULL DEFAULT 0"
+    yield f"ALTER TABLE {table('network_flow_results')} ADD COLUMN IF NOT EXISTS tariff_rule_ids JSONB NOT NULL DEFAULT '[]'::jsonb"
     yield f"""
         CREATE TABLE IF NOT EXISTS {table("network_flow_charge_details")} (
             scenario_id TEXT NOT NULL,
@@ -748,6 +800,8 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
     yield f"CREATE INDEX IF NOT EXISTS editor_session_rows_page_idx ON {table('editor_session_rows')} (session_id, entity_type, operation, row_id)"
     yield f"CREATE INDEX IF NOT EXISTS editor_audit_events_session_idx ON {table('editor_audit_events')} (session_id, created_at)"
     yield f"CREATE INDEX IF NOT EXISTS network_scenarios_updated_idx ON {table('network_scenarios')} (updated_at DESC)"
+    yield f"CREATE INDEX IF NOT EXISTS network_run_snapshots_scenario_idx ON {table('network_run_snapshots')} (scenario_id, created_at DESC)"
+    yield f"CREATE INDEX IF NOT EXISTS depot_plan_sets_pending_idx ON {table('depot_plan_sets')} (has_pending, created_at)"
     yield f"CREATE INDEX IF NOT EXISTS network_flow_results_lane_idx ON {table('network_flow_results')} (scenario_id, lane_id)"
 
 

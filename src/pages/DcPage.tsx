@@ -1,15 +1,19 @@
-import { useMemo } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Building2, ExternalLink, Loader2 } from 'lucide-react'
+import { useEffect, useMemo } from 'react'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Building2, ExternalLink, Loader2 } from 'lucide-react'
 import EmptyState from '@/components/EmptyState'
 import ErrorState from '@/components/ErrorState'
 import KpiCard from '@/components/KpiCard'
 import { useNetworkOptions, useNetworkOverview } from '@/api/queries'
 import type { NetworkOverviewParams } from '@/api/types'
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format'
+import { buildRouteWorkspaceHref, readParentRouteContext } from '@/lib/networkLinks'
+import { useRouteContext } from '@/state/useRouteContext'
 
 export default function DcPage() {
   const { facilityId = '' } = useParams()
+  const [searchParams] = useSearchParams()
+  const parentContext = readParentRouteContext(searchParams)
   const options = useNetworkOptions()
 
   const context = useMemo<NetworkOverviewParams | null>(
@@ -28,6 +32,23 @@ export default function DcPage() {
     [options.data],
   )
   const overview = useNetworkOverview(context)
+  const dc = useMemo(
+    () =>
+      overview.data?.facilities.find(
+        (row) =>
+          row.facility_id === facilityId && row.facility_type === 'distribution_center',
+      ) ?? null,
+    [facilityId, overview.data],
+  )
+  const setFacility = useRouteContext((state) => state.setFacility)
+  useEffect(() => {
+    if (!dc) return
+    setFacility({
+      facilityId: dc.facility_id,
+      facilityName: dc.facility_name,
+      facilityType: 'distribution_center',
+    })
+  }, [dc, setFacility])
 
   if (options.error) {
     return <ErrorState title="Could not load network options" error={options.error} />
@@ -43,9 +64,6 @@ export default function DcPage() {
     )
   }
 
-  const dc = overview.data.facilities.find(
-    (row) => row.facility_id === facilityId && row.facility_type === 'distribution_center',
-  )
   const depots = overview.data.facilities.filter(
     (row) => row.parent_facility_id === facilityId,
   )
@@ -72,14 +90,7 @@ export default function DcPage() {
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
       <header>
-        <Link
-          to="/network"
-          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Network overview
-        </Link>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="rounded-md bg-primary/15 p-2 text-primary">
             <Building2 className="h-4 w-4" />
           </div>
@@ -104,6 +115,33 @@ export default function DcPage() {
         <KpiCard label="On-time outlook" value={formatPercent(dc.on_time_pct)} />
       </div>
 
+      <section className="rounded-lg border border-border bg-card p-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-medium">Distribution center performance</h2>
+          <span className="text-xs text-muted-foreground">
+            Route planning stays depot-scoped. These rollups light up as the roadmap lands.
+          </span>
+        </div>
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <PlaceholderMetric
+            label="Cost components"
+            note="Linehaul / tariff / last-mile split — waiting on the canonical cost ledger"
+          />
+          <PlaceholderMetric
+            label="Service variance"
+            note="On-time and cost vs. actuals — waiting on the plan-vs-actual feed"
+          />
+          <PlaceholderMetric
+            label="Shock exposure"
+            note="Outage and capacity −20% scenarios — waiting on the robustness harness"
+          />
+          <PlaceholderMetric
+            label="Emissions"
+            note="CO₂e and empty miles — waiting on sustainability reporting"
+          />
+        </div>
+      </section>
+
       <section className="overflow-hidden rounded-lg border border-border bg-card">
         <div className="border-b border-border/70 px-4 py-2.5 text-sm font-medium">
           Depots served by this distribution center
@@ -118,7 +156,6 @@ export default function DcPage() {
                 <th className="px-4 py-2 text-right font-medium">Unmet</th>
                 <th className="px-4 py-2 text-right font-medium">Utilization</th>
                 <th className="px-4 py-2 text-right font-medium">Cost</th>
-                <th className="px-4 py-2 text-right font-medium">Analyze</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
@@ -126,7 +163,18 @@ export default function DcPage() {
                 const unmet = Math.max(0, depot.demand_units - depot.assigned_units)
                 return (
                   <tr key={depot.facility_id} className="hover:bg-accent/40">
-                    <td className="px-4 py-2.5 font-medium">{depot.facility_name}</td>
+                    <td className="px-4 py-2.5 font-medium">
+                      <Link
+                        to={buildRouteWorkspaceHref('/analyze', parentContext, {
+                          depot: depot.facility_id,
+                          date: serviceDate,
+                        })}
+                        className="inline-flex items-center gap-1 text-foreground hover:text-primary hover:underline"
+                      >
+                        {depot.facility_name}
+                        <ExternalLink className="h-3 w-3 opacity-60" />
+                      </Link>
+                    </td>
                     <td className="px-4 py-2.5 text-right tabular-nums">
                       {formatNumber(depot.demand_units)}
                     </td>
@@ -146,20 +194,12 @@ export default function DcPage() {
                     <td className="px-4 py-2.5 text-right tabular-nums">
                       {formatCurrency(depot.total_cost)}
                     </td>
-                    <td className="px-4 py-2.5 text-right">
-                      <Link
-                        to={`/analyze?depot=${encodeURIComponent(depot.facility_id)}&date=${serviceDate}&networkReturn=${encodeURIComponent(`/dc/${facilityId}`)}`}
-                        className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-accent/50"
-                      >
-                        Depot routes <ExternalLink className="h-3 w-3" />
-                      </Link>
-                    </td>
                   </tr>
                 )
               })}
               {!depots.length && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
                     No depots are parented to this distribution center.
                   </td>
                 </tr>
@@ -206,6 +246,23 @@ export default function DcPage() {
           </div>
         </section>
       )}
+    </div>
+  )
+}
+
+function PlaceholderMetric({ label, note }: { label: string; note: string }) {
+  return (
+    <div className="rounded-md border border-dashed border-border bg-background/40 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+          {label}
+        </span>
+        <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+          Planned
+        </span>
+      </div>
+      <div className="mt-1 text-xl font-semibold text-muted-foreground">—</div>
+      <p className="mt-1 text-xs text-muted-foreground">{note}</p>
     </div>
   )
 }

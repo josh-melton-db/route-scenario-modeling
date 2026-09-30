@@ -12,7 +12,7 @@ def test_health_and_metadata_endpoints() -> None:
     depots = client.get("/api/meta/depots")
     assert depots.status_code == 200
     assert depots.json()[0]["depot_id"] == "DPT_NORTH"
-    assert len(depots.json()) == 30
+    assert len(depots.json()) == 42
 
     days = client.get("/api/meta/days")
     assert days.status_code == 200
@@ -24,7 +24,12 @@ def test_health_and_metadata_endpoints() -> None:
 
     contracts = client.get("/api/meta/carrier-contracts")
     assert contracts.status_code == 200
-    assert {row["carrier_id"] for row in contracts.json()} == {"GL_LOGISTICS", "MIDWEST_EXPRESS"}
+    assert {row["carrier_id"] for row in contracts.json()} == {
+        "GL_LOGISTICS",
+        "MIDWEST_EXPRESS",
+        "CAN_NORTHLINK",
+        "MX_TRANSPORTES",
+    }
 
     operating = client.get("/api/meta/operating-parameters")
     assert operating.status_code == 200
@@ -62,8 +67,8 @@ def test_network_overview_endpoints() -> None:
     assert option_payload["default_capacity_plan_version_id"] == (
         "CAPACITY_US_SE_CONSTRAINED_V2"
     )
-    assert len(option_payload["regions"]) == 6
-    assert len(option_payload["facilities"]) == 40
+    assert len(option_payload["regions"]) == 8
+    assert len(option_payload["facilities"]) == 56
     assert len(option_payload["capacity_plans"]) == 2
     assert {row["metric_id"] for row in option_payload["metrics"]} == {
         "assigned_flow",
@@ -79,8 +84,8 @@ def test_network_overview_endpoints() -> None:
     assert payload["kpis"]["demand_units"] > payload["kpis"]["assigned_units"]
     assert payload["kpis"]["unmet_units"] > 0
     assert payload["kpis"]["total_cost"] > 0
-    assert len(payload["facilities"]) == 40
-    assert len(payload["lanes"]) == 70
+    assert len(payload["facilities"]) == 56
+    assert len(payload["lanes"]) == 100
     assert payload["insights"]
     assert all(row["utilization_pct"] <= 100 for row in payload["facilities"])
     atlanta = next(
@@ -109,7 +114,7 @@ def test_network_overview_filters_and_validation() -> None:
     assert delivery.status_code == 200
     payload = delivery.json()
     assert payload["context"]["metric"] == "cost_per_unit"
-    assert len(payload["lanes"]) == 3000
+    assert len(payload["lanes"]) == 4200
     assert all(row["lane_type"] == "DELIVERY" for row in payload["lanes"])
 
     normal = client.get(
@@ -121,6 +126,29 @@ def test_network_overview_filters_and_validation() -> None:
     )
     assert normal.status_code == 200
     assert normal.json()["kpis"]["unmet_units"] == 0
+
+    texas = client.get(
+        "/api/network/overview",
+        params={
+            "capacity_plan_version_id": "CAPACITY_US_BASELINE_V1",
+            "region_id": "REGION_TOLA",
+            "horizon_start": "2026-09-21",
+            "horizon_end": "2026-09-21",
+            "lane_type": "LINEHAUL",
+        },
+    )
+    assert texas.status_code == 200
+    texas_payload = texas.json()
+    assert texas_payload["kpis"]["unmet_units"] == 0
+    assert any(
+        row["origin_endpoint_id"] == "DC_MEXICO_MONTERREY"
+        and row["assigned_units"] > 0
+        for row in texas_payload["lanes"]
+    )
+    assert any(
+        row["facility_id"] == "DC_MEXICO_MONTERREY"
+        for row in texas_payload["facilities"]
+    )
 
     invalid_range = client.get(
         "/api/network/overview",
@@ -229,13 +257,16 @@ def test_network_scenario_lifecycle() -> None:
     assert result["affected_depot_ids"]
     sources = {row["rate_source"] for row in result["charge_details"]}
     assert sources == {"governed_contract", "planning_fallback"}
-    governed = next(
-        row
-        for row in result["charge_details"]
-        if row["rate_source"] == "governed_contract"
-    )
-    assert governed["contract_id"] == "GL_STANDARD_2026"
-    assert governed["charge_lines"]
+    governed = [
+        row for row in result["charge_details"] if row["rate_source"] == "governed_contract"
+    ]
+    # Each governed region prices from its own published rate book.
+    assert {row["contract_id"] for row in governed} == {
+        "GL_STANDARD_2026",
+        "CAN_STANDARD_2026",
+        "MX_STANDARD_2026",
+    }
+    assert all(row["charge_lines"] for row in governed)
     exception_types = {row["exception_type"] for row in result["exceptions"]}
     assert exception_types == {"unmet_demand", "missing_rate"}
     assert result["overview"]["kpis"]["assigned_units"] == (

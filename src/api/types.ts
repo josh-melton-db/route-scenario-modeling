@@ -221,11 +221,24 @@ export type NetworkScenarioStatus =
   | 'reconciled'
   | 'published'
 
+export type NetworkCountryCode = 'US' | 'MX' | 'CA'
+
+export interface NetworkTariffRule {
+  rule_id: string
+  origin_country: NetworkCountryCode
+  destination_country: NetworkCountryCode
+  effective_start: string
+  effective_end: string
+  amount_per_case: number
+}
+
 export interface NetworkScenarioAssumptions {
   disabled_facility_ids: string[]
   disabled_lane_ids: string[]
   lane_cost_adjustments_pct: Record<string, number>
   unmet_penalty_per_case: number
+  /** Optional while older saved scenarios are migrated by the API. */
+  tariffs?: NetworkTariffRule[]
 }
 
 export interface NetworkScenarioValidationIssue {
@@ -310,10 +323,13 @@ export interface NetworkFlowChargeDetail {
   contract_version_id: string | null
   rate_book_snapshot_id: string | null
   total_cost: number
+  tariff_total?: number
+  tariff_rule_ids?: string[]
   charge_lines: RateChargeLine[]
 }
 
 export interface NetworkScenarioResult {
+  run_id?: string
   scenario_id: string
   revision: number
   generated_at: string
@@ -323,6 +339,11 @@ export interface NetworkScenarioResult {
   affected_depot_ids: string[]
   charge_details: NetworkFlowChargeDetail[]
   exceptions: NetworkScenarioException[]
+  tariff_total_cost?: number
+  baseline_tariff_exposure?: number
+  cross_border_assigned_units?: number
+  baseline_cross_border_assigned_units?: number
+  domestic_shift_units?: number
 }
 
 export interface NetworkScenarioRunResponse {
@@ -684,6 +705,84 @@ export interface Kpis {
   total_revenue: number
   profit: number
   cost_breakdown: CostBreakdown
+}
+
+export type DepotPlanStatus = 'queued' | 'running' | 'completed' | 'infeasible' | 'failed'
+
+export interface DepotPlanRouteScenario {
+  route_scenario_id: string
+  scenario_name: string
+  is_default: boolean
+}
+
+export interface DepotPlanCoverage {
+  total_days: number
+  solved_days: number
+  queued_days: number
+  running_days: number
+  failed_days: number
+}
+
+export interface DepotPlanDaySummary {
+  service_date: string
+  status: DepotPlanStatus
+  default_status: DepotPlanStatus
+  assigned_cases: number
+  routed_cases: number | null
+  unserved_cases: number | null
+  total_cost: number | null
+  is_overridden: boolean
+  selected_result_id: string | null
+  error: string | null
+}
+
+export interface DepotPlanDayResult {
+  result_id: string
+  service_date: string
+  status: DepotPlanStatus
+  routes: Route[]
+  kpis: Kpis
+  assigned_cases: number
+  routed_cases: number
+  unserved_cases: number
+  diagnostics: string[]
+  matrix_source: MatrixSource
+  created_at: string
+}
+
+export interface DepotPlanSet {
+  plan_set_id: string
+  parent_run_id: string
+  depot: Depot
+  horizon_start: string
+  horizon_end: string
+  route_scenario_id: string
+  scenarios: DepotPlanRouteScenario[]
+  days: DepotPlanDaySummary[]
+  coverage: DepotPlanCoverage
+  kpis: Kpis | null
+  is_partial: boolean
+  resource_source: string
+}
+
+export interface DepotPlanDayDetail {
+  plan_set_id: string
+  service_date: string
+  route_scenario_id: string
+  default_status: DepotPlanStatus
+  override_status: DepotPlanStatus | null
+  default_result: DepotPlanDayResult | null
+  selected_result: DepotPlanDayResult | null
+  error: string | null
+}
+
+export interface DepotPlanOverrideRequest {
+  route_scenario_id: string
+  driver_delta?: number
+  allow_overtime?: boolean
+  max_route_minutes?: number
+  max_stops_per_route?: number
+  new_depot_location?: LatLng
 }
 
 export interface KpiDeltas {

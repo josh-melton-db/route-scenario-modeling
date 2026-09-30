@@ -28,6 +28,7 @@ class NetworkFacility(NetworkModel):
     facility_name: str
     facility_type: FacilityType
     region_id: str
+    country_code: Literal["US", "MX", "CA"]
     parent_facility_id: str | None = None
     lat: float = Field(ge=-90, le=90)
     lng: float = Field(ge=-180, le=180)
@@ -83,6 +84,7 @@ class NetworkLane(NetworkModel):
     mode: Literal["ground"] = "ground"
     distance_miles: float = Field(ge=0)
     transit_minutes: int = Field(ge=0)
+    planning_cost_per_case: float | None = Field(default=None, ge=0)
     active: bool = True
 
     @model_validator(mode="after")

@@ -84,7 +84,7 @@ def contract_detail_from_legacy(
             },
             {
                 "rule_id": f"{contract_id}_LANE_REGIONAL",
-                "lane_name": "Great Lakes regional fallback",
+                "lane_name": "Regional fallback rate",
                 "origin": "*",
                 "destination": "*",
                 "lane_type": None,

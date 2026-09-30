@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Navigate, useNavigate, useParams } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangle,
+  ArrowRight,
   Ban,
   Loader2,
   Play,
@@ -13,7 +14,9 @@ import {
 import EmptyState from '@/components/EmptyState'
 import ErrorState from '@/components/ErrorState'
 import KpiCard from '@/components/KpiCard'
+import NetworkDetailDrawer from '@/components/NetworkDetailDrawer'
 import NetworkFlowMap from '@/components/NetworkFlowMap'
+import NetworkTariffChangeCard from '@/components/NetworkTariffChangeCard'
 import {
   useDeleteNetworkScenario,
   useNetworkOptions,
@@ -31,23 +34,42 @@ import type {
   NetworkScenarioException,
 } from '@/api/types'
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format'
+import {
+  buildDepotAnalysisHref,
+  buildNetworkScenarioReturnHref,
+  buildRouteWorkspaceHref,
+} from '@/lib/networkLinks'
 import { cn } from '@/lib/utils'
 
 const SOLVED_STATUSES = new Set(['solved', 'depot_plans_running', 'reconciliation_required', 'reconciled', 'published'])
 
+type NetworkDraft = {
+  scenarioId: string
+  name: string
+  assumptions: NetworkScenarioAssumptions
+  dirty: boolean
+}
+
 export default function NetworkScenarioDetailPage() {
   const { scenarioId = '', tab = 'scenario' } = useParams()
+  const [searchParams] = useSearchParams()
+  const pinnedRunId = searchParams.get('run')
   const navigate = useNavigate()
   const options = useNetworkOptions()
   const scenario = useNetworkScenario(scenarioId)
   const hasResult = SOLVED_STATUSES.has(scenario.data?.status ?? 'draft')
-  const result = useNetworkScenarioResult(scenarioId, hasResult)
+  const result = useNetworkScenarioResult(
+    scenarioId,
+    hasResult || Boolean(pinnedRunId),
+    pinnedRunId,
+  )
   const updateScenario = useUpdateNetworkScenario(scenarioId)
   const validateScenario = useValidateNetworkScenario(scenarioId)
   const runScenario = useRunNetworkScenario(scenarioId)
   const deleteScenario = useDeleteNetworkScenario()
   const basePath = `/network/scenarios/${encodeURIComponent(scenarioId)}`
   const [actionError, setActionError] = useState<string | null>(null)
+  const [draft, setDraft] = useState<NetworkDraft | null>(null)
 
   const context = scenario.data
     ? {
@@ -82,6 +104,9 @@ export default function NetworkScenarioDetailPage() {
   const busy =
     updateScenario.isPending || validateScenario.isPending || runScenario.isPending
 
+  const hasPendingDraft = draft?.scenarioId === scenarioId && draft.dirty
+  const planApplied = hasResult && !hasPendingDraft
+
   async function save(next: {
     scenario_name?: string
     assumptions?: NetworkScenarioAssumptions
@@ -108,8 +133,24 @@ export default function NetworkScenarioDetailPage() {
   async function run() {
     setActionError(null)
     try {
-      await runScenario.mutateAsync()
-      navigate(`${basePath}/flow`)
+      const pendingDraft = draft?.scenarioId === scenarioId && draft.dirty ? draft : null
+      if (pendingDraft) {
+        await updateScenario.mutateAsync({
+          scenario_name: pendingDraft.name.trim() || scenario.data?.scenario_name,
+          assumptions: pendingDraft.assumptions,
+        })
+        setDraft(null)
+      }
+      if (pendingDraft || !scenario.data?.validation?.valid) {
+        const validated = await validateScenario.mutateAsync()
+        if (!validated.validation?.valid) {
+          navigate(`${basePath}/scenario`)
+          return
+        }
+      }
+      const completed = await runScenario.mutateAsync()
+      const runId = completed.result.run_id
+      navigate(runId ? `${basePath}/flow?run=${encodeURIComponent(runId)}` : `${basePath}/flow`)
     } catch (err) {
       setActionError(String(err))
     }
@@ -130,6 +171,7 @@ export default function NetworkScenarioDetailPage() {
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
+      {tab === 'scenario' && (
       <header>
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -146,24 +188,34 @@ export default function NetworkScenarioDetailPage() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => void run()}
-              disabled={
-                busy || !scenario.data.validation?.valid || scenario.data.status === 'published'
-              }
-              className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {runScenario.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Play className="h-4 w-4" />
-              )}
-              Run fixed-capacity plan
-            </button>
+            {planApplied ? (
+              <button
+                type="button"
+                onClick={() => navigate(`${basePath}/flow`)}
+                className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground"
+              >
+                <ArrowRight className="h-4 w-4" />
+                View this plan
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void run()}
+                disabled={busy || scenario.data.status === 'published'}
+                className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {runScenario.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Play className="h-4 w-4" />
+                )}
+                Run fixed-capacity plan
+              </button>
+            )}
           </div>
         </div>
       </header>
+      )}
 
       {actionError && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
@@ -174,6 +226,8 @@ export default function NetworkScenarioDetailPage() {
       {tab === 'scenario' && (
         <ScenarioTab
           scenario={scenario.data}
+          draft={draft?.scenarioId === scenarioId && draft.dirty ? draft : null}
+          onDraftChange={setDraft}
           facilities={options.data.facilities}
           regions={options.data.regions}
           lanes={linehaulOverview.data?.lanes ?? []}
@@ -185,7 +239,11 @@ export default function NetworkScenarioDetailPage() {
         />
       )}
       {tab === 'flow' && (
-        <FlowTab result={result} onBackToScenario={() => navigate(`${basePath}/scenario`)} />
+        <FlowTab
+          result={result}
+          scenario={scenario.data}
+          onBackToScenario={() => navigate(`${basePath}/scenario`)}
+        />
       )}
       {tab === 'lanes' && (
         <LaneChangesTab
@@ -229,6 +287,44 @@ function StatusPill({ scenario }: { scenario: NetworkScenario }) {
   )
 }
 
+function RegionToggle({
+  regionName,
+  facilityIds,
+  disabledIds,
+  onToggle,
+}: {
+  regionName: string
+  facilityIds: string[]
+  disabledIds: Set<string>
+  onToggle: (disable: boolean) => void
+}) {
+  const ref = useRef<HTMLInputElement>(null)
+  const disabledCount = facilityIds.filter((id) => disabledIds.has(id)).length
+  const allDisabled = facilityIds.length > 0 && disabledCount === facilityIds.length
+  const partiallyDisabled = disabledCount > 0 && !allDisabled
+
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = partiallyDisabled
+  }, [partiallyDisabled])
+
+  return (
+    <label className="flex cursor-pointer items-center gap-2 border-b border-border/60 bg-muted/40 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+      <input
+        ref={ref}
+        type="checkbox"
+        checked={allDisabled}
+        aria-label={`Disable every facility in ${regionName}`}
+        onChange={() => onToggle(!allDisabled)}
+        className="h-3.5 w-3.5"
+      />
+      <span className="flex-1">{regionName}</span>
+      <span className="font-normal normal-case tracking-normal">
+        {disabledCount}/{facilityIds.length}
+      </span>
+    </label>
+  )
+}
+
 function regionName(regions: { region_id: string; region_name: string }[], regionId: string) {
   if (regionId === 'ALL') return 'All regions'
   return regions.find((row) => row.region_id === regionId)?.region_name ?? regionId
@@ -238,6 +334,8 @@ function regionName(regions: { region_id: string; region_name: string }[], regio
 
 function ScenarioTab({
   scenario,
+  draft,
+  onDraftChange,
   facilities,
   regions,
   lanes,
@@ -248,6 +346,8 @@ function ScenarioTab({
   deletePending,
 }: {
   scenario: NetworkScenario
+  draft: NetworkDraft | null
+  onDraftChange: (draft: NetworkDraft | null) => void
   facilities: { facility_id: string; facility_name: string; facility_type: string; region_id: string }[]
   regions: { region_id: string; region_name: string }[]
   lanes: { lane_id: string; lane_name: string }[]
@@ -257,16 +357,9 @@ function ScenarioTab({
   onDelete: () => Promise<void>
   deletePending: boolean
 }) {
-  const [name, setName] = useState(scenario.scenario_name)
-  const [assumptions, setAssumptions] = useState<NetworkScenarioAssumptions>(scenario.assumptions)
-  const [dirty, setDirty] = useState(false)
-
-  useEffect(() => {
-    if (!dirty) {
-      setName(scenario.scenario_name)
-      setAssumptions(scenario.assumptions)
-    }
-  }, [scenario.revision, scenario.updated_at, scenario.scenario_name, scenario.assumptions, dirty])
+  const name = draft?.name ?? scenario.scenario_name
+  const assumptions = draft?.assumptions ?? scenario.assumptions
+  const dirty = draft?.dirty ?? false
 
   const disabledIds = new Set(assumptions.disabled_facility_ids)
   const disabledLaneIds = new Set(assumptions.disabled_lane_ids)
@@ -277,14 +370,19 @@ function ScenarioTab({
   const [addAdjustPct, setAddAdjustPct] = useState('10')
 
   function touchAssumptions(next: NetworkScenarioAssumptions) {
-    setAssumptions(next)
-    setDirty(true)
+    onDraftChange({ scenarioId: scenario.scenario_id, name, assumptions: next, dirty: true })
   }
 
   function toggleFacility(facilityId: string) {
+    toggleFacilities([facilityId], !disabledIds.has(facilityId))
+  }
+
+  function toggleFacilities(facilityIds: string[], disable: boolean) {
     const next = new Set(assumptions.disabled_facility_ids)
-    if (next.has(facilityId)) next.delete(facilityId)
-    else next.add(facilityId)
+    for (const facilityId of facilityIds) {
+      if (disable) next.add(facilityId)
+      else next.delete(facilityId)
+    }
     touchAssumptions({ ...assumptions, disabled_facility_ids: [...next].sort() })
   }
 
@@ -323,15 +421,37 @@ function ScenarioTab({
 
   return (
     <div className="flex flex-col gap-4">
+      <section className="rounded-lg border border-border bg-card p-4">
+        <h2 className="text-sm font-semibold">Starting plan</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Published baseline · demand {scenario.demand_plan_version_id} · capacity {scenario.capacity_plan_version_id} · {scenario.horizon_start} to {scenario.horizon_end}
+        </p>
+      </section>
+      <NetworkTariffChangeCard
+        rules={assumptions.tariffs ?? []}
+        horizonStart={scenario.horizon_start}
+        horizonEnd={scenario.horizon_end}
+        onChange={(tariffs) => touchAssumptions({ ...assumptions, tariffs })}
+      />
       <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
         <section className="flex flex-col gap-4 rounded-lg border border-border bg-card p-4">
+          <div>
+            <h2 className="text-sm font-semibold">Scenario settings and network changes</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Facility and lane cards are combined with tariff rules when the plan runs.
+            </p>
+          </div>
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="font-medium">Scenario name</span>
             <input
               value={name}
               onChange={(event) => {
-                setName(event.target.value)
-                setDirty(true)
+                onDraftChange({
+                  scenarioId: scenario.scenario_id,
+                  name: event.target.value,
+                  assumptions,
+                  dirty: true,
+                })
               }}
               className="h-10 rounded-md border border-border bg-background px-3 text-sm"
             />
@@ -357,18 +477,30 @@ function ScenarioTab({
             </span>
           </label>
 
-          <div className="flex flex-col gap-2">
-            <span className="text-sm font-medium">Disabled facilities</span>
+          <div className="flex flex-col gap-2 rounded-md border border-border/70 p-3">
+            <span className="text-sm font-semibold">Change facility availability</span>
+            <span className="text-xs text-muted-foreground">Disable DCs or depots while retaining published capacity for comparison.</span>
             <div className="max-h-64 overflow-auto rounded-md border border-border">
               {regions
                 .filter((region) => region.region_id !== 'ALL')
-                .map((region) => (
+                .map((region) => {
+                  const regionFacilities = facilities.filter(
+                    (row) => row.region_id === region.region_id,
+                  )
+                  return (
                   <div key={region.region_id}>
-                    <div className="border-b border-border/60 bg-muted/40 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      {region.region_name}
-                    </div>
-                    {facilities
-                      .filter((row) => row.region_id === region.region_id)
+                    <RegionToggle
+                      regionName={region.region_name}
+                      facilityIds={regionFacilities.map((row) => row.facility_id)}
+                      disabledIds={disabledIds}
+                      onToggle={(disable) =>
+                        toggleFacilities(
+                          regionFacilities.map((row) => row.facility_id),
+                          disable,
+                        )
+                      }
+                    />
+                    {regionFacilities
                       .map((facility) => (
                         <label
                           key={facility.facility_id}
@@ -387,12 +519,14 @@ function ScenarioTab({
                         </label>
                       ))}
                   </div>
-                ))}
+                  )
+                })}
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <span className="text-sm font-medium">Linehaul lane overrides</span>
+          <div className="flex flex-col gap-2 rounded-md border border-border/70 p-3">
+            <span className="text-sm font-semibold">Restrict or price a lane</span>
+            <span className="text-xs text-muted-foreground">Disable a linehaul lane or adjust its planning cost assumption.</span>
             <div className="flex flex-wrap items-center gap-2">
               <select
                 value={addLaneId}
@@ -490,7 +624,7 @@ function ScenarioTab({
                   scenario_name: name.trim() || scenario.scenario_name,
                   assumptions,
                 }).then((saved) => {
-                  if (saved) setDirty(false)
+                  if (saved) onDraftChange(null)
                 })
               }}
               disabled={!dirty || busy}
@@ -602,13 +736,28 @@ type ResultQuery = ReturnType<typeof useNetworkScenarioResult>
 
 function FlowTab({
   result,
+  scenario,
   onBackToScenario,
 }: {
   result: ResultQuery
+  scenario: NetworkScenario
   onBackToScenario: () => void
 }) {
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const pinnedRunId = searchParams.get('run') ?? result.data?.run_id
+  const networkReturn = buildNetworkScenarioReturnHref(scenario.scenario_id, pinnedRunId)
   const [selectedFacilityId, setSelectedFacilityId] = useState<string | null>(null)
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null)
+
+  // Scenario shortfalls come from the run's exceptions; the network drawer falls
+  // back to demand minus assigned when no scenario context is passed in.
+  const unmetByFacility: Record<string, number> = {}
+  for (const exception of result.data?.exceptions ?? []) {
+    if (exception.exception_type !== 'unmet_demand' || !exception.entity_id) continue
+    unmetByFacility[exception.entity_id] =
+      (unmetByFacility[exception.entity_id] ?? 0) + (exception.unmet_units ?? 0)
+  }
 
   if (result.isLoading) {
     return (
@@ -628,17 +777,59 @@ function FlowTab({
   }
 
   const { overview, baseline_overview, kpi_deltas: deltas } = result.data
+  const tariffTotal = result.data.tariff_total_cost
+  const baselineTariffExposure = result.data.baseline_tariff_exposure
+  const tariffDifference = baselineTariffExposure != null && tariffTotal != null
+    ? baselineTariffExposure - tariffTotal
+    : null
+  const crossBorderCases = result.data.cross_border_assigned_units
+  const domesticShift = result.data.domestic_shift_units
+  const facilities = overview.facilities
+  const selectedFacility =
+    facilities.find((row) => row.facility_id === selectedFacilityId) ?? null
+  const selectedLane =
+    overview.lanes.find((row) => row.lane_id === selectedLaneId) ?? null
+  const openFacility = (facilityId: string | null) => {
+    if (!facilityId) {
+      setSelectedFacilityId(null)
+      return
+    }
+    const facility = facilities.find((row) => row.facility_id === facilityId)
+    if (!facility) return
+
+    if (facility.facility_type === 'distribution_center') {
+      setSelectedFacilityId(facilityId)
+      setSelectedLaneId(null)
+      return
+    }
+
+    const href = buildDepotAnalysisHref(
+      facility.facility_id,
+      scenario.horizon_start,
+      scenario.horizon_end,
+      scenario.scenario_id,
+      pinnedRunId,
+      networkReturn,
+    )
+    if (href) {
+      navigate(href)
+      return
+    }
+
+    setSelectedFacilityId(facilityId)
+    setSelectedLaneId(null)
+  }
   const cards = [
     {
       label: 'Assigned cases',
       value: formatNumber(overview.kpis.assigned_units),
-      delta: signedNumber(deltas.assigned_units),
+      delta: `${signedNumber(deltas.assigned_units)} cases`,
       tone: deltas.assigned_units >= 0 ? ('good' as const) : ('bad' as const),
     },
     {
       label: 'Unmet cases',
       value: formatNumber(overview.kpis.unmet_units),
-      delta: signedNumber(deltas.unmet_units),
+      delta: `${signedNumber(deltas.unmet_units)} cases`,
       tone: deltas.unmet_units <= 0 ? ('good' as const) : ('bad' as const),
     },
     {
@@ -649,8 +840,8 @@ function FlowTab({
     },
     {
       label: 'Cost / case',
-      value: formatCurrency(overview.kpis.cost_per_unit),
-      delta: signedCurrency(deltas.cost_per_unit),
+      value: formatCurrency(overview.kpis.cost_per_unit, 2),
+      delta: signedCurrency(deltas.cost_per_unit, 2),
       tone: 'neutral' as const,
     },
     {
@@ -685,21 +876,53 @@ function FlowTab({
           />
         ))}
       </div>
+      {deltas.assigned_units === 0 && overview.kpis.unmet_units === 0 && (
+        <p className="text-xs text-muted-foreground">
+          All {formatNumber(overview.kpis.demand_units)} cases of demand are assigned in both
+          plans, so assigned volume and cost per case have almost nothing to move. This
+          scenario changes where cases are assigned, which is why the tariff and cross-border
+          lines carry the signal.
+        </p>
+      )}
+      <div className="grid overflow-hidden rounded-lg border border-border bg-card sm:grid-cols-2 lg:grid-cols-5">
+        <CompactMetric label="Tariff paid" value={tariffTotal == null ? '—' : formatCurrency(tariffTotal)} />
+        <CompactMetric label="Tariff if baseline unchanged" value={baselineTariffExposure == null ? '—' : formatCurrency(baselineTariffExposure)} />
+        <CompactMetric
+          label={tariffDifference != null && tariffDifference < 0 ? 'Added tariff exposure' : 'Tariff avoided'}
+          value={tariffDifference == null ? '—' : formatCurrency(Math.abs(tariffDifference))}
+        />
+        <CompactMetric label="Cross-border cases" value={crossBorderCases == null ? '—' : formatNumber(crossBorderCases)} />
+        <CompactMetric label="Cases shifted domestic" value={domesticShift == null ? '—' : formatNumber(domesticShift)} />
+      </div>
+      {(tariffTotal == null || baselineTariffExposure == null || crossBorderCases == null || domesticShift == null) && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          This plan was generated before tariff metrics were available. Rerun the plan to see them.
+        </div>
+      )}
       <p className="text-xs text-muted-foreground">
         Scenario vs. published baseline · plan generated{' '}
         {new Date(result.data.generated_at).toLocaleString()} · baseline demand{' '}
         {formatNumber(baseline_overview.kpis.demand_units)} cases
       </p>
-      <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+      {(scenario.assumptions.tariffs ?? []).length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Applied tariff: {(scenario.assumptions.tariffs ?? []).map((rule) =>
+            `${rule.origin_country} → ${rule.destination_country} · ${rule.amount_per_case.toLocaleString(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })} / case`
+          ).join('; ')}
+        </p>
+      )}
+      {tariffTotal === 0 && (baselineTariffExposure ?? 0) > 0 && (
+          <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            The solver rerouted all tariff-eligible cases. It paid no tariff and avoided {formatCurrency(baselineTariffExposure ?? 0)} that the unchanged baseline would incur. A higher tariff alone will not change this allocation.
+          </p>
+        )}
+      <div className="grid min-h-0 gap-4 xl:h-[calc(100svh-20rem)] xl:min-h-[720px] xl:grid-cols-[minmax(0,1fr)_340px]">
         <NetworkFlowMap
           facilities={overview.facilities}
           lanes={overview.lanes}
           selectedFacilityId={selectedFacilityId}
           selectedLaneId={selectedLaneId}
-          onSelectFacility={(id) => {
-            setSelectedFacilityId(id)
-            setSelectedLaneId(null)
-          }}
+          onSelectFacility={openFacility}
           onSelectLane={(id) => {
             setSelectedLaneId(id)
             setSelectedFacilityId(null)
@@ -724,17 +947,83 @@ function FlowTab({
               scenario={formatCurrency(overview.kpis.total_cost)}
             />
             <CompareRow
+              label="Tariff paid"
+              baseline={formatCurrency(0)}
+              scenario={tariffTotal == null ? 'Not provided' : formatCurrency(tariffTotal)}
+            />
+            <CompareRow
+              label="Cross-border cases"
+              baseline={result.data.baseline_cross_border_assigned_units == null
+                ? '—'
+                : formatNumber(result.data.baseline_cross_border_assigned_units)}
+              scenario={crossBorderCases == null ? 'Not provided' : formatNumber(crossBorderCases)}
+            />
+            <CompareRow
+              label="Cases shifted domestic"
+              baseline={formatNumber(0)}
+              scenario={domesticShift == null ? 'Not provided' : formatNumber(domesticShift)}
+            />
+            <CompareRow
               label="On-time"
               baseline={formatPercent(baseline_overview.kpis.on_time_pct)}
               scenario={formatPercent(overview.kpis.on_time_pct)}
             />
           </ul>
+          {(baselineTariffExposure ?? 0) > 0 && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Unchanged baseline tariff exposure: {formatCurrency(baselineTariffExposure ?? 0)}. This counterfactual charge is not included in baseline total cost.
+            </p>
+          )}
           <p className="mt-4 text-xs text-muted-foreground">
             The solver assigns fixed demand through fixed supplied capacity; any
             remaining gap is reported as unmet demand, never absorbed.
           </p>
         </div>
       </div>
+      <NetworkDetailDrawer
+        facility={selectedFacility}
+        lane={selectedLane}
+        facilities={facilities}
+        unmetByFacility={unmetByFacility}
+        depotAnalysisHref={
+          selectedFacility?.depot_analysis_available
+            ? buildDepotAnalysisHref(
+                selectedFacility.facility_id,
+                scenario.horizon_start,
+                scenario.horizon_end,
+                scenario.scenario_id,
+                pinnedRunId,
+                networkReturn,
+              )
+            : null
+        }
+        dcAnalysisHref={
+          selectedFacility?.facility_type === 'distribution_center'
+            ? buildRouteWorkspaceHref(
+                `/dc/${encodeURIComponent(selectedFacility.facility_id)}`,
+                {
+                  networkScenario: scenario.scenario_id,
+                  networkRun: pinnedRunId,
+                  networkReturn,
+                },
+              )
+            : null
+        }
+        onClose={() => {
+          setSelectedLaneId(null)
+          setSelectedFacilityId(null)
+        }}
+        onSelectFacility={openFacility}
+      />
+    </div>
+  )
+}
+
+function CompactMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3 py-2 last:border-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-sm font-semibold tabular-nums">{value}</span>
     </div>
   )
 }
@@ -761,11 +1050,11 @@ function CompareRow({
 }
 
 function signedNumber(value: number) {
-  return `${value > 0 ? '+' : ''}${formatNumber(value)}`
+  return `${value >= 0 ? '+' : ''}${formatNumber(value)}`
 }
 
-function signedCurrency(value: number) {
-  return `${value > 0 ? '+' : ''}${formatCurrency(value)}`
+function signedCurrency(value: number, maximumFractionDigits = 0) {
+  return `${value >= 0 ? '+' : ''}${formatCurrency(value, maximumFractionDigits)}`
 }
 
 /* ----------------------------- Lane changes tab ---------------------------- */
@@ -779,6 +1068,11 @@ function LaneChangesTab({
 }) {
   const rows = useMemo(() => {
     if (!result.data) return []
+    const tariffByLane = new Map<string, number>()
+    for (const detail of result.data.charge_details) {
+      if (detail.tariff_total == null) continue
+      tariffByLane.set(detail.lane_id, (tariffByLane.get(detail.lane_id) ?? 0) + detail.tariff_total)
+    }
     const baselineByLane = new Map(
       result.data.baseline_overview.lanes.map((lane) => [lane.lane_id, lane]),
     )
@@ -791,6 +1085,7 @@ function LaneChangesTab({
           baselineUnits,
           delta: lane.assigned_units - baselineUnits,
           baselineCost: base?.total_cost ?? 0,
+          tariffTotal: tariffByLane.get(lane.lane_id),
         }
       })
       .filter((row) => row.delta !== 0 || row.lane.total_cost !== row.baselineCost)
@@ -837,6 +1132,7 @@ function LaneChangesTab({
               <th className="px-4 py-2 text-right font-medium">Scenario</th>
               <th className="px-4 py-2 text-right font-medium">Δ cases</th>
               <th className="px-4 py-2 text-right font-medium">Scenario cost</th>
+              <th className="px-4 py-2 text-right font-medium">Tariff</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border/60">
@@ -866,6 +1162,11 @@ function LaneChangesTab({
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums">
                   {formatCurrency(row.lane.total_cost)}
+                </td>
+                <td className="px-4 py-2.5 text-right tabular-nums">
+                  {row.tariffTotal == null ? (
+                    <span className="text-xs text-muted-foreground" title="tariff_total was not provided by the API">Not provided</span>
+                  ) : formatCurrency(row.tariffTotal)}
                 </td>
               </tr>
             ))}
@@ -959,6 +1260,7 @@ function RateAuditTab({
                 <th className="px-4 py-2 font-medium">Rate source</th>
                 <th className="px-4 py-2 font-medium">Contract</th>
                 <th className="px-4 py-2 text-right font-medium">Cost</th>
+                <th className="px-4 py-2 text-right font-medium">Tariff</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
@@ -978,7 +1280,7 @@ function RateAuditTab({
               ))}
               {!rows.length && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
                     No charge details match this filter.
                   </td>
                 </tr>
@@ -1031,10 +1333,15 @@ function ChargeRow({
         <td className="px-4 py-2.5 text-right font-medium tabular-nums">
           {formatCurrency(row.total_cost)}
         </td>
+        <td className="px-4 py-2.5 text-right tabular-nums">
+          {row.tariff_total == null ? (
+            <span className="text-xs text-muted-foreground" title="tariff_total was not provided by the API">Not provided</span>
+          ) : formatCurrency(row.tariff_total)}
+        </td>
       </tr>
       {expanded && (
         <tr className="bg-muted/30">
-          <td colSpan={7} className="px-4 py-3">
+          <td colSpan={8} className="px-4 py-3">
             <div className="flex flex-col gap-1.5 text-xs">
               {row.charge_lines.map((line, index) => (
                 <div
@@ -1053,6 +1360,11 @@ function ChargeRow({
                   Rate-book snapshot {row.rate_book_snapshot_id}
                 </div>
               )}
+              {row.tariff_rule_ids?.length ? (
+                <div className="mt-1 text-muted-foreground">
+                  Applied tariff rules: {row.tariff_rule_ids.join(', ')}
+                </div>
+              ) : null}
             </div>
           </td>
         </tr>

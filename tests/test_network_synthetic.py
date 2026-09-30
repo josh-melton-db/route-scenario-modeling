@@ -129,11 +129,11 @@ def test_existing_generate_all_exposes_canonical_network_tables() -> None:
 
 def test_national_demo_shape_and_alternate_paths(national_network) -> None:
     data = national_network
-    assert len(data["dim_regions"]) == 5
-    assert len(data["dim_facilities"]) == 40
-    assert len(data["dim_markets"]) == 30
-    assert len(data["dim_network_customers"]) == 3000
-    assert len(data["demand_plan_daily"]) == 3000 * 28
+    assert len(data["dim_regions"]) == 7
+    assert len(data["dim_facilities"]) == 56
+    assert len(data["dim_markets"]) == 42
+    assert len(data["dim_network_customers"]) == 4200
+    assert len(data["demand_plan_daily"]) == 4200 * 28
     assert len(data["capacity_plan_versions"]) == 2
     assert validate_network_dataset(data) == []
 
@@ -148,6 +148,24 @@ def test_national_demo_shape_and_alternate_paths(national_network) -> None:
     ]
     assert alternate_capacity
     assert all(int(row["capacity_units"]) > 0 for row in alternate_capacity)
+
+    assert {row["country_code"] for row in data["dim_facilities"]} == {
+        "US",
+        "MX",
+        "CA",
+    }
+    monterrey_lane = "LNE_DC_MEXICO_MONTERREY_TO_DPT_TOLA_SAN_ANTONIO"
+    domestic_lane = "LNE_DC_TOLA_HOUSTON_TO_DPT_TOLA_SAN_ANTONIO"
+    assert monterrey_lane in lanes
+    assert all(
+        any(
+            row["lane_id"] == lane_id
+            and row["capacity_plan_version_id"] == NATIONAL_CAPACITY_PLAN_VERSION_ID
+            and int(row["assigned_units"]) > 0
+            for row in data["baseline_network_flow_daily"]
+        )
+        for lane_id in (monterrey_lane, domestic_lane)
+    )
 
 
 def test_constrained_southeast_plan_preserves_unmet_demand(national_network) -> None:

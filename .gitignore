@@ -12,9 +12,14 @@ mlruns/
 *.log
 .vscode/
 .idea/
+.isaac/
 .cursor/
 docs/
+examples/
 
 # Playwright
 playwright-report/
 test-results/
+
+# Local runtime state
+state.lock

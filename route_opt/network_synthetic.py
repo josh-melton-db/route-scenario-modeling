@@ -17,6 +17,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 
+from .land_mask import is_on_water, pull_to_land
 from .matrix import haversine_miles
 from .network_schemas import (
     NETWORK_TABLE_MODELS,
@@ -43,6 +44,10 @@ CAPACITY_PLAN_VERSION_ID = "CAPACITY_GL_BASELINE_V1"
 NATIONAL_DEMAND_PLAN_VERSION_ID = "DEMAND_US_BASELINE_V1"
 NATIONAL_CAPACITY_PLAN_VERSION_ID = "CAPACITY_US_BASELINE_V1"
 SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID = "CAPACITY_US_SE_CONSTRAINED_V2"
+
+
+def _country_code_for_region(region_id: str) -> str:
+    return {"REGION_MEXICO": "MX", "REGION_CANADA": "CA"}.get(region_id, "US")
 
 _DISTRIBUTION_CENTERS = (
     (
@@ -346,6 +351,134 @@ _ADDITIONAL_REGION_SPECS = (
             ),
         ),
     ),
+    (
+        "REGION_CANADA",
+        "Canada",
+        (
+            (
+                "DC_CANADA_TORONTO",
+                "Toronto Distribution Center",
+                43.6532,
+                -79.3832,
+                "America/Toronto",
+            ),
+            (
+                "DC_CANADA_CALGARY",
+                "Calgary Distribution Center",
+                51.0447,
+                -114.0719,
+                "America/Edmonton",
+            ),
+        ),
+        (
+            (
+                "DPT_CA_TORONTO",
+                "Toronto Depot",
+                "DC_CANADA_TORONTO",
+                43.7615,
+                -79.4111,
+            ),
+            (
+                "DPT_CA_MONTREAL",
+                "Montreal Depot",
+                "DC_CANADA_TORONTO",
+                45.5019,
+                -73.5674,
+            ),
+            (
+                "DPT_CA_OTTAWA",
+                "Ottawa Depot",
+                "DC_CANADA_TORONTO",
+                45.4215,
+                -75.6972,
+            ),
+            (
+                "DPT_CA_WINNIPEG",
+                "Winnipeg Depot",
+                "DC_CANADA_CALGARY",
+                49.8951,
+                -97.1384,
+            ),
+            (
+                "DPT_CA_EDMONTON",
+                "Edmonton Depot",
+                "DC_CANADA_CALGARY",
+                53.5461,
+                -113.4938,
+            ),
+            (
+                "DPT_CA_SASKATOON",
+                "Saskatoon Depot",
+                "DC_CANADA_CALGARY",
+                52.1332,
+                -106.6700,
+            ),
+        ),
+    ),
+    (
+        "REGION_MEXICO",
+        "Mexico",
+        (
+            (
+                "DC_MEXICO_MONTERREY",
+                "Monterrey Distribution Center",
+                25.6866,
+                -100.3161,
+                "America/Monterrey",
+            ),
+            (
+                "DC_MEXICO_GUADALAJARA",
+                "Guadalajara Distribution Center",
+                20.6597,
+                -103.3496,
+                "America/Mexico_City",
+            ),
+        ),
+        (
+            (
+                "DPT_MX_MONTERREY",
+                "Monterrey Depot",
+                "DC_MEXICO_MONTERREY",
+                25.7500,
+                -100.3500,
+            ),
+            (
+                "DPT_MX_SALTILLO",
+                "Saltillo Depot",
+                "DC_MEXICO_MONTERREY",
+                25.4232,
+                -101.0053,
+            ),
+            (
+                "DPT_MX_CHIHUAHUA",
+                "Chihuahua Depot",
+                "DC_MEXICO_MONTERREY",
+                28.6353,
+                -106.0889,
+            ),
+            (
+                "DPT_MX_GUADALAJARA",
+                "Guadalajara Depot",
+                "DC_MEXICO_GUADALAJARA",
+                20.7000,
+                -103.4000,
+            ),
+            (
+                "DPT_MX_MEXICO_CITY",
+                "Mexico City Depot",
+                "DC_MEXICO_GUADALAJARA",
+                19.4326,
+                -99.1332,
+            ),
+            (
+                "DPT_MX_PUEBLA",
+                "Puebla Depot",
+                "DC_MEXICO_GUADALAJARA",
+                19.0414,
+                -98.2063,
+            ),
+        ),
+    ),
 )
 
 _WEEKDAY_MULTIPLIERS = (1.00, 1.07, 1.12, 0.98, 1.16, 0.72, 0.58)
@@ -393,6 +526,7 @@ def _build_facilities(
             facility_name=facility_name,
             facility_type="distribution_center",
             region_id=GREAT_LAKES_REGION_ID,
+            country_code="US",
             lat=lat,
             lng=lng,
             timezone="America/Detroit" if facility_id.endswith("EAST") else "America/Chicago",
@@ -408,6 +542,7 @@ def _build_facilities(
                 facility_name=str(depot["depot_name"]),
                 facility_type="depot",
                 region_id=GREAT_LAKES_REGION_ID,
+                country_code="US",
                 parent_facility_id=parent_id,
                 lat=float(depot["lat"]),
                 lng=float(depot["lng"]),
@@ -421,6 +556,7 @@ def _build_facilities(
             facility_name=depot_name,
             facility_type="depot",
             region_id=GREAT_LAKES_REGION_ID,
+            country_code="US",
             parent_facility_id=parent_id,
             lat=lat,
             lng=lng,
@@ -465,22 +601,30 @@ def _build_markets(facilities: Sequence[NetworkFacility]) -> list[NetworkMarket]
         (0.06, -0.13),
         (-0.11, 0.07),
     )
-    return [
-        NetworkMarket(
-            market_id=f"MKT_{facility.facility_id.removeprefix('DPT_')}",
-            market_name=f"{facility.facility_name.removesuffix(' Depot')} Market",
-            region_id=facility.region_id,
-            primary_depot_id=facility.facility_id,
-            lat=round(facility.lat + offsets[index][0], 6),
-            lng=round(facility.lng + offsets[index][1], 6),
+    markets: list[NetworkMarket] = []
+    for index, facility in enumerate(
+        sorted(
+            (row for row in facilities if row.facility_type == "depot"),
+            key=lambda row: row.facility_id,
         )
-        for index, facility in enumerate(
-            sorted(
-                (row for row in facilities if row.facility_type == "depot"),
-                key=lambda row: row.facility_id,
+    ):
+        lat, lng = pull_to_land(
+            facility.lat + offsets[index][0],
+            facility.lng + offsets[index][1],
+            facility.lat,
+            facility.lng,
+        )
+        markets.append(
+            NetworkMarket(
+                market_id=f"MKT_{facility.facility_id.removeprefix('DPT_')}",
+                market_name=f"{facility.facility_name.removesuffix(' Depot')} Market",
+                region_id=facility.region_id,
+                primary_depot_id=facility.facility_id,
+                lat=round(lat, 6),
+                lng=round(lng, 6),
             )
         )
-    ]
+    return markets
 
 
 def _build_customers(
@@ -521,6 +665,12 @@ def _build_customers(
                 20,
                 int(round(rng.lognormvariate(4.2, 0.38) * tier_multiplier * depot_multiplier)),
             )
+            lat, lng = pull_to_land(
+                depot.lat + radius * math.sin(theta) * 0.68,
+                depot.lng + radius * math.cos(theta),
+                depot.lat,
+                depot.lng,
+            )
             customers.append(
                 NetworkCustomer(
                     customer_id=customer_id,
@@ -533,8 +683,8 @@ def _build_customers(
                     distribution_center_id=str(depot.parent_facility_id),
                     depot_id=depot.facility_id,
                     market_id=market.market_id,
-                    lat=round(depot.lat + radius * math.sin(theta) * 0.68, 6),
-                    lng=round(depot.lng + radius * math.cos(theta), 6),
+                    lat=round(lat, 6),
+                    lng=round(lng, 6),
                 )
             )
             customer_number += 1
@@ -551,6 +701,7 @@ def _lane(
     destination_type: str,
     destination_lat: float,
     destination_lng: float,
+    planning_cost_per_case: float | None = None,
 ) -> NetworkLane:
     distance = _road_distance_miles(
         origin.lat,
@@ -568,6 +719,7 @@ def _lane(
         destination_endpoint_type=destination_type,
         distance_miles=distance,
         transit_minutes=_transit_minutes(distance),
+        planning_cost_per_case=planning_cost_per_case,
     )
 
 
@@ -806,6 +958,7 @@ def _build_spec_facilities(
             facility_name=facility_name,
             facility_type="distribution_center",
             region_id=region_id,
+            country_code=_country_code_for_region(region_id),
             lat=lat,
             lng=lng,
             timezone=timezone_name,
@@ -818,6 +971,7 @@ def _build_spec_facilities(
             facility_name=facility_name,
             facility_type="depot",
             region_id=region_id,
+            country_code=_country_code_for_region(region_id),
             parent_facility_id=parent_id,
             lat=lat,
             lng=lng,
@@ -958,6 +1112,90 @@ def _append_southeast_constrained_capacity_plan(
     dataset["baseline_network_flow_daily"].extend(constrained_flow)
 
 
+def _add_monterrey_texas_corridor(
+    facilities: Sequence[NetworkFacility],
+    lanes: list[NetworkLane],
+    facility_capacity: list[FacilityCapacityDaily],
+    lane_capacity: list[LaneCapacityDaily],
+    baseline_flow: list[BaselineNetworkFlowDaily],
+    demand: Sequence[DemandPlanDaily],
+) -> None:
+    """Seed a stable cross-border baseline with a finite domestic alternative."""
+
+    facilities_by_id = {row.facility_id: row for row in facilities}
+    monterrey = facilities_by_id["DC_MEXICO_MONTERREY"]
+    texas_depots = ("DPT_TOLA_SAN_ANTONIO", "DPT_TOLA_DALLAS")
+    new_lane_ids: dict[str, str] = {}
+    for depot_id in texas_depots:
+        depot = facilities_by_id[depot_id]
+        lane_id = f"LNE_DC_MEXICO_MONTERREY_TO_{depot_id}"
+        new_lane_ids[depot_id] = lane_id
+        lanes.append(
+            _lane(
+                lane_id=lane_id,
+                lane_name=f"{monterrey.facility_name} to {depot.facility_name}",
+                lane_type="LINEHAUL",
+                origin=monterrey,
+                destination_id=depot_id,
+                destination_type="facility",
+                destination_lat=depot.lat,
+                destination_lng=depot.lng,
+                planning_cost_per_case=0.50,
+            )
+        )
+
+    demand_by_date_depot: defaultdict[tuple[date, str], int] = defaultdict(int)
+    for row in demand:
+        demand_by_date_depot[(row.service_date, row.depot_id)] += row.demand_units
+
+    cross_border_by_date: defaultdict[date, int] = defaultdict(int)
+    flow_index_by_key = {
+        (row.service_date, row.lane_id): index
+        for index, row in enumerate(baseline_flow)
+    }
+    for service_date in sorted({row.service_date for row in demand}):
+        for depot_id in texas_depots:
+            demand_units = demand_by_date_depot[(service_date, depot_id)]
+            cross_border_units = max(1, int(round(demand_units * 0.25)))
+            domestic_lane_id = (
+                f"LNE_{facilities_by_id[depot_id].parent_facility_id}_TO_{depot_id}"
+            )
+            domestic_index = flow_index_by_key[(service_date, domestic_lane_id)]
+            domestic_flow = baseline_flow[domestic_index]
+            baseline_flow[domestic_index] = domestic_flow.model_copy(
+                update={
+                    "assigned_units": domestic_flow.assigned_units - cross_border_units
+                }
+            )
+            lane_id = new_lane_ids[depot_id]
+            lane_capacity.append(
+                LaneCapacityDaily(
+                    capacity_plan_version_id=NATIONAL_CAPACITY_PLAN_VERSION_ID,
+                    service_date=service_date,
+                    lane_id=lane_id,
+                    capacity_units=cross_border_units,
+                )
+            )
+            baseline_flow.append(
+                BaselineNetworkFlowDaily(
+                    demand_plan_version_id=NATIONAL_DEMAND_PLAN_VERSION_ID,
+                    capacity_plan_version_id=NATIONAL_CAPACITY_PLAN_VERSION_ID,
+                    service_date=service_date,
+                    lane_id=lane_id,
+                    lane_type="LINEHAUL",
+                    assigned_units=cross_border_units,
+                )
+            )
+            cross_border_by_date[service_date] += cross_border_units
+
+    for index, row in enumerate(facility_capacity):
+        if row.facility_id == monterrey.facility_id:
+            capacity_units = row.capacity_units + cross_border_by_date[row.service_date]
+        else:
+            continue
+        facility_capacity[index] = row.model_copy(update={"capacity_units": capacity_units})
+
+
 def generate_network_dataset(
     existing_depots: Sequence[Mapping[str, object]],
     *,
@@ -1059,7 +1297,7 @@ def generate_national_network_dataset(
     horizon_start: date = DEFAULT_NETWORK_HORIZON_START,
     horizon_days: int = 28,
 ) -> dict[str, list[dict[str, object]]]:
-    """Generate the five-region US planning demo with alternate DC paths."""
+    """Generate the seven-region North America planning demo with alternate DC paths."""
 
     if horizon_days < 1:
         raise ValueError("horizon_days must be at least 1.")
@@ -1085,6 +1323,8 @@ def generate_national_network_dataset(
                     "REGION_SOUTHEAST": "SE",
                     "REGION_WEST": "W",
                     "REGION_TOLA": "TOLA",
+                    "REGION_CANADA": "CA",
+                    "REGION_MEXICO": "MX",
                 }[region_id],
             )
         )
@@ -1144,6 +1384,10 @@ def generate_national_network_dataset(
         lane_capacity.extend(region_lane_capacity)
         baseline_flow.extend(region_flow)
 
+    _add_monterrey_texas_corridor(
+        facilities, lanes, facility_capacity, lane_capacity, baseline_flow, demand
+    )
+
     horizon_end = horizon_start + timedelta(days=horizon_days - 1)
     published_at = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
     demand_versions = [
@@ -1152,7 +1396,7 @@ def generate_national_network_dataset(
             plan_id="DEMAND_US_BASELINE",
             revision=1,
             plan_type="demand",
-            display_name="US published demand plan",
+            display_name="North America published demand plan",
             source_system=NETWORK_SOURCE_SYSTEM,
             published_at=published_at,
             as_of_date=published_at.date(),
@@ -1167,7 +1411,7 @@ def generate_national_network_dataset(
             plan_id="CAPACITY_US_BASELINE",
             revision=1,
             plan_type="capacity",
-            display_name="US supplied capacity plan",
+            display_name="North America supplied capacity plan",
             source_system=NETWORK_SOURCE_SYSTEM,
             published_at=published_at,
             as_of_date=published_at.date(),
@@ -1313,6 +1557,23 @@ def validate_network_dataset(
             )
         if market is None or str(market["primary_depot_id"]) != str(customer["depot_id"]):
             errors.append(f"Customer {customer['customer_id']} references an invalid market.")
+
+    for label, index in (
+        ("Facility", facilities),
+        ("Market", markets),
+        ("Customer", customers),
+    ):
+        on_water = [
+            str(row["{0}_id".format(label.lower() if label != "Facility" else "facility")])
+            for row in index.values()
+            if is_on_water(float(row["lat"]), float(row["lng"]))
+        ]
+        if on_water:
+            sample = ", ".join(sorted(on_water)[:5])
+            errors.append(
+                f"{len(on_water)} {label.lower()} points fall in water or a Great Lake "
+                f"(for example: {sample})."
+            )
 
     endpoint_indexes = {
         "facility": facilities,
