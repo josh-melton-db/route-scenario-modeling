@@ -1,0 +1,3 @@
+[submodule "valhalla_poc"]
+	path = valhalla_poc
+	url = https://github.com/josh-melton-db/databricks-valhalla-app-poc.git

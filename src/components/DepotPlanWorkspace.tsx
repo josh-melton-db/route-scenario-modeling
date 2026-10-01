@@ -192,6 +192,7 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
         />
       )}
       {day.isLoading && <Loading label={`Loading ${selectedDate}…`} />}
+      {day.error && <ErrorState title="Could not load the selected route day" error={day.error} />}
       {day.data && <DayStatus detail={day.data} pending={pending} />}
       {day.data?.default_result && day.data.selected_result && day.data.selected_result.result_id !== day.data.default_result.result_id ? (
         <>
@@ -226,7 +227,28 @@ function DayStatus({ detail, pending }: { detail: { default_status: string; over
       {detail.override_status && <span className="ml-4 capitalize">Override: {detail.override_status}</span>}
       {pending && <span className="ml-4 text-amber-500">Optimization in progress; the prior selected result remains visible.</span>}
       {result && <span className="ml-4">Assigned {result.assigned_cases} · routed {result.routed_cases} · unserved {result.unserved_cases}</span>}
-      {detail.error && <div className="mt-2 text-destructive">{detail.error}</div>}
+      {result && <RouteExecutionNote result={result} />}
+      {detail.error && <div role="alert" className="mt-2 text-destructive">{detail.error}</div>}
+    </div>
+  )
+}
+
+function RouteExecutionNote({ result }: { result: DepotPlanDayResult }) {
+  const execution = result.execution
+  if (!execution) {
+    return <p className="mt-2 text-xs text-muted-foreground">Stored result · matrix: {result.matrix_source}. Execution and fleet provenance were not recorded for this legacy result.</p>
+  }
+  const mode = execution.mode === 'strict_serving_road'
+    ? 'Strict road routing + Model Serving'
+    : execution.mode === 'local_road' ? 'Road routing + local OR-Tools'
+      : execution.mode === 'approximate_development' ? 'Approximate development · local OR-Tools'
+        : `Execution: ${execution.mode ?? 'not recorded'}`
+  return (
+    <div aria-label="Route execution provenance" className="mt-2 text-xs text-muted-foreground">
+      <p>{execution.solver_invoked === false ? 'No deliveries to optimize · solver not invoked' : mode} · matrix: {execution.matrix_source ?? result.matrix_source}</p>
+      {execution.approximate && <p className="mt-1 text-warning">Approximate travel assumptions; this is not a road-network result.</p>}
+      {execution.coverage_id && <p className="mt-1">Coverage: {execution.coverage_id} · artifact: {execution.artifact_version ?? 'not recorded'} · costing: {execution.costing ?? 'not recorded'}</p>}
+      <p className="mt-1">Fleet: {execution.resource_source ?? 'not recorded'}{execution.cost_parameter_source ? ` · costs: ${execution.cost_parameter_source}` : ''}{execution.solver_endpoint ? ` · solver endpoint: ${execution.solver_endpoint}` : ''}</p>
     </div>
   )
 }

@@ -62,6 +62,7 @@ def solve_fixed_capacity_network(
     disabled_lane_ids: set[str] | None = None,
     lane_cost_adjustments_pct: Mapping[str, float] | None = None,
     lane_unit_costs: Mapping[str, float] | None = None,
+    lane_unit_costs_by_date_lane: Mapping[tuple[str, str], float] | None = None,
     tariff_per_case_by_date_lane: Mapping[tuple[str, str], float] | None = None,
     unmet_penalty_per_case: float = 250.0,
     release_requests: Sequence[Mapping[str, Any]] | None = None,
@@ -94,6 +95,7 @@ def solve_fixed_capacity_network(
             disabled_lane_ids=disabled_lane_ids or set(),
             lane_cost_adjustments_pct=lane_cost_adjustments_pct or {},
             lane_unit_costs=lane_unit_costs or {},
+            lane_unit_costs_by_date_lane=lane_unit_costs_by_date_lane or {},
             tariff_per_case_by_date_lane=tariff_per_case_by_date_lane or {},
             unmet_penalty_per_case=unmet_penalty_per_case,
         )
@@ -101,6 +103,7 @@ def solve_fixed_capacity_network(
     disabled_lanes = disabled_lane_ids or set()
     cost_adjustments = lane_cost_adjustments_pct or {}
     unit_costs = lane_unit_costs or {}
+    dated_unit_costs = lane_unit_costs_by_date_lane or {}
     tariffs = tariff_per_case_by_date_lane or {}
     if any(float(amount) < 0 for amount in tariffs.values()):
         raise ValueError("Tariff amounts must be nonnegative.")
@@ -284,13 +287,16 @@ def solve_fixed_capacity_network(
                 ):
                     capacity = 0
                 base_unit_cost = float(
-                    unit_costs.get(
-                        lane_id,
-                        lane.get("planning_cost_per_case")
-                        if lane.get("planning_cost_per_case") is not None
-                        else max(450.0, float(lane["distance_miles"]) * 3.4)
-                        * 1.12
-                        / 900,
+                    dated_unit_costs.get(
+                        (service_date, lane_id),
+                        unit_costs.get(
+                            lane_id,
+                            lane.get("planning_cost_per_case")
+                            if lane.get("planning_cost_per_case") is not None
+                            else max(450.0, float(lane["distance_miles"]) * 3.4)
+                            * 1.12
+                            / 900,
+                        ),
                     )
                 )
                 adjustment = float(cost_adjustments.get(lane_id, 0))
@@ -402,6 +408,7 @@ def _solve_with_reassignment(
     disabled_lane_ids: set[str],
     lane_cost_adjustments_pct: Mapping[str, float],
     lane_unit_costs: Mapping[str, float],
+    lane_unit_costs_by_date_lane: Mapping[tuple[str, str], float],
     tariff_per_case_by_date_lane: Mapping[tuple[str, str], float],
     unmet_penalty_per_case: float,
 ) -> dict[str, list[dict[str, Any]]]:
@@ -476,7 +483,10 @@ def _solve_with_reassignment(
                 cap = lane_capacity.get((service_date, lid), 0)
                 if lid in disabled_lane_ids or dc in disabled_facility_ids or depot in disabled_facility_ids: cap = 0
                 lane = lanes[lid]
-                base = float(lane_unit_costs.get(lid, lane.get("planning_cost_per_case") or max(450.0, float(lane["distance_miles"]) * 3.4) * 1.12 / 900))
+                base = float(lane_unit_costs_by_date_lane.get(
+                    (service_date, lid),
+                    lane_unit_costs.get(lid, lane.get("planning_cost_per_case") if lane.get("planning_cost_per_case") is not None else max(450.0, float(lane["distance_miles"]) * 3.4) * 1.12 / 900),
+                ))
                 cost = base * (1 + float(lane_cost_adjustments_pct.get(lid, 0)) / 100) + float(tariff_per_case_by_date_lane.get((service_date, lid), 0))
                 arc = solver.add_arc_with_capacity_and_unit_cost(node(f"dc:{dc}"), node(f"depot:{depot}"), cap, max(1, round(cost * 100)))
                 tracked_linehaul[arc] = (lid, depot)

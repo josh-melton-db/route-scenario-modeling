@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import threading
 import uuid
 from copy import deepcopy
@@ -10,7 +9,6 @@ from typing import Any, cast
 from fastapi import HTTPException
 
 from route_opt.network_flow import solve_fixed_capacity_network
-from route_opt.rates import contract_status, quote_contract
 
 from ..config import get_data_backend
 from ..models import (
@@ -21,6 +19,8 @@ from ..models import (
     NetworkScenarioCreateRequest,
     NetworkScenarioException,
     NetworkScenarioKpiDeltas,
+    NetworkPricingContext,
+    NetworkRateCoverage,
     NetworkScenarioResult,
     NetworkScenarioRunResponse,
     NetworkReleaseOverlay,
@@ -28,18 +28,16 @@ from ..models import (
     NetworkScenarioValidation,
     NetworkScenarioValidationIssue,
     NetworkTariffRule,
-    RateChargeLine,
     RateContractDetail,
 )
 from .lakebase_store import lakebase_store
-from .network_overview import (
-    NetworkRows,
-    estimate_lane_daily_cost,
-    network_overview_service,
+from .network_overview import NetworkRows, network_overview_service
+from .network_rating import (
+    objective_lane_unit_costs, rate_network_flows, resolve_network_tariffs,
 )
 from .network_run_snapshots import NetworkRunSnapshot
 from .network_assignment_projection import merge_assignment_overlays
-from .rates import governed_linehaul_contract, list_rate_contract_details
+from .rates import list_rate_contract_details
 from .store_provider import get_store
 
 
@@ -767,158 +765,22 @@ class NetworkScenarioService:
     def run_result(self, run_id: str) -> NetworkScenarioResult:
         return self.get_run_snapshot(run_id).result
 
-    @staticmethod
-    def _governed_contract(
-        contracts: list[RateContractDetail], service_date: str, region_id: str
-    ) -> RateContractDetail | None:
-        governed = governed_linehaul_contract(region_id)
-        if governed is None:
-            return None
-        candidates = [
-            row
-            for row in contracts
-            if row.contract_id == governed[0]
-            and contract_status(row.model_dump(mode="json"), service_date)
-            == "published"
-        ]
-        return max(candidates, key=lambda row: row.version.version_number, default=None)
-
     def _rate_flows(
         self,
         rows: NetworkRows,
         flow_rows: list[dict[str, Any]],
         tariff_by_date_lane: dict[tuple[str, str], tuple[float, str]],
+        *,
+        contracts: list[RateContractDetail] | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[NetworkFlowChargeDetail],
         list[NetworkScenarioException],
     ]:
-        lanes = {str(row["lane_id"]): row for row in rows["dim_network_lanes"]}
-        facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
-        contracts = list_rate_contract_details(get_store())
-        cost_rows: list[dict[str, Any]] = []
-        charge_details: list[NetworkFlowChargeDetail] = []
-        missing_rate_lanes: set[str] = set()
-
-        for flow in flow_rows:
-            assigned = int(flow["assigned_units"])
-            lane_id = str(flow["lane_id"])
-            service_date = str(flow["service_date"])
-            lane = lanes[lane_id]
-            total_cost = estimate_lane_daily_cost(lane, assigned)
-            rate_source = "planning_fallback"
-            contract_id = None
-            contract_version_id = None
-            snapshot_id = None
-            tariff_rate, tariff_rule_id = tariff_by_date_lane.get(
-                (service_date, lane_id), (0.0, "")
-            )
-            tariff_total = round(assigned * tariff_rate, 2)
-
-            if lane["lane_type"] == "LINEHAUL" and assigned > 0:
-                loads = max(1, math.ceil(assigned / 900))
-                origin = facilities[str(lane["origin_endpoint_id"])]
-                contract = self._governed_contract(
-                    contracts, service_date, str(origin["region_id"])
-                )
-                charge_lines: list[RateChargeLine] = []
-                if contract is not None:
-                    quote = quote_contract(
-                        contract.model_dump(mode="json"),
-                        {
-                            "service_date": service_date,
-                            "origin": str(lane["origin_endpoint_id"]),
-                            "destination": str(lane["destination_endpoint_id"]),
-                            "miles": float(lane["distance_miles"]),
-                            "stops": 1,
-                            "cases": min(assigned, 900),
-                            "period_volume": loads,
-                            "commitment_policy": "honor",
-                        },
-                    )
-                    if quote["matched_lane_rule_id"]:
-                        total_cost = round(float(quote["total_cost"]) * loads, 2)
-                        rate_source = "governed_contract"
-                        contract_id = contract.contract_id
-                        contract_version_id = contract.version.version_id
-                        snapshot_id = str(quote["rate_book_snapshot_id"])
-                        charge_lines = [
-                            RateChargeLine.model_validate(
-                                {
-                                    **line,
-                                    "formula": f"{loads} loads × ({line['formula']})",
-                                    "quantity": float(line["quantity"]) * loads,
-                                    "amount": round(float(line["amount"]) * loads, 2),
-                                }
-                            )
-                            for line in cast(list[dict[str, Any]], quote["charge_lines"])
-                        ]
-                if rate_source == "planning_fallback":
-                    missing_rate_lanes.add(lane_id)
-                    linehaul_per_load = max(
-                        450.0, float(lane["distance_miles"]) * 3.4
-                    )
-                    base = linehaul_per_load * loads
-                    fuel = base * 0.12
-                    charge_lines = [
-                        RateChargeLine(
-                            category="mileage",
-                            label="Planning linehaul estimate",
-                            formula=(
-                                f"{loads} loads × max($450, "
-                                f"{float(lane['distance_miles']):,.1f} mi × $3.40)"
-                            ),
-                            quantity=loads,
-                            unit="load",
-                            rate=round(linehaul_per_load, 4),
-                            amount=round(base, 2),
-                            rule_id="PLANNING_LINEHAUL_FALLBACK",
-                        ),
-                        RateChargeLine(
-                            category="fuel",
-                            label="Planning fuel estimate",
-                            formula=f"12% × ${base:,.2f}",
-                            quantity=base,
-                            unit="USD",
-                            rate=12,
-                            amount=round(fuel, 2),
-                            rule_id="PLANNING_FUEL_FALLBACK",
-                        ),
-                    ]
-                freight_total = round(total_cost, 2)
-                charge_details.append(
-                    NetworkFlowChargeDetail(
-                        service_date=service_date,
-                        lane_id=lane_id,
-                        assigned_units=assigned,
-                        loads=loads,
-                        rate_source=cast(Any, rate_source),
-                        contract_id=contract_id,
-                        contract_version_id=contract_version_id,
-                        rate_book_snapshot_id=snapshot_id,
-                        freight_total=freight_total,
-                        tariff_total=tariff_total,
-                        tariff_rule_ids=([tariff_rule_id] if tariff_rule_id else []),
-                        total_cost=round(freight_total + tariff_total, 2),
-                        charge_lines=charge_lines,
-                    )
-                )
-
-            cost_rows.append(
-                {
-                    "service_date": service_date,
-                    "lane_id": lane_id,
-                    "freight_total": round(total_cost, 2),
-                    "tariff_total": tariff_total,
-                    "tariff_rule_ids": ([tariff_rule_id] if tariff_rule_id else []),
-                    "total_cost": round(total_cost + tariff_total, 2),
-                    "rate_source": rate_source,
-                    "contract_id": contract_id,
-                    "contract_version_id": contract_version_id,
-                    "rate_book_snapshot_id": snapshot_id,
-                }
-            )
-
+        rated = rate_network_flows(
+            rows, flow_rows, tariff_by_date_lane,
+            contracts=contracts if contracts is not None else list_rate_contract_details(get_store()),
+        )
         exceptions = [
             NetworkScenarioException(
                 exception_id=f"RATE_{lane_id}",
@@ -931,9 +793,9 @@ class NetworkScenarioService:
                     "planning fallback charge lines were used."
                 ),
             )
-            for lane_id in sorted(missing_rate_lanes)
+            for lane_id in rated.missing_rate_lane_ids
         ]
-        return cost_rows, charge_details, exceptions
+        return rated.cost_rows, rated.charge_details, exceptions
 
     @staticmethod
     def _resolve_tariffs(
@@ -942,84 +804,19 @@ class NetworkScenarioService:
         horizon_start: str,
         horizon_end: str,
     ) -> dict[tuple[str, str], tuple[float, str]]:
-        facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
-        resolved: dict[tuple[str, str], tuple[float, str]] = {}
-        for lane in rows["dim_network_lanes"]:
-            if str(lane["lane_type"]) != "LINEHAUL":
-                continue
-            origin = facilities.get(str(lane["origin_endpoint_id"]))
-            destination = facilities.get(str(lane["destination_endpoint_id"]))
-            if origin is None or destination is None:
-                continue
-            origin_country = str(origin.get("country_code", ""))
-            destination_country = str(destination.get("country_code", ""))
-            lane_id = str(lane["lane_id"])
-            for rule in rules:
-                if (
-                    rule.origin_country != origin_country
-                    or rule.destination_country != destination_country
-                ):
-                    continue
-                start = max(horizon_start, rule.effective_start)
-                end = min(horizon_end, rule.effective_end)
-                if start > end:
-                    continue
-                current = date.fromisoformat(start)
-                last = date.fromisoformat(end)
-                while current <= last:
-                    resolved[(current.isoformat(), lane_id)] = (
-                        rule.amount_per_case,
-                        rule.rule_id,
-                    )
-                    current = date.fromordinal(current.toordinal() + 1)
-        return resolved
+        return resolve_network_tariffs(rows, rules, horizon_start, horizon_end)
 
     def _solver_lane_unit_costs(
         self,
         rows: NetworkRows,
         service_date: str,
+        contracts: list[RateContractDetail] | None = None,
     ) -> dict[str, float]:
         """Build linear freight estimates from governed full-load quotes."""
-
-        facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
-        contracts = list_rate_contract_details(get_store())
-        unit_costs: dict[str, float] = {}
-        for lane in rows["dim_network_lanes"]:
-            if str(lane["lane_type"]) != "LINEHAUL":
-                continue
-            lane_id = str(lane["lane_id"])
-            fallback = (
-                max(450.0, float(lane["distance_miles"]) * 3.4) * 1.12 / 900
-            )
-            origin = facilities.get(str(lane["origin_endpoint_id"]))
-            if origin is None:
-                unit_costs[lane_id] = fallback
-                continue
-            contract = self._governed_contract(
-                contracts, service_date, str(origin["region_id"])
-            )
-            if contract is None:
-                unit_costs[lane_id] = fallback
-                continue
-            quote = quote_contract(
-                contract.model_dump(mode="json"),
-                {
-                    "service_date": service_date,
-                    "origin": str(lane["origin_endpoint_id"]),
-                    "destination": str(lane["destination_endpoint_id"]),
-                    "miles": float(lane["distance_miles"]),
-                    "stops": 1,
-                    "cases": 900,
-                    "period_volume": 1,
-                    "commitment_policy": "honor",
-                },
-            )
-            unit_costs[lane_id] = (
-                float(quote["total_cost"]) / 900
-                if quote["matched_lane_rule_id"]
-                else fallback
-            )
-        return unit_costs
+        return objective_lane_unit_costs(
+            rows, service_date,
+            contracts if contracts is not None else list_rate_contract_details(get_store()),
+        )
 
     def run(
         self,
@@ -1040,14 +837,39 @@ class NetworkScenarioService:
                 status_code=409,
                 detail="Resolve blocking validation issues before running the plan.",
             )
-        if rows_override is None and scenario.assumptions.parent_run_id:
-            parent = self.get_run_snapshot(scenario.assumptions.parent_run_id)
+        parent = (
+            self.get_run_snapshot(scenario.assumptions.parent_run_id)
+            if scenario.assumptions.parent_run_id else None
+        )
+        if rows_override is None and parent is not None:
             rows = deepcopy(parent.network_rows)
             rows["baseline_network_flow_daily"] = deepcopy(parent.flow_rows)
             rows["network_flow_cost_daily"] = deepcopy(parent.cost_rows)
         else:
             rows = deepcopy(rows_override) if rows_override is not None else self._rows(scenario)
         source_rows = deepcopy(rows)
+        source_metadata = source_rows.get("baseline_revision_metadata", [])
+        pinned_context = (
+            source_metadata[0].get("network_pricing_context", {})
+            if source_metadata else {}
+        )
+        if parent is not None and parent.result.pricing_context.pricing_basis == "comparable_pinned_dated_contracts_v1":
+            pinned_context = parent.result.pricing_context.model_dump(mode="json")
+        contracts = (
+            [
+                RateContractDetail.model_validate(row)
+                for row in pinned_context.get("contract_snapshots", [])
+            ]
+            if "contract_snapshots" in pinned_context
+            else list_rate_contract_details(get_store())
+        )
+        baseline_tariffs = [
+            NetworkTariffRule.model_validate(rule)
+            for rule in (
+                parent.scenario.assumptions.tariffs if parent is not None
+                else source_metadata[0].get("tariffs", []) if source_metadata else []
+            )
+        ]
         if release_requests is None and scenario.assumptions.release_overlays:
             release_requests = [row.model_dump(mode="json") if hasattr(row, "model_dump") else dict(row) for row in scenario.assumptions.release_overlays]
         tariff_by_date_lane = self._resolve_tariffs(
@@ -1056,7 +878,22 @@ class NetworkScenarioService:
             scenario.horizon_start,
             scenario.horizon_end,
         )
-        lane_unit_costs = self._solver_lane_unit_costs(rows, scenario.horizon_start)
+        baseline_tariff_by_date_lane = self._resolve_tariffs(
+            source_rows, baseline_tariffs, scenario.horizon_start, scenario.horizon_end
+        )
+        solve_dates = sorted({
+            str(row["service_date"])[:10]
+            for row in rows["demand_plan_daily"]
+            if str(row["demand_plan_version_id"]) == scenario.demand_plan_version_id
+            and scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
+        })
+        dated_unit_costs = {
+            (service_date, lane_id): amount
+            for service_date in solve_dates
+            for lane_id, amount in self._solver_lane_unit_costs(
+                rows, service_date, contracts
+            ).items()
+        }
         allocation = solve_fixed_capacity_network(
             rows,
             demand_plan_version_id=scenario.demand_plan_version_id,
@@ -1071,7 +908,7 @@ class NetworkScenarioService:
             lane_cost_adjustments_pct=(
                 scenario.assumptions.lane_cost_adjustments_pct
             ),
-            lane_unit_costs=lane_unit_costs,
+            lane_unit_costs_by_date_lane=dated_unit_costs,
             tariff_per_case_by_date_lane={
                 key: value[0] for key, value in tariff_by_date_lane.items()
             },
@@ -1091,7 +928,18 @@ class NetworkScenarioService:
             rows["lane_capacity_daily"] = allocation["lane_capacity_rows"]
         flow_rows = allocation["flow_rows"]
         cost_rows, charges, exceptions = self._rate_flows(
-            rows, flow_rows, tariff_by_date_lane
+            rows, flow_rows, tariff_by_date_lane, contracts=contracts
+        )
+        baseline_flow_rows = [
+            deepcopy(row)
+            for row in source_rows["baseline_network_flow_daily"]
+            if scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
+            and str(row["demand_plan_version_id"]) == scenario.demand_plan_version_id
+            and str(row["capacity_plan_version_id"]) == scenario.capacity_plan_version_id
+        ]
+        baseline_cost_rows, baseline_charges, _ = self._rate_flows(
+            source_rows, baseline_flow_rows, baseline_tariff_by_date_lane,
+            contracts=contracts,
         )
         for unmet in allocation["unmet_rows"]:
             if int(unmet["unmet_units"]) <= 0:
@@ -1126,8 +974,12 @@ class NetworkScenarioService:
             lane_type="LINEHAUL",
             metric="assigned_flow",
         )
+        comparable_baseline_rows = deepcopy(source_rows)
+        comparable_baseline_rows["baseline_network_flow_daily"] = baseline_flow_rows
+        comparable_baseline_rows["network_flow_cost_daily"] = baseline_cost_rows
         baseline = network_overview_service.build_overview(
-            source_rows, context=context.model_copy(update={"scenario_id": "baseline"})
+            comparable_baseline_rows,
+            context=context.model_copy(update={"scenario_id": "baseline"}),
         )
         scenario_rows = dict(rows)
         scenario_rows["baseline_network_flow_daily"] = flow_rows
@@ -1135,6 +987,14 @@ class NetworkScenarioService:
         overview = network_overview_service.build_overview(
             scenario_rows, context=context, scenario_id=scenario.scenario_id
         )
+        # The comparison/audit uses the same selected linehaul scope as its
+        # KPIs. Complete cost rows remain in the immutable run for promotion.
+        scenario_lane_ids = {lane.lane_id for lane in overview.lanes if lane.lane_type == "LINEHAUL"}
+        baseline_lane_ids = {lane.lane_id for lane in baseline.lanes if lane.lane_type == "LINEHAUL"}
+        comparison_lane_ids = scenario_lane_ids | baseline_lane_ids
+        all_rating_charges = baseline_charges + charges
+        charges = [row for row in charges if row.lane_id in scenario_lane_ids]
+        baseline_charges = [row for row in baseline_charges if row.lane_id in baseline_lane_ids]
         deltas = NetworkScenarioKpiDeltas(
             **{
                 field: round(
@@ -1180,6 +1040,8 @@ class NetworkScenarioService:
         facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
         lanes = {str(row["lane_id"]): row for row in rows["dim_network_lanes"]}
         def is_cross_border_depot_flow(row: dict[str, Any]) -> bool:
+            if str(row["lane_id"]) not in comparison_lane_ids:
+                return False
             lane = lanes.get(str(row["lane_id"]))
             if lane is None or str(lane["lane_type"]) != "LINEHAUL":
                 return False
@@ -1196,7 +1058,7 @@ class NetworkScenarioService:
         cross_border_assigned_units = sum(
             int(row["assigned_units"])
             for row in flow_rows
-            if is_cross_border_depot_flow(row)
+            if str(row["lane_id"]) in scenario_lane_ids and is_cross_border_depot_flow(row)
         )
         baseline_cross_border_assigned_units = sum(
             int(row["assigned_units"])
@@ -1204,6 +1066,7 @@ class NetworkScenarioService:
             if scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
             and str(row["demand_plan_version_id"]) == scenario.demand_plan_version_id
             and str(row["capacity_plan_version_id"]) == scenario.capacity_plan_version_id
+            and str(row["lane_id"]) in baseline_lane_ids
             and is_cross_border_depot_flow(row)
         )
         baseline_tariff_exposure = sum(
@@ -1215,14 +1078,17 @@ class NetworkScenarioService:
             if scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
             and str(row["demand_plan_version_id"]) == scenario.demand_plan_version_id
             and str(row["capacity_plan_version_id"]) == scenario.capacity_plan_version_id
+            and str(row["lane_id"]) in baseline_lane_ids
         )
         tariff_destination_ids = {
             str(lanes[lane_id]["destination_endpoint_id"])
             for _, lane_id in tariff_by_date_lane
-            if lane_id in lanes
+            if lane_id in comparison_lane_ids
         }
 
         def is_domestic_tariff_alternative(lane_id: str) -> bool:
+            if lane_id not in comparison_lane_ids:
+                return False
             lane = lanes.get(lane_id)
             if lane is None or str(lane["lane_type"]) != "LINEHAUL":
                 return False
@@ -1251,6 +1117,36 @@ class NetworkScenarioService:
             == scenario.capacity_plan_version_id
             and is_domestic_tariff_alternative(str(row["lane_id"]))
         )
+        baseline_freight_total = round(sum(row.freight_total for row in baseline_charges), 2)
+        baseline_tariff_total = round(sum(row.tariff_total for row in baseline_charges), 2)
+        scenario_freight_total = round(sum(row.freight_total for row in charges), 2)
+        scenario_tariff_total = round(sum(row.tariff_total for row in charges), 2)
+        published_cost_rows = [
+            row for row in source_rows.get("network_flow_cost_daily", [])
+            if scenario.horizon_start <= str(row["service_date"])[:10] <= scenario.horizon_end
+            and str(row.get("demand_plan_version_id", scenario.demand_plan_version_id))
+            == scenario.demand_plan_version_id
+            and str(row.get("capacity_plan_version_id", scenario.capacity_plan_version_id))
+            == scenario.capacity_plan_version_id
+            and str(row["lane_id"]) in baseline_lane_ids
+        ]
+        original_published_cost = (
+            round(sum(float(row.get("total_cost", 0)) for row in published_cost_rows), 2)
+            if published_cost_rows else None
+        )
+
+        def coverage(rows_: list[NetworkFlowChargeDetail]) -> NetworkRateCoverage:
+            governed = [row for row in rows_ if row.rate_source == "governed_contract"]
+            fallback = [row for row in rows_ if row.rate_source == "planning_fallback"]
+            return NetworkRateCoverage(
+                governed_charge_count=len(governed), fallback_charge_count=len(fallback),
+                governed_assigned_units=sum(row.assigned_units for row in governed),
+                fallback_assigned_units=sum(row.assigned_units for row in fallback),
+            )
+
+        rate_snapshot_ids = sorted({
+            row.rate_book_snapshot_id for row in all_rating_charges if row.rate_book_snapshot_id
+        })
         result = NetworkScenarioResult(
             run_id=f"network-run-{uuid.uuid4()}",
             scenario_id=scenario.scenario_id,
@@ -1260,13 +1156,33 @@ class NetworkScenarioService:
             baseline_overview=baseline,
             kpi_deltas=deltas,
             affected_depot_ids=affected,
-            freight_total_cost=round(sum(row.freight_total for row in charges), 2),
-            tariff_total_cost=round(sum(row.tariff_total for row in charges), 2),
+            freight_total_cost=scenario_freight_total,
+            tariff_total_cost=scenario_tariff_total,
             baseline_tariff_exposure=round(baseline_tariff_exposure, 2),
             cross_border_assigned_units=cross_border_assigned_units,
             baseline_cross_border_assigned_units=baseline_cross_border_assigned_units,
             domestic_shift_units=scenario_domestic_units - baseline_domestic_units,
             charge_details=charges,
+            baseline_charge_details=baseline_charges,
+            baseline_freight_total_cost=baseline_freight_total,
+            baseline_tariff_total_cost=baseline_tariff_total,
+            baseline_total_modeled_cost=round(baseline_freight_total + baseline_tariff_total, 2),
+            scenario_total_modeled_cost=round(scenario_freight_total + scenario_tariff_total, 2),
+            original_published_baseline_cost=original_published_cost,
+            baseline_rate_coverage=coverage(baseline_charges),
+            scenario_rate_coverage=coverage(charges),
+            pricing_context=NetworkPricingContext(
+                pricing_basis="comparable_pinned_dated_contracts_v1",
+                contract_snapshots=[row.model_dump(mode="json") for row in contracts],
+                contract_version_ids=sorted({row.version.version_id for row in contracts}),
+                rate_book_snapshot_ids=rate_snapshot_ids,
+                baseline_tariffs=baseline_tariffs,
+                scenario_tariffs=scenario.assumptions.tariffs,
+                objective_cost_basis=(
+                    "linear_full_load_per_case_dated_contract; "
+                    "reported_charges_are_dated_and_whole_load_rounded"
+                ),
+            ),
             exceptions=exceptions,
         )
         solved = scenario.model_copy(

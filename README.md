@@ -98,6 +98,79 @@ story** restores the original baseline pointer after confirmation, retaining
 accepted revisions and historical plans. Promotion from a stale source baseline
 requires a new scenario based on the active revision.
 
+### Comparable tariff pricing and road-network execution
+
+New network results price unchanged baseline flows and scenario flows using the
+same frozen, dated rate-book inputs, 900-case whole-load rules, and symmetric
+fallback estimates. Existing baseline tariffs and proposed scenario tariffs are
+charged separately. The rate audit can switch between the comparable baseline
+and scenario; original published costs remain provenance, not the savings basis.
+Comparison KPIs and charges share the selected region's linehaul scope. They do
+not include optimized last-mile costs. The assignment objective uses dated linear
+full-load estimates; reported freight rounds to whole loads. Legacy runs are not
+rewritten and are explicitly labeled when their pricing basis differs.
+
+Network-linked daily routing supports these explicit execution modes:
+
+- `strict_serving_road`: validated Valhalla truck coverage and Model Serving;
+  default for non-stub backends. No silent distance/local-solver fallback.
+- `local_road`: the same validated road matrix with local OR-Tools.
+- `approximate_development`: local OR-Tools with approximate travel assumptions;
+  default for stub development, clearly labeled in the UI.
+
+Set `ROUTE_EXECUTION_MODE` to override the default. Road modes require
+`ROUTING_COVERAGE_MANIFEST`; strict mode additionally requires
+`DATABRICKS_ROUTE_SOLVER_ENDPOINT`. Pin exact-depot fleet, route costs, and supported
+customer/vehicle constraints when creating the depot plan. Missing strict-mode
+resources or unsupported inputs produce explicit errors rather than substituting
+the synthetic fleet. The stored day result shows the solver, matrix, coverage
+artifact, and fleet/cost provenance.
+
+The dated adapter currently rejects carrier fallback/contracts, required
+vehicle/equipment matching, and explicit shift-clock/route-start constraints
+rather than ignoring them. Supported receiving windows, service times, vehicle
+capacity, route duration/stop limits, breaks, and pinned costs reach the solver.
+These adapter boundaries are distinct from the original legacy route workflow.
+
+The Texas manifest in `routing_coverage_samples/texas-candidates.v1.json` is a
+candidate template for Dallas and San Antonio, **not provisioned coverage**.
+Copy it into an operator-owned deployment file, replace endpoint/artifact/build
+metadata, and run the smoke check against the actual service before enabling it.
+Set the bundle variable `routing_coverage_manifest` to that deployed file path.
+Bounds checks do not guarantee routability: every solve validates the full
+directed matrix and rejects unreachable or misaligned arcs. Changed stops are
+checked again. Matrix caching is currently disabled.
+
+Valhalla tooling is in a separate repository tracked at `valhalla_poc`. A fresh
+checkout needs `git submodule update --init valhalla_poc` (or clone with
+`--recurse-submodules`). Changes inside it must be committed there before a parent
+gitlink update can publish those changes; the parent commit alone is insufficient.
+The new setup/check tooling requires the updated Valhalla repository revision.
+
+To inspect a Texas setup request without making platform calls:
+
+```bash
+scripts/setup-valhalla-extract texas \
+  --coverage-id texas-delivery --artifact-version tx-v1 \
+  --volume-path '/Volumes/<catalog>/<schema>/<volume>' \
+  --cluster-id '<authorized-cluster-id>' \
+  --notebook-path '/Workspace/<path>/build_valhalla'
+```
+
+Replace the placeholders with your values. Execution additionally requires
+`--execute --profile <chosen-profile>`; no profile is inferred. Existing engine
+assets can be reused; rebuilding the engine is an explicit option. Once the
+matching region/artifact is deployed, `scripts/check-valhalla-coverage` checks
+artifact identity and reachable bidirectional truck matrix cells and records the
+result in the manifest. See `valhalla_poc/README.md` for configuration and examples.
+The smoke command requires `--profile <chosen-profile>` for authenticated managed
+Apps, or explicit `--unauthenticated` for local/public endpoints. Each mapped
+managed App endpoint needs `CAN_USE` permission; the solver endpoint needs
+`CAN_QUERY`. The bundle grants these for its configured Valhalla App and solver,
+not automatically for additional mapped endpoints.
+No Texas tiles, live endpoints, or workspace permissions were provisioned as part
+of the code implementation.
+
 Run the focused browser checks against an already-running local frontend without
 starting or stopping any local apps:
 

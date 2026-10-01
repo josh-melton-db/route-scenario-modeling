@@ -3,9 +3,12 @@ from __future__ import annotations
 from copy import deepcopy
 from threading import RLock
 
+import pytest
+
 from backend.models import Kpis, Route
 from backend.services.depot_plan_jobs import DepotPlanJobManager
-from backend.services.depot_plans import DepotPlanService
+from backend.services.depot_plans import DepotPlanService, _route_cost_parameters
+from route_opt.cost import CostParameters
 from route_opt.depot_planning import solve_depot_plan
 
 
@@ -290,3 +293,123 @@ def test_operational_override_changes_only_local_solver_inputs() -> None:
     depot = override_input["network_rows"]["dim_facilities"][0]
     assert (depot["lat"], depot["lng"]) == (39.8, -86.1)
     assert _snapshot()["network_rows"]["dim_facilities"][0]["lat"] == 39.75
+
+
+def test_route_cost_parameters_are_pinned_by_depot_and_date() -> None:
+    snapshot = _snapshot()
+    snapshot["network_rows"]["route_cost_parameters"] = [{
+        **CostParameters().as_dict(),
+        "depot_id": DEPOT_ID,
+        "effective_start": DATE_ONE,
+        "effective_end": DATE_ONE,
+        "cost_per_mile": 4.75,
+        "labor_regular_hour": 91.0,
+    }]
+
+    params, source = _route_cost_parameters(
+        snapshot["network_rows"]["route_cost_parameters"],
+        DEPOT_ID, DATE_ONE, strict=True, source="snapshot:route_cost_parameters"
+    )
+    assert params.cost_per_mile == 4.75
+    assert params.labor_regular_hour == 91.0
+    assert source == "snapshot:route_cost_parameters"
+    with pytest.raises(ValueError, match="requires pinned route cost parameters"):
+        _route_cost_parameters(
+            snapshot["network_rows"]["route_cost_parameters"],
+            DEPOT_ID, DATE_TWO, strict=True,
+        )
+
+
+def test_strict_plan_creation_rejects_default_synthetic_fleet(monkeypatch) -> None:
+    monkeypatch.setenv("ROUTE_EXECUTION_MODE", "strict_serving_road")
+    service = DepotPlanService(
+        repository=FakeRepository(),
+        snapshot_provider=lambda run_id: deepcopy(_snapshot()),
+        job_manager=DepotPlanJobManager(max_workers=1, start_workers=False),
+    )
+
+    with pytest.raises(ValueError, match="requires a real pinned fleet source"):
+        service.get_or_create_plan("RUN-STRICT", DEPOT_ID)
+
+
+def test_strict_empty_horizon_needs_no_fleet_cost_matrix_or_endpoint(monkeypatch) -> None:
+    monkeypatch.setenv("ROUTE_EXECUTION_MODE", "strict_serving_road")
+    monkeypatch.delenv("DATABRICKS_ROUTE_SOLVER_ENDPOINT", raising=False)
+    monkeypatch.delenv("ROUTING_COVERAGE_MANIFEST", raising=False)
+    snapshot = _snapshot()
+    for flow in snapshot["flow_rows"]:
+        flow["assigned_units"] = 0
+    jobs = DepotPlanJobManager(max_workers=1, start_workers=False)
+    service = DepotPlanService(
+        repository=FakeRepository(), snapshot_provider=lambda _: deepcopy(snapshot),
+        fleet_provider=lambda *_: pytest.fail("An empty plan does not require fleet lookup"),
+        job_manager=jobs,
+    )
+    plan = service.get_or_create_plan("RUN-EMPTY", DEPOT_ID)
+    while jobs.run_next():
+        pass
+    completed = service.get_plan(plan.plan_set_id)
+    assert completed.coverage.solved_days == 2
+    assert completed.resource_source == "not_required_no_work"
+    day = service.get_day(plan.plan_set_id, DATE_ONE)
+    assert day.selected_result.assigned_cases == 0
+    assert day.selected_result.execution["solver_invoked"] is False
+
+
+def test_default_provider_loads_exact_depot_resources_once_and_freezes_them(monkeypatch) -> None:
+    import backend.services.depot_plans as depot_plans_module
+
+    monkeypatch.setenv("ROUTE_EXECUTION_MODE", "strict_serving_road")
+    calls = 0
+    base = {
+        "fleet": [
+            {
+                "vehicle_id": "DALLAS-1", "depot_id": DEPOT_ID,
+                "capacity_cases": 150, "max_route_minutes": 540,
+                "max_stops_per_route": 7, "fixed_truck_daily_cost": 225.0,
+                "source_system": "explicit_demo_fixture",
+            },
+            {
+                "vehicle_id": "LEGACY-NORTH", "depot_id": "DPT_NORTH",
+                "capacity_cases": 999, "max_route_minutes": 999,
+                "max_stops_per_route": 99, "fixed_truck_daily_cost": 1.0,
+            },
+        ],
+        "cost_parameters": [{**CostParameters().as_dict(), "cost_per_mile": 4.6}],
+    }
+
+    class Store:
+        def load_solver_base_tables(self):
+            nonlocal calls
+            calls += 1
+            return deepcopy(base)
+
+    monkeypatch.setattr(depot_plans_module, "get_store", lambda: Store())
+    repository = FakeRepository()
+    jobs = DepotPlanJobManager(max_workers=1, start_workers=False)
+    observed_costs = []
+
+    def solver(**kwargs):
+        observed_costs.append(kwargs["cost_parameters"].cost_per_mile)
+        return solve_depot_plan(**kwargs, time_limit_seconds=1)
+
+    service = DepotPlanService(
+        repository=repository,
+        snapshot_provider=lambda run_id: deepcopy(_snapshot()),
+        solver=solver,
+        job_manager=jobs,
+    )
+    plan = _payload(service.get_or_create_plan("RUN-PINNED", DEPOT_ID))
+    stored = repository.get(plan["plan_set_id"])
+    assert calls == 1
+    assert [row["vehicle_id"] for row in stored["fleet"]] == ["DALLAS-1"]
+    assert stored["resource_source"].endswith(":demo_fixture")
+    assert stored["route_cost_parameters"][0]["cost_per_mile"] == 4.6
+
+    base["fleet"][0]["capacity_cases"] = 1
+    base["cost_parameters"][0]["cost_per_mile"] = 99.0
+    while jobs.run_next():
+        pass
+    assert calls == 1
+    assert observed_costs == [4.6, 4.6]
+    assert repository.get(plan["plan_set_id"])["fleet"][0]["capacity_cases"] == 150
