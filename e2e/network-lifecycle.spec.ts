@@ -17,6 +17,40 @@ const networkResult = {
 }
 const coverage = { ready: false, covered_dates: 0, expected_dates: 1, covered_depots: 0, expected_depots: 1, message: 'Local routes still need optimization.' }
 
+test('shows comparable pricing and audits baseline separately from scenario', async ({ page }) => {
+  const charge = { service_date: serviceDate, assigned_units: 100, loads: 1, rate_source: 'governed_contract', contract_id: 'contract-1', contract_version_id: 'version-1', rate_book_snapshot_id: 'snapshot-1', charge_lines: [] }
+  const priced = {
+    ...networkResult,
+    baseline_freight_total_cost: 450, baseline_tariff_total_cost: 30, baseline_total_modeled_cost: 480,
+    freight_total_cost: 450, tariff_total_cost: 50, scenario_total_modeled_cost: 500,
+    original_published_baseline_cost: 999,
+    baseline_rate_coverage: { governed_charge_count: 1, fallback_charge_count: 0 },
+    scenario_rate_coverage: { governed_charge_count: 1, fallback_charge_count: 0 },
+    pricing_context: { pricing_basis: 'comparable_pinned_dated_contracts_v1', load_size_cases: 900, contract_version_ids: ['version-1'], rate_book_snapshot_ids: ['snapshot-1'], objective_cost_basis: 'dated_linear' },
+    baseline_charge_details: [{ ...charge, lane_id: 'BASELINE_LANE', freight_total: 450, tariff_total: 30, total_cost: 480 }],
+    charge_details: [{ ...charge, lane_id: 'SCENARIO_LANE', freight_total: 450, tariff_total: 50, total_cost: 500 }],
+  }
+  await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/network/runs/run-1') return route.fulfill({ json: priced })
+    if (path === '/api/network/options') return route.fulfill({ json: { regions: [{ region_id: 'ALL', region_name: 'All regions' }], facilities: [], demand_plans: [], capacity_plans: [], lane_types: ['LINEHAUL'], metrics: [], default_demand_plan_version_id: 'demand-v1', default_capacity_plan_version_id: 'capacity-v1', default_horizon_start: serviceDate, default_horizon_end: serviceDate, default_region_id: 'ALL', default_lane_type: 'LINEHAUL', default_metric: 'assigned_flow', source: 'e2e', freshness_at: `${serviceDate}T12:00:00Z` } })
+    if (path === '/api/network/overview') return route.fulfill({ json: overview })
+    if (path === '/api/network/scenarios/network-1') return route.fulfill({ json: scenario })
+    if (path === '/api/network/scenarios') return route.fulfill({ json: [scenario] })
+    if (path === '/api/network/baseline') return route.fulfill({ json: { original_revision_id: 'original', active_revision_id: 'original', active_run_id: null, route_coverage: coverage } })
+    return route.fulfill({ status: 404, json: { detail: path } })
+  })
+  await page.goto(`${appUrl}/network/scenarios/network-1/flow?run=run-1`)
+  await expect(page.getByLabel('Comparison pricing basis')).toContainText('same pinned, dated rate books')
+  await page.getByRole('link', { name: 'Rate audit', exact: true }).click()
+  await expect(page.getByLabel('Comparison pricing basis')).toContainText('Baseline freight $450 + tariffs $30 = $480')
+  await expect(page.getByLabel('Comparison pricing basis')).toContainText('not used to calculate the comparable delta')
+  await expect(page.getByRole('table')).toContainText('SCENARIO_LANE')
+  await page.getByLabel('Audit plan').selectOption('baseline')
+  await expect(page.getByRole('table')).toContainText('BASELINE_LANE')
+  await expect(page.getByRole('table')).not.toContainText('SCENARIO_LANE')
+})
+
 test('main network depot links use the accepted baseline planning run and preserve filters', async ({ page }) => {
   const facility = { facility_id: 'DPT_TEST', facility_name: 'Test Depot', facility_type: 'depot', region_id: 'ALL', parent_facility_id: null, location: { lat: 40, lng: -86 }, demand_units: 100, assigned_units: 100, capacity_units: 200, utilization_pct: 50, total_cost: 500, cost_per_unit: 5, on_time_pct: 100, connected_facility_count: 1, depot_count: 1, depot_analysis_available: true }
   await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {

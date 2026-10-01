@@ -18,6 +18,7 @@ import NetworkDetailDrawer from '@/components/NetworkDetailDrawer'
 import NetworkFlowMap from '@/components/NetworkFlowMap'
 import NetworkTariffChangeCard from '@/components/NetworkTariffChangeCard'
 import NetworkBaselineActions from '@/components/NetworkBaselineActions'
+import NetworkPricingNote, { hasComparablePricing } from '@/components/NetworkPricingNote'
 import {
   useDeleteNetworkScenario,
   useNetworkOptions,
@@ -834,7 +835,7 @@ function FlowTab({
       tone: deltas.unmet_units <= 0 ? ('good' as const) : ('bad' as const),
     },
     {
-      label: 'Total cost',
+      label: 'Linehaul cost',
       value: formatCurrency(overview.kpis.total_cost),
       delta: signedCurrency(deltas.total_cost),
       tone: deltas.total_cost <= 0 ? ('good' as const) : ('neutral' as const),
@@ -877,12 +878,12 @@ function FlowTab({
           />
         ))}
       </div>
+      <NetworkPricingNote result={result.data} />
       {deltas.assigned_units === 0 && overview.kpis.unmet_units === 0 && (
         <p className="text-xs text-muted-foreground">
           All {formatNumber(overview.kpis.demand_units)} cases of demand are assigned in both
-          plans, so assigned volume and cost per case have almost nothing to move. This
-          scenario changes where cases are assigned, which is why the tariff and cross-border
-          lines carry the signal.
+          plans. Assigned volume is unchanged; freight and tariffs can still change as
+          sourcing changes. Compare the linehaul cost, tariff, and cross-border lines.
         </p>
       )}
       <div className="grid overflow-hidden rounded-lg border border-border bg-card sm:grid-cols-2 lg:grid-cols-5">
@@ -944,13 +945,13 @@ function FlowTab({
               scenario={formatNumber(overview.kpis.unmet_units)}
             />
             <CompareRow
-              label="Total cost"
+              label="Linehaul cost"
               baseline={formatCurrency(baseline_overview.kpis.total_cost)}
               scenario={formatCurrency(overview.kpis.total_cost)}
             />
             <CompareRow
               label="Tariff paid"
-              baseline={formatCurrency(0)}
+              baseline={hasComparablePricing(result.data) ? formatCurrency(result.data.baseline_tariff_total_cost ?? 0) : 'Not recorded'}
               scenario={tariffTotal == null ? 'Not provided' : formatCurrency(tariffTotal)}
             />
             <CompareRow
@@ -973,7 +974,7 @@ function FlowTab({
           </ul>
           {(baselineTariffExposure ?? 0) > 0 && (
             <p className="mt-3 text-xs text-muted-foreground">
-              Unchanged baseline tariff exposure: {formatCurrency(baselineTariffExposure ?? 0)}. This counterfactual charge is not included in baseline total cost.
+              Unchanged baseline tariff exposure: {formatCurrency(baselineTariffExposure ?? 0)} under the scenario's tariff rules. This is a counterfactual; baseline cost includes only its existing tariffs.
             </p>
           )}
           <p className="mt-4 text-xs text-muted-foreground">
@@ -1194,22 +1195,24 @@ function RateAuditTab({
   onBackToScenario: () => void
 }) {
   const [query, setQuery] = useState('')
+  const [pricingSide, setPricingSide] = useState<'scenario' | 'baseline'>('scenario')
   const [expanded, setExpanded] = useState<string | null>(null)
 
   const rows = useMemo(() => {
     if (!result.data) return []
+    const charges = pricingSide === 'baseline' ? result.data.baseline_charge_details ?? [] : result.data.charge_details
     const needle = query.trim().toLowerCase()
     const filtered = needle
-      ? result.data.charge_details.filter(
+      ? charges.filter(
           (row) =>
             row.lane_id.toLowerCase().includes(needle) ||
             (row.contract_id ?? '').toLowerCase().includes(needle),
         )
-      : result.data.charge_details
+      : charges
     return [...filtered]
       .sort((a, b) => b.total_cost - a.total_cost)
       .slice(0, 100)
-  }, [result.data, query])
+  }, [result.data, query, pricingSide])
 
   if (result.isLoading) {
     return (
@@ -1228,18 +1231,27 @@ function RateAuditTab({
     )
   }
 
-  const governed = result.data.charge_details.filter(
+  const auditCharges = pricingSide === 'baseline' ? result.data.baseline_charge_details ?? [] : result.data.charge_details
+  const governed = auditCharges.filter(
     (row) => row.rate_source === 'governed_contract',
   ).length
-  const fallback = result.data.charge_details.length - governed
+  const fallback = auditCharges.length - governed
 
   return (
     <div className="flex flex-col gap-3">
+      <NetworkPricingNote result={result.data} detailed />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
           {formatNumber(governed)} governed contract charges · {formatNumber(fallback)}{' '}
           planning-fallback charges (see Exceptions)
         </p>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          Audit plan
+          <select aria-label="Audit plan" value={pricingSide} onChange={(event) => { setPricingSide(event.target.value as 'scenario' | 'baseline'); setExpanded(null) }} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground">
+            <option value="scenario">Scenario</option>
+            <option value="baseline" disabled={!hasComparablePricing(result.data)}>Comparable baseline</option>
+          </select>
+        </label>
         <label className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input

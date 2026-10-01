@@ -323,6 +323,7 @@ export interface NetworkFlowChargeDetail {
   contract_version_id: string | null
   rate_book_snapshot_id: string | null
   total_cost: number
+  freight_total?: number
   tariff_total?: number
   tariff_rule_ids?: string[]
   charge_lines: RateChargeLine[]
@@ -344,6 +345,29 @@ export interface NetworkScenarioResult {
   cross_border_assigned_units?: number
   baseline_cross_border_assigned_units?: number
   domestic_shift_units?: number
+  baseline_charge_details?: NetworkFlowChargeDetail[]
+  freight_total_cost?: number
+  baseline_freight_total_cost?: number
+  baseline_tariff_total_cost?: number
+  baseline_total_modeled_cost?: number
+  scenario_total_modeled_cost?: number
+  original_published_baseline_cost?: number | null
+  baseline_rate_coverage?: NetworkRateCoverage
+  scenario_rate_coverage?: NetworkRateCoverage
+  pricing_context?: {
+    pricing_basis: string
+    load_size_cases: number
+    contract_version_ids: string[]
+    rate_book_snapshot_ids: string[]
+    objective_cost_basis: string
+  }
+}
+
+export interface NetworkRateCoverage {
+  governed_charge_count: number
+  fallback_charge_count: number
+  governed_assigned_units: number
+  fallback_assigned_units: number
 }
 
 export interface NetworkScenarioRunResponse {
@@ -798,8 +822,22 @@ export interface DepotPlanDayResult {
   assigned_cases: number
   routed_cases: number
   unserved_cases: number
-  diagnostics: string[]
+  diagnostics: Array<string | Record<string, unknown>>
   matrix_source: MatrixSource
+  execution?: {
+    mode?: string
+    solver?: string
+    solver_invoked?: boolean
+    solver_endpoint?: string | null
+    matrix_source?: string
+    matrix_requested?: boolean
+    coverage_id?: string
+    artifact_version?: string
+    costing?: string
+    resource_source?: string
+    cost_parameter_source?: string
+    approximate?: boolean
+  } | null
   created_at: string
 }
 

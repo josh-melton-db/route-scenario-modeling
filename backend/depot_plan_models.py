@@ -64,6 +64,7 @@ class DayResult(StrictModel):
     unserved_cases: int = Field(ge=0)
     diagnostics: list[dict[str, Any]] = Field(default_factory=list)
     matrix_source: MatrixSource
+    execution: dict[str, Any] | None = None
     created_at: str
 
     @model_validator(mode="after")

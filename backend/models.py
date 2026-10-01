@@ -1010,6 +1010,24 @@ class NetworkFlowChargeDetail(StrictModel):
     charge_lines: list[RateChargeLine] = Field(default_factory=list)
 
 
+class NetworkRateCoverage(StrictModel):
+    governed_charge_count: int = Field(default=0, ge=0)
+    fallback_charge_count: int = Field(default=0, ge=0)
+    governed_assigned_units: int = Field(default=0, ge=0)
+    fallback_assigned_units: int = Field(default=0, ge=0)
+
+
+class NetworkPricingContext(StrictModel):
+    pricing_basis: str = "legacy_published_estimate"
+    load_size_cases: int = Field(default=900, gt=0)
+    contract_snapshots: list[dict[str, Any]] = Field(default_factory=list)
+    contract_version_ids: list[str] = Field(default_factory=list)
+    rate_book_snapshot_ids: list[str] = Field(default_factory=list)
+    baseline_tariffs: list[NetworkTariffRule] = Field(default_factory=list)
+    scenario_tariffs: list[NetworkTariffRule] = Field(default_factory=list)
+    objective_cost_basis: str = "legacy_horizon_start_linear_estimate"
+
+
 class NetworkScenarioResult(StrictModel):
     run_id: str | None = None
     scenario_id: str
@@ -1029,6 +1047,15 @@ class NetworkScenarioResult(StrictModel):
         "governed_full_load_per_case_with_planning_fallback"
     )
     charge_details: list[NetworkFlowChargeDetail] = Field(default_factory=list)
+    baseline_charge_details: list[NetworkFlowChargeDetail] = Field(default_factory=list)
+    baseline_freight_total_cost: float = Field(default=0, ge=0)
+    baseline_tariff_total_cost: float = Field(default=0, ge=0)
+    baseline_total_modeled_cost: float = Field(default=0, ge=0)
+    scenario_total_modeled_cost: float = Field(default=0, ge=0)
+    original_published_baseline_cost: float | None = Field(default=None, ge=0)
+    baseline_rate_coverage: NetworkRateCoverage = Field(default_factory=NetworkRateCoverage)
+    scenario_rate_coverage: NetworkRateCoverage = Field(default_factory=NetworkRateCoverage)
+    pricing_context: NetworkPricingContext = Field(default_factory=NetworkPricingContext)
     exceptions: list[NetworkScenarioException] = Field(default_factory=list)
 
 

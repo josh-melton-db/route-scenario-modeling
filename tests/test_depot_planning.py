@@ -158,3 +158,15 @@ def test_duplicate_inbound_sources_do_not_duplicate_delivery_targets() -> None:
 
     assert targets["assigned_cases"] == 120
     assert len(targets["orders"]) == 1
+
+
+def test_missing_hard_window_flag_preserves_priority_fallback_semantics() -> None:
+    rows = _network_rows()
+    rows["dim_network_customers"][0].pop("hard_time_window_flag")
+    targets = materialize_depot_targets(
+        rows, _flow_rows(), DEPOT_ID, DATE_ONE
+    )
+
+    customer = targets["planning_customers"][0]
+    assert customer["customer_priority"] == "strategic"
+    assert "hard_time_window_flag" not in customer

@@ -46,7 +46,26 @@ class BaselineService:
             if self.repository.is_initialized():
                 self._seeded = True
                 return
-            rows = network_overview_service._load_rows()  # canonical, unfiltered snapshot
+            rows = deepcopy(network_overview_service._load_rows())  # canonical, unfiltered snapshot
+            # New original revisions freeze rates once, just like accepted
+            # revisions. Reconstructing a baseline planning run after eviction
+            # must not consult a subsequently edited rate book.
+            from ..models import NetworkPricingContext
+            from .rates import list_rate_contract_details
+            from .store_provider import get_store
+
+            contracts = list_rate_contract_details(get_store())
+            existing_metadata = rows.get("baseline_revision_metadata", [])
+            metadata = deepcopy(existing_metadata[0]) if existing_metadata else {}
+            metadata.setdefault("route_coverage", self._coverage(rows).model_dump(mode="json"))
+            metadata.setdefault("tariffs", [])
+            metadata["network_pricing_context"] = NetworkPricingContext(
+                pricing_basis="comparable_pinned_dated_contracts_v1",
+                contract_snapshots=[row.model_dump(mode="json") for row in contracts],
+                contract_version_ids=sorted({row.version.version_id for row in contracts}),
+                objective_cost_basis="baseline_snapshot_no_reoptimization",
+            ).model_dump(mode="json")
+            rows["baseline_revision_metadata"] = [metadata]
             identity = {
                 "demand": rows.get("demand_plan_versions", []),
                 "capacity": rows.get("capacity_plan_versions", []),
@@ -560,6 +579,7 @@ class BaselineService:
         metadata["demand_plan_version_id"] = snapshot.scenario.demand_plan_version_id
         metadata["capacity_plan_version_id"] = snapshot.scenario.capacity_plan_version_id
         metadata['tariffs'] = [rule.model_dump(mode='json') for rule in snapshot.scenario.assumptions.tariffs]
+        metadata["network_pricing_context"] = snapshot.result.pricing_context.model_dump(mode="json")
         rows["baseline_revision_metadata"] = [metadata]
         self._validate(rows)
         coverage = self._coverage(rows)
@@ -615,12 +635,18 @@ class BaselineService:
         revision = self.get_revision(revision_id)
         from ..models import (
             NetworkOverviewContext,
+            NetworkPricingContext,
+            NetworkRateCoverage,
+            RateContractDetail,
             NetworkScenario,
             NetworkScenarioAssumptions,
             NetworkScenarioKpiDeltas,
             NetworkScenarioResult,
         )
         from .network_run_snapshots import NetworkRunSnapshot
+        from .network_rating import rate_network_flows, resolve_network_tariffs
+        from .rates import list_rate_contract_details
+        from .store_provider import get_store
 
         default_demand_id, default_capacity_id = self._plan_ids(revision.rows)
         demand_id = demand_plan_version_id or default_demand_id
@@ -688,18 +714,6 @@ class BaselineService:
             horizon_end=end, region_id="ALL", lane_type="LINEHAUL",
             metric="assigned_flow",
         )
-        overview = network_overview_service.build_overview(
-            revision.rows, context=context, scenario_id=scenario_id
-        )
-        result = NetworkScenarioResult(
-            run_id=plan_run_id, scenario_id=scenario_id, revision=1,
-            generated_at=generated_at, overview=overview,
-            baseline_overview=overview.model_copy(deep=True),
-            kpi_deltas=NetworkScenarioKpiDeltas(
-                demand_units=0, assigned_units=0, unmet_units=0, total_cost=0,
-                cost_per_unit=0, on_time_pct=0, utilization_pct=0,
-            ),
-        )
         flow_rows = [
             deepcopy(row) for row in revision.rows.get("baseline_network_flow_daily", [])
             if str(row.get("demand_plan_version_id")) == demand_id
@@ -712,6 +726,68 @@ class BaselineService:
             and str(row.get("capacity_plan_version_id", capacity_id)) == capacity_id
             and start <= str(row["service_date"])[:10] <= end
         ]
+        original_published_cost = (
+            round(sum(float(row.get("total_cost", 0)) for row in cost_rows), 2)
+            if cost_rows else None
+        )
+        pinned_context = metadata[0].get("network_pricing_context", {}) if metadata else {}
+        contracts = (
+            [RateContractDetail.model_validate(row) for row in pinned_context.get("contract_snapshots", [])]
+            if "contract_snapshots" in pinned_context
+            else list_rate_contract_details(get_store())
+        )
+        tariff_map = resolve_network_tariffs(
+            revision.rows, scenario.assumptions.tariffs, start, end
+        )
+        rated = rate_network_flows(
+            revision.rows, flow_rows, tariff_map, contracts=contracts
+        )
+        cost_rows = rated.cost_rows
+        comparable_rows = deepcopy(revision.rows)
+        comparable_rows["baseline_network_flow_daily"] = flow_rows
+        comparable_rows["network_flow_cost_daily"] = cost_rows
+        overview = network_overview_service.build_overview(
+            comparable_rows, context=context, scenario_id=scenario_id
+        )
+        governed = [r for r in rated.charge_details if r.rate_source == "governed_contract"]
+        fallback = [r for r in rated.charge_details if r.rate_source == "planning_fallback"]
+        coverage = NetworkRateCoverage(
+            governed_charge_count=len(governed), fallback_charge_count=len(fallback),
+            governed_assigned_units=sum(r.assigned_units for r in governed),
+            fallback_assigned_units=sum(r.assigned_units for r in fallback),
+        )
+        freight_total = round(sum(r.freight_total for r in rated.charge_details), 2)
+        tariff_total = round(sum(r.tariff_total for r in rated.charge_details), 2)
+        result = NetworkScenarioResult(
+            run_id=plan_run_id, scenario_id=scenario_id, revision=1,
+            generated_at=generated_at, overview=overview,
+            baseline_overview=overview.model_copy(deep=True),
+            kpi_deltas=NetworkScenarioKpiDeltas(
+                demand_units=0, assigned_units=0, unmet_units=0, total_cost=0,
+                cost_per_unit=0, on_time_pct=0, utilization_pct=0,
+            ),
+            freight_total_cost=freight_total, tariff_total_cost=tariff_total,
+            baseline_freight_total_cost=freight_total,
+            baseline_tariff_total_cost=tariff_total,
+            baseline_total_modeled_cost=round(freight_total + tariff_total, 2),
+            scenario_total_modeled_cost=round(freight_total + tariff_total, 2),
+            original_published_baseline_cost=original_published_cost,
+            charge_details=rated.charge_details,
+            baseline_charge_details=[r.model_copy(deep=True) for r in rated.charge_details],
+            baseline_rate_coverage=coverage, scenario_rate_coverage=coverage,
+            pricing_context=NetworkPricingContext(
+                pricing_basis="comparable_pinned_dated_contracts_v1",
+                contract_snapshots=[r.model_dump(mode="json") for r in contracts],
+                contract_version_ids=sorted({r.version.version_id for r in contracts}),
+                rate_book_snapshot_ids=sorted({
+                    r.rate_book_snapshot_id for r in rated.charge_details
+                    if r.rate_book_snapshot_id
+                }),
+                baseline_tariffs=scenario.assumptions.tariffs,
+                scenario_tariffs=scenario.assumptions.tariffs,
+                objective_cost_basis="baseline_snapshot_no_reoptimization",
+            ),
+        )
         snapshot = NetworkRunSnapshot(
             scenario=scenario, result=result, network_rows=revision.rows,
             flow_rows=flow_rows, cost_rows=cost_rows,

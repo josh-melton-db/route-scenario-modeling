@@ -62,6 +62,34 @@ function planSet(count: number, routeScenarioId = 'default') {
   }
 }
 
+test('shows strict road provenance and an actionable failure without an approximate result', async ({ page }) => {
+  let fail = false
+  const stored = {
+    ...result('2026-09-01', 'strict-result'), matrix_source: 'valhalla',
+    execution: { mode: 'strict_serving_road', solver: 'model_serving', solver_invoked: true, matrix_source: 'valhalla', coverage_id: 'texas', artifact_version: 'tx-v1', costing: 'truck', resource_source: 'snapshot:dim_fleet_assets', approximate: false, solver_endpoint: 'route-solver-test' },
+  }
+  await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/network/runs/run-1/depots/DPT_NORTH/plans' || path === '/api/depot-plans/plan-1') return route.fulfill({ json: planSet(1) })
+    if (path === '/api/depot-plans/plan-1/days/2026-09-01') return route.fulfill({ json: {
+      plan_set_id: 'plan-1', service_date: '2026-09-01', route_scenario_id: 'default',
+      default_status: fail ? 'failed' : 'completed', override_status: null,
+      default_result: fail ? null : stored, selected_result: fail ? null : stored,
+      error: fail ? 'Road coverage validation failed: point outside coverage texas; configure a broader extract.' : null,
+    } })
+    return route.fulfill({ status: 404, json: { detail: path } })
+  })
+  const href = `${appUrl}/analyze?networkRun=run-1&depot=DPT_NORTH&date=2026-09-01`
+  await page.goto(href)
+  await expect(page.getByLabel('Route execution provenance')).toContainText('Strict road routing + Model Serving')
+  await expect(page.getByLabel('Route execution provenance')).toContainText('artifact: tx-v1')
+  await expect(page.getByLabel('Route execution provenance')).toContainText('snapshot:dim_fleet_assets')
+  fail = true
+  await page.reload()
+  await expect(page.getByRole('alert')).toContainText('configure a broader extract')
+  await expect(page.getByLabel('Route execution provenance')).toHaveCount(0)
+})
+
 test('renders the 28-day pinned horizon and completes then resets a non-Tuesday override', async ({ page }) => {
   let named = false
   let optimized = false

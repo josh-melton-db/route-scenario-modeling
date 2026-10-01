@@ -7,12 +7,15 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from route_opt.cost import CostParameters
-from route_opt.depot_planning import materialize_depot_targets, solve_depot_plan
+from route_opt.depot_planning import materialize_depot_targets
 
 from ..depot_plan_models import DayDetail, PlanSet, RouteScenario
+from ..config import get_route_execution_mode
+from .depot_route_execution import dated_route_executor
 from .depot_plan_jobs import DepotPlanJobManager, JobKey, depot_plan_job_manager
 from .depot_plan_repository import depot_plan_repository
 from .network_scenarios import network_scenario_service
+from .store_provider import get_store
 
 
 DEFAULT_SCENARIO_ID = "default"
@@ -32,7 +35,7 @@ class DepotPlanService:
             | tuple[Sequence[Mapping[str, object]], str],
         ]
         | None = None,
-        solver: Callable[..., dict[str, object]] = solve_depot_plan,
+        solver: Callable[..., dict[str, object]] = dated_route_executor,
         job_manager: DepotPlanJobManager = depot_plan_job_manager,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -63,18 +66,36 @@ class DepotPlanService:
 
         network_rows = _snapshot_value(snapshot, "network_rows")
         flow_rows = list(_snapshot_value(snapshot, "flow_rows"))
-        depot_target = materialize_depot_targets(
-            network_rows,
-            flow_rows,
-            depot_id,
-            priority_date_text or dates[0],
+        daily_targets = {
+            service_date: materialize_depot_targets(network_rows, flow_rows, depot_id, service_date)
+            for service_date in dates
+        }
+        depot_target = daily_targets[priority_date_text or dates[0]]
+        fleet_value = (
+            self.fleet_provider(snapshot, depot_id)
+            if any(int(target["assigned_cases"]) > 0 for target in daily_targets.values())
+            else ([], "not_required_no_work", [], "not_required_no_work")
         )
-        fleet_value = self.fleet_provider(snapshot, depot_id)
-        if isinstance(fleet_value, tuple):
+        frozen_cost_rows: list[dict[str, object]] = []
+        cost_resource_source = "snapshot:none"
+        if isinstance(fleet_value, tuple) and len(fleet_value) == 4:
+            fleet_rows, resource_source, cost_rows, cost_resource_source = fleet_value
+            frozen_cost_rows = [dict(row) for row in cost_rows]
+        elif isinstance(fleet_value, tuple):
             fleet_rows, resource_source = fleet_value
+            frozen_cost_rows, cost_resource_source = _snapshot_cost_rows(snapshot)
         else:
             fleet_rows, resource_source = fleet_value, "injected_fleet"
+            frozen_cost_rows, cost_resource_source = _snapshot_cost_rows(snapshot)
         fleet = [dict(row) for row in fleet_rows]
+        if (
+            get_route_execution_mode() == "strict_serving_road"
+            and str(resource_source).startswith("synthetic_unpinned:")
+        ):
+            raise ValueError(
+                "Strict route execution requires a real pinned fleet source; "
+                f"received {resource_source!r}."
+            )
         frozen_fleet = [deepcopy(row) for row in fleet]
         plan_set_id = f"depot-plan-{uuid.uuid4()}"
         created_at = self._timestamp()
@@ -86,6 +107,8 @@ class DepotPlanService:
             "horizon_end": horizon_end,
             "resource_source": resource_source,
             "fleet": frozen_fleet,
+            "route_cost_parameters": deepcopy(frozen_cost_rows),
+            "cost_resource_source": cost_resource_source,
             "scenarios": {
                 DEFAULT_SCENARIO_ID: {
                     "route_scenario_id": DEFAULT_SCENARIO_ID,
@@ -98,12 +121,7 @@ class DepotPlanService:
             "updated_at": created_at,
         }
         for service_date in dates:
-            targets = materialize_depot_targets(
-                network_rows,
-                flow_rows,
-                depot_id,
-                service_date,
-            )
+            targets = daily_targets[service_date]
             job_id = f"default-{service_date}"
             record["days"][service_date] = {
                 "service_date": service_date,
@@ -339,7 +357,24 @@ class DepotPlanService:
             network_rows = deepcopy(_snapshot_value(snapshot, "network_rows"))
             flow_rows = list(_snapshot_value(snapshot, "flow_rows"))
             fleet = [deepcopy(row) for row in running_record["fleet"]]
-            cost_parameters = CostParameters()
+            frozen_cost_rows = running_record.get("route_cost_parameters")
+            if frozen_cost_rows is None:
+                # Compatibility for records created before route inputs were frozen.
+                frozen_cost_rows, legacy_cost_source = _snapshot_cost_rows(snapshot)
+            else:
+                legacy_cost_source = str(
+                    running_record.get("cost_resource_source") or "legacy_snapshot"
+                )
+            cost_parameters, cost_parameter_source = _route_cost_parameters(
+                frozen_cost_rows,
+                str(running_record["depot"]["depot_id"]),
+                service_date,
+                strict=(
+                    get_route_execution_mode() == "strict_serving_road"
+                    and int(day["assigned_cases"]) > 0
+                ),
+                source=legacy_cost_source,
+            )
             if request:
                 fleet, network_rows, cost_parameters = _apply_override(
                     fleet,
@@ -358,6 +393,10 @@ class DepotPlanService:
                 scenario_id=f"{plan_set_id}:{route_scenario_id}",
                 cost_parameters=cost_parameters,
             )
+            execution = solved.get("execution")
+            if isinstance(execution, dict):
+                execution["resource_source"] = running_record["resource_source"]
+                execution["cost_parameter_source"] = cost_parameter_source
             result = _day_result(solved, service_date, self._timestamp())
         except Exception as exc:
             self._store_failure(
@@ -549,6 +588,7 @@ def _day_result(
         "unserved_cases": unserved_cases,
         "diagnostics": deepcopy(solved["diagnostics"]),
         "matrix_source": solved["matrix_source"],
+        "execution": deepcopy(solved.get("execution")),
         "created_at": created_at,
     }
 
@@ -656,8 +696,9 @@ def _apply_override(
 
 def _default_fleet_provider(
     snapshot: object, depot_id: str
-) -> tuple[list[dict[str, object]], str]:
+) -> tuple[list[dict[str, object]], str, list[dict[str, object]], str]:
     network_rows = _snapshot_value(snapshot, "network_rows")
+    snapshot_costs, snapshot_cost_source = _snapshot_cost_rows(snapshot)
     for table_name in ("dim_fleet_assets", "fleet_assets"):
         supplied = [
             dict(row)
@@ -665,7 +706,32 @@ def _default_fleet_provider(
             if str(row.get("depot_id")) == depot_id
         ]
         if supplied:
-            return supplied, f"snapshot:{table_name}"
+            return supplied, f"snapshot:{table_name}", snapshot_costs, snapshot_cost_source
+    store = get_store()
+    loader = getattr(store, "load_solver_base_tables", None)
+    if callable(loader):
+        base = loader()
+        supplied = [
+            dict(row) for row in base.get("fleet", [])
+            if str(row.get("depot_id")) == depot_id
+        ]
+        costs = [dict(row) for row in base.get("cost_parameters", [])]
+        if supplied:
+            fixture = all(
+                any(
+                    marker in str(row.get("source_system", "")).lower()
+                    for marker in ("synthetic", "demo", "fixture")
+                )
+                for row in supplied
+            )
+            label = "demo_fixture" if fixture else "master_data"
+            return (
+                supplied,
+                f"configured_store:solver_base:fleet:{label}",
+                costs or snapshot_costs,
+                "configured_store:solver_base:cost_parameters"
+                if costs else snapshot_cost_source,
+            )
     return (
         [
             {
@@ -678,8 +744,64 @@ def _default_fleet_provider(
             }
             for index in range(16)
         ],
-        "synthetic_fixed_16x720_normal_shift",
+        "synthetic_unpinned:fixed_16x720_normal_shift",
+        snapshot_costs,
+        snapshot_cost_source,
     )
+
+
+def _snapshot_cost_rows(snapshot: object) -> tuple[list[dict[str, object]], str]:
+    network_rows = _snapshot_value(snapshot, "network_rows")
+    for table_name in ("route_cost_parameters", "cost_parameters"):
+        rows = [dict(row) for row in network_rows.get(table_name, [])]
+        if rows:
+            return rows, f"snapshot:{table_name}"
+    return [], "snapshot:none"
+
+
+def _route_cost_parameters(
+    rows: Sequence[Mapping[str, object]],
+    depot_id: str,
+    service_date: str,
+    *,
+    strict: bool,
+    source: str = "pinned",
+) -> tuple[CostParameters, str]:
+    candidates: list[Mapping[str, object]] = []
+    for row in rows:
+        row_depot = row.get("depot_id")
+        if row_depot not in (None, "", depot_id):
+            continue
+        start = row.get("effective_start", row.get("effective_from"))
+        end = row.get("effective_end", row.get("effective_to"))
+        if start and _date_text(start) > service_date:
+            continue
+        if end and _date_text(end) < service_date:
+            continue
+        candidates.append(row)
+    if len(candidates) > 1:
+        raise ValueError(
+            f"Multiple pinned route cost parameter rows apply to {depot_id} on {service_date}."
+        )
+    if candidates:
+        row = candidates[0]
+        if strict:
+            missing = [
+                key for key in CostParameters().as_dict()
+                if row.get(key) in (None, "")
+            ]
+            if missing:
+                raise ValueError(
+                    "Strict route cost parameters are incomplete; missing "
+                    f"{', '.join(missing)}."
+                )
+        return CostParameters.from_row(dict(row)), source
+    if strict:
+        raise ValueError(
+            f"Strict route execution requires pinned route cost parameters for "
+            f"{depot_id} on {service_date}."
+        )
+    return CostParameters(), "development_defaults"
 
 
 def _snapshot_horizon(snapshot: object) -> tuple[str, str]:

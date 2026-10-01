@@ -60,8 +60,48 @@ def get_sql_warehouse_name() -> str | None:
     return value or None
 
 
-def get_route_solver_endpoint() -> str:
-    return os.getenv("DATABRICKS_ROUTE_SOLVER_ENDPOINT", "route-solver-dev").strip() or "route-solver-dev"
+def get_route_solver_endpoint(*, required: bool = False) -> str:
+    configured = os.getenv("DATABRICKS_ROUTE_SOLVER_ENDPOINT", "").strip()
+    if required and not configured:
+        raise RuntimeError(
+            "DATABRICKS_ROUTE_SOLVER_ENDPOINT is required for strict route execution."
+        )
+    return configured or "route-solver-dev"
+
+
+def get_route_execution_mode() -> str:
+    """Resolve the dated depot execution path without silently weakening production."""
+
+    configured = os.getenv("ROUTE_EXECUTION_MODE", "").strip().lower()
+    aliases = {
+        "strict": "strict_serving_road",
+        "serving": "strict_serving_road",
+        "local": "local_road",
+        "approximate": "approximate_development",
+    }
+    configured = aliases.get(configured, configured)
+    allowed = {
+        "strict_serving_road",
+        "local_road",
+        "approximate_development",
+    }
+    if configured:
+        if configured not in allowed:
+            raise RuntimeError(
+                "ROUTE_EXECUTION_MODE must be strict_serving_road, local_road, "
+                "or approximate_development."
+            )
+        return configured
+    return (
+        "approximate_development"
+        if get_data_backend() == "stub"
+        else "strict_serving_road"
+    )
+
+
+def get_routing_coverage_manifest() -> str | None:
+    value = os.getenv("ROUTING_COVERAGE_MANIFEST", "").strip()
+    return value or None
 
 
 def get_valhalla_app_url() -> str | None:

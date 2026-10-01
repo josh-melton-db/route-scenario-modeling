@@ -49,6 +49,9 @@ variables:
   route_solver_endpoint_name:
     description: Databricks Model Serving endpoint used for interactive route solves
     default: route-solver
+  routing_coverage_manifest:
+    description: Operator-supplied validated coverage manifest path in the app deployment; blank blocks road solves with an actionable error
+    default: ""
   valhalla_app_name:
     description: Databricks App providing the directed road travel matrix
     default: valhalla-api-poc
@@ -147,12 +150,16 @@ resources:
             value_from: lakebase
           - name: DATABRICKS_ROUTE_SOLVER_ENDPOINT
             value: ${var.route_solver_endpoint_name}
+          - name: ROUTE_EXECUTION_MODE
+            value: strict_serving_road
+          - name: ROUTING_COVERAGE_MANIFEST
+            value: ${var.routing_coverage_manifest}
           - name: VALHALLA_APP_URL
             value_from: valhalla
           - name: VALHALLA_COSTING
             value: truck
           - name: VALHALLA_ALLOW_HAVERSINE_FALLBACK
-            value: "true"
+            value: "false"
       resources:
         - name: lakebase
           postgres:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 
 from .baseline import summarize_kpis
@@ -93,8 +93,20 @@ def materialize_depot_targets(
             "receiving_window_start": str(customer.get("receiving_window_start") or "06:30"),
             "receiving_window_end": str(customer.get("receiving_window_end") or "18:00"),
             "service_minutes": int(customer.get("service_minutes", 20)),
-            "hard_time_window_flag": _bool_value(customer.get("hard_time_window_flag", False)),
+            "route_constraint_defaults": [
+                key
+                for key in (
+                    "receiving_window_start",
+                    "receiving_window_end",
+                    "service_minutes",
+                )
+                if customer.get(key) in (None, "")
+            ],
         }
+        if "hard_time_window_flag" in customer:
+            planning_customer["hard_time_window_flag"] = _bool_value(
+                customer["hard_time_window_flag"]
+            )
         order = {
             "order_id": order_id,
             "stop_id": f"STOP-{order_id}",
@@ -141,6 +153,7 @@ def solve_depot_plan(
     travel_matrix: Iterable[Mapping[str, object]] | None = None,
     cost_parameters: CostParameters | None = None,
     time_limit_seconds: int = 2,
+    partition_solver: Callable[..., Mapping[str, Sequence[Mapping[str, object]]]] = solve_scenario_partition,
 ) -> dict[str, object]:
     """Materialize and solve exactly one depot/date with the supplied fleet."""
 
@@ -148,7 +161,7 @@ def solve_depot_plan(
     service_date_text = str(targets["service_date"])
     planning_fleet = _available_fleet(fleet, depot_id, service_date_text)
     matrix_rows = list(travel_matrix) if travel_matrix is not None else None
-    solver_result = solve_scenario_partition(
+    solver_result = partition_solver(
         scenario_id=scenario_id,
         depot_id=depot_id,
         delivery_day=service_date_text,
