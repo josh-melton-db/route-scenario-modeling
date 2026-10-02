@@ -339,3 +339,39 @@ Write scope: new `backend/services/routing_coverage.py` plus focused registry te
 - Named-extract setup was checked in dry-run only. Texas coverage remains unprovisioned. Live acceptance still requires an explicitly selected profile, coverage build/deploy, matching artifact smoke success, endpoint permissions, strict serving rehearsal, and persistence/restart verification.
 - Added the missing `.gitmodules` mapping for the existing `valhalla_poc` gitlink. Publishing requires committing/pushing the nested repository first and then updating the parent gitlink.
 - Publication validation on October 1 passed 51 focused backend/tooling tests, all 8 browser checks, the production frontend build, and parent/nested whitespace checks. The user authorized commit, push, and deployment; deployment awaits an explicitly chosen Databricks profile and target. No live coverage build or strict-path rehearsal has been performed.
+
+### Live provisioning (October 2, 2026)
+
+- User selected `DEFAULT` and `dev`. The main App code deployment succeeded and its authenticated health check returns HTTP 200. Full bundle deployment initially failed because of the App attachment limit; the network table attachments are now replaced by an additive `USE_SCHEMA`/`SELECT` grant on the existing dedicated application schema. The main App has 19 attachments. The grant is applied with `scripts/grant-network-schema`; dev bundle schema names are prefixed and do not identify the existing unprefixed schema read by the App.
+- Texas build run `1001382283120031`, task run `310302840286406`, is running on the existing regional-build job's dedicated DBR 15.4 cluster configuration. It uses an isolated notebook path, artifact `texas-20261002-v1`, coverage `texas-delivery`, and the existing assets Volume. It preserves the Michigan archive and shared engine archive.
+- Created `valhalla-texas-dev` with no compute and bound it to the separate bundle resource `resources/valhalla-texas.yml`. Bundle-managed permissions grant the main App service principal `CAN_USE` directly on this App, without consuming another main-App attachment. Both permission and full bundle deployment were verified; the original Michigan endpoint is unchanged.
+- `routing_coverage/texas-dev.v1.json` records observed endpoint/build identifiers with status `building` and no smoke success. It is not enabled in the main App. After build success, deploy the Texas service, inspect actual artifact identity, smoke-test truck reachability, update the build timestamp, and only then configure the main App manifest path.
+- Live network options currently fail because `demos.route_scenario_modeling.dim_facilities` does not exist; the Tables API independently confirmed this. Provision the upstream network tables before the strict network-to-depot rehearsal. Coverage setup alone does not fix this data gap.
+- Latest coverage/tooling checks passed (22 tests); parent/nested whitespace checks passed. This is provisioning in progress, not a claim of validated Texas coverage or end-to-end demo readiness.
+
+### Network-only bootstrap (October 2, 2026)
+
+- Added the independent `network_bootstrap` bundle job and `00_bootstrap_network_data.py`. It validates the seven-region dataset and creates only the 12 canonical network tables. It preserves a complete existing snapshot, refuses partial existing snapshots, and uses non-replacing SQL CTAS to reject concurrent creation. No route tables, raw files, rates, or Lakebase scenario state are rewritten.
+- Successful run `1125839329473985` created and verified all 12 tables: 7 regions, 56 facilities, 4,200 customers, 117,600 daily demand rows, and 243,152 baseline flow rows. The initial run failed before writing because serverless Spark rejected the `errorifexists` alias; CTAS corrected this incompatibility.
+- The first post-bootstrap App read exposed the SQL inline-result size limit. The shared reader now retries only affected SELECT statements using external signed result links, downloads every chunk without workspace credentials, preserves existing type conversion, and rejects truncated/count-mismatched results. Mutations are never retried. A live read verified all 243,152 baseline-flow rows.
+- Bootstrap/synthetic/SQL tests passed (19 tests). Bundle validation passed. App redeployment also required replacing the empty default coverage-manifest value with the bundled candidate template; the candidate still blocks strict road routing and is not a claim of validated coverage.
+- Final verification passed 25 bootstrap, synthetic-data, SQL-result, and SQL-snapshot tests. The deployed App returns HTTP 200 from `/api/network/options`, with 7 regions plus All, 56 facilities, and a default horizon of October 2-29, 2026.
+- App result downloads use the Databricks runtime storage proxy. HTTP is permitted only for the exact `storage-proxy.databricks.com` host on port 80 inside the App runtime; other links require HTTPS. Downloads never carry workspace credentials, and download failures do not expose signed URLs.
+- The canonical SQL loader now retains all 12 tables and customer-level demand instead of pre-aggregating immutable snapshot inputs. Older snapshots receive a read-only region-label fallback for options; their historical payloads are not rewritten. The aggregate legacy snapshot created during initial live verification still requires customer-granularity reconciliation before claiming a complete daily-route rehearsal.
+
+### Legacy Baseline Display Fix (October 2, 2026)
+
+- Live ASGI traces identified `KeyError: 'customer_id'` in assignment projection for the persisted aggregate baseline. Unchanged contexts without matching assignment overlays now preserve their original demand rows directly. Customer reassignment still rejects aggregate inputs; no customer identities are fabricated and no stored revisions are rewritten.
+- Eight projection, SQL-snapshot, and baseline API lifecycle tests passed. After redeployment to `DEFAULT` / `dev`, the exact full-horizon constrained-capacity overview and baseline plan-run requests both returned HTTP 200 with matching demand totals of 8,805,755 cases.
+- This restores overview and baseline plan display, not customer-level route readiness for that legacy aggregate snapshot. Customer-granularity reconciliation remains necessary for its downstream planning.
+## Runtime versions and Real Time SQL warehouses
+
+- Databricks CLI baseline: `1.19.0`.
+- Databricks Python SDK baseline: `0.146.0`.
+- The public bundle schema and typed SDK enum still list only `PRO`, `CLASSIC`,
+  and `TYPE_UNSPECIFIED` for `warehouse_type`. The workspace REST API accepts
+  `REALTIME`, and the dev bundle is bound to an existing Real Time endpoint so
+  the bundle can manage app attachment, permissions, name, and autostop without
+  writing the unsupported enum through DABs.
+- If a future CLI/SDK exposes `REALTIME` in the bundle schema, move the endpoint
+  type into `databricks.yml` and remove the bind/creation workaround.

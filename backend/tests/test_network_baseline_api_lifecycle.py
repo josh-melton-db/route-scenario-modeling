@@ -1,6 +1,29 @@
 from fastapi.testclient import TestClient
 
 from backend.main import app
+from backend.services.baseline_service import baseline_service
+
+
+def test_scenario_create_uses_pointer_and_option_summary(monkeypatch) -> None:
+    client = TestClient(app)
+    options = client.get('/api/network/options').json()
+
+    def fail_if_full_state_is_loaded():
+        raise AssertionError('scenario create must not load the full baseline snapshot')
+
+    monkeypatch.setattr(baseline_service, 'get_state', fail_if_full_state_is_loaded)
+    created = client.post('/api/network/scenarios', json={
+        'scenario_name': 'Fast create regression',
+        'demand_plan_version_id': options['default_demand_plan_version_id'],
+        'capacity_plan_version_id': options['default_capacity_plan_version_id'],
+        'horizon_start': options['default_horizon_start'],
+        'horizon_end': options['default_horizon_end'],
+        'region_id': options['default_region_id'],
+    })
+    assert created.status_code == 201, created.text
+    scenario_id = created.json()['scenario_id']
+    assert scenario_id
+    assert client.delete(f'/api/network/scenarios/{scenario_id}').status_code == 204
 
 
 def test_real_regional_run_promotes_inherits_and_resets_without_rewriting_history() -> None:

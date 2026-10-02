@@ -41,6 +41,14 @@ class BaselineProposalRecord:
 class BaselineRepository:
     """Immutable revision store with a lazy Lakebase path and local fallback."""
 
+    OPTION_ROW_KEYS = (
+        "dim_regions",
+        "dim_facilities",
+        "demand_plan_versions",
+        "capacity_plan_versions",
+        "baseline_revision_metadata",
+    )
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._revisions: dict[str, BaselineRevision] = {}
@@ -79,6 +87,12 @@ class BaselineRepository:
                 )"""
             )
             lakebase_store.postgres.execute(
+                f"""CREATE TABLE IF NOT EXISTS {self._table('network_baseline_option_revisions')} (
+                  revision_id TEXT PRIMARY KEY,
+                  option_payload JSONB NOT NULL
+                )"""
+            )
+            lakebase_store.postgres.execute(
                 f"""CREATE TABLE IF NOT EXISTS {self._table('network_baseline_proposals')} (
                   proposal_id TEXT PRIMARY KEY,
                   run_id TEXT NOT NULL,
@@ -113,6 +127,10 @@ class BaselineRepository:
             rows=payload,
         )
 
+    @classmethod
+    def _option_payload(cls, rows: NetworkRows) -> NetworkRows:
+        return {key: deepcopy(rows[key]) for key in cls.OPTION_ROW_KEYS if key in rows}
+
     def seed(self, revision: BaselineRevision) -> None:
         self._ensure_lakebase()
         if not self.uses_lakebase:
@@ -131,6 +149,14 @@ class BaselineRepository:
             lakebase_store.postgres.execute(
                 f"INSERT INTO {self._table('network_baseline_revisions')} VALUES (%s,%s,%s,%s,%s)",
                 (revision.revision_id, None, None, None, lakebase_store.postgres.jsonb(revision.rows)),
+                connection=connection,
+            )
+            lakebase_store.postgres.execute(
+                f"INSERT INTO {self._table('network_baseline_option_revisions')} VALUES (%s,%s)",
+                (
+                    revision.revision_id,
+                    lakebase_store.postgres.jsonb(self._option_payload(revision.rows)),
+                ),
                 connection=connection,
             )
             lakebase_store.postgres.execute(
@@ -164,6 +190,57 @@ class BaselineRepository:
             raise KeyError(revision_id)
         return self._revision(row)
 
+    def revision_header(self, revision_id: str) -> dict[str, Any]:
+        """Read revision metadata without materializing the snapshot payload."""
+
+        self._ensure_lakebase()
+        if not self.uses_lakebase:
+            with self._lock:
+                revision = self._revisions[revision_id]
+                return {
+                    "revision_id": revision.revision_id,
+                    "source_revision_id": revision.source_revision_id,
+                    "run_id": revision.run_id,
+                    "accepted_at": revision.accepted_at,
+                }
+        row = lakebase_store.postgres.query_one(
+            f"SELECT revision_id, source_revision_id, run_id, accepted_at "
+            f"FROM {self._table('network_baseline_revisions')} WHERE revision_id = %s",
+            (revision_id,),
+        )
+        if row is None:
+            raise KeyError(revision_id)
+        return row
+
+    def option_rows(self, revision_id: str) -> NetworkRows:
+        """Load the small option summary without touching the full snapshot."""
+
+        self._ensure_lakebase()
+        if not self.uses_lakebase:
+            with self._lock:
+                rows = self._revisions[revision_id].rows
+                return self._option_payload(rows)
+        row = lakebase_store.postgres.query_one(
+            f"SELECT option_payload FROM {self._table('network_baseline_option_revisions')} "
+            "WHERE revision_id = %s",
+            (revision_id,),
+        )
+        if row is None:
+            raise KeyError(revision_id)
+        payload = row["option_payload"]
+        return payload if isinstance(payload, dict) else json.loads(payload)
+
+    def save_option_rows(self, revision_id: str, rows: NetworkRows) -> None:
+        self._ensure_lakebase()
+        if not self.uses_lakebase:
+            return
+        lakebase_store.postgres.execute(
+            f"""INSERT INTO {self._table('network_baseline_option_revisions')}
+                (revision_id, option_payload) VALUES (%s, %s)
+                ON CONFLICT (revision_id) DO UPDATE SET option_payload = EXCLUDED.option_payload""",
+            (revision_id, lakebase_store.postgres.jsonb(self._option_payload(rows))),
+        )
+
     def save_proposal(self, proposal: BaselineProposalRecord) -> None:
         self._ensure_lakebase()
         if not self.uses_lakebase:
@@ -177,6 +254,14 @@ class BaselineRepository:
                 f"INSERT INTO {self._table('network_baseline_revisions')} VALUES (%s,%s,%s,%s,%s)",
                 (revision.revision_id, revision.source_revision_id, revision.run_id, None,
                  lakebase_store.postgres.jsonb(revision.rows)), connection=connection,
+            )
+            lakebase_store.postgres.execute(
+                f"INSERT INTO {self._table('network_baseline_option_revisions')} VALUES (%s,%s)",
+                (
+                    revision.revision_id,
+                    lakebase_store.postgres.jsonb(self._option_payload(revision.rows)),
+                ),
+                connection=connection,
             )
             lakebase_store.postgres.execute(
                 f"INSERT INTO {self._table('network_baseline_proposals')} VALUES (%s,%s,%s,%s,%s)",

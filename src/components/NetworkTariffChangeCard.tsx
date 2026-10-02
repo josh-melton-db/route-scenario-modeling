@@ -1,4 +1,4 @@
-import { Plus, Trash2 } from 'lucide-react'
+import { Trash2 } from 'lucide-react'
 import type { NetworkCountryCode, NetworkTariffRule } from '@/api/types'
 
 const COUNTRIES: Array<{ code: NetworkCountryCode; label: string }> = [
@@ -7,7 +7,10 @@ const COUNTRIES: Array<{ code: NetworkCountryCode; label: string }> = [
   { code: 'CA', label: 'Canada' },
 ]
 
-function newRule(start: string, end: string): NetworkTariffRule {
+export function createNetworkTariffRule(
+  start: string,
+  end: string,
+): NetworkTariffRule {
   return {
     rule_id: globalThis.crypto?.randomUUID?.() ?? `tariff-${Date.now()}`,
     origin_country: 'MX',
@@ -20,13 +23,9 @@ function newRule(start: string, end: string): NetworkTariffRule {
 
 export default function NetworkTariffChangeCard({
   rules,
-  horizonStart,
-  horizonEnd,
   onChange,
 }: {
   rules: NetworkTariffRule[]
-  horizonStart: string
-  horizonEnd: string
   onChange: (rules: NetworkTariffRule[]) => void
 }) {
   const update = (ruleId: string, patch: Partial<NetworkTariffRule>) =>
@@ -36,23 +35,16 @@ export default function NetworkTariffChangeCard({
     <section className="rounded-lg border border-border bg-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold">Add tariff</h2>
+          <h2 className="text-sm font-semibold">Tariff rules</h2>
           <p className="mt-1 text-xs text-muted-foreground">
             Apply a directed border cost in USD per assigned case. Freight rates remain separate.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => onChange([...rules, newRule(horizonStart, horizonEnd)])}
-          className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"
-        >
-          <Plus className="h-3.5 w-3.5" /> Add tariff rule
-        </button>
       </div>
 
       {!rules.length ? (
         <p className="mt-3 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
-          No tariff change. Add a rule to price a specific border direction and date range.
+          No tariff rules yet.
         </p>
       ) : (
         <div className="mt-3 flex flex-col gap-3">

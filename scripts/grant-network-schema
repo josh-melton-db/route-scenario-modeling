@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""Add network read privileges without consuming App resource attachments."""
+import argparse
+import json
+import subprocess
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--profile", required=True)
+parser.add_argument("--principal", required=True)
+parser.add_argument("--schema", required=True)
+args = parser.parse_args()
+subprocess.run(
+    [
+        "databricks", "grants", "update", "schema", args.schema,
+        "--profile", args.profile, "--json",
+        json.dumps({"changes": [{"principal": args.principal, "add": ["USE_SCHEMA", "SELECT"]}]}),
+    ],
+    check=True,
+)

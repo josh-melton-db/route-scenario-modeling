@@ -2,7 +2,7 @@ fastapi==0.115.9
 uvicorn[standard]==0.34.0
 gunicorn==23.0.0
 pydantic==2.10.3
-databricks-sdk>=0.81.0
+databricks-sdk>=0.146.0
 psycopg[binary,pool]
 faker
 mlflow

@@ -1,0 +1,15 @@
+resources:
+  jobs:
+    network_bootstrap:
+      name: route-network-bootstrap-${bundle.target}
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: bootstrap_network
+          notebook_task:
+            notebook_path: ../notebooks/00_bootstrap_network_data.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+      permissions:
+        - level: CAN_VIEW
+          group_name: users

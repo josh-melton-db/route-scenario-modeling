@@ -252,7 +252,7 @@ function NetworkScenarioPicker({ activeScenarioId }: { activeScenarioId: string 
         horizon_end: options.data.default_horizon_end,
         region_id: options.data.default_region_id,
       })
-      navigate(`/network/scenarios/${created.scenario_id}/scenario`)
+      navigate(`/network/scenarios/${created.scenario_id}/scenario?rename=1`)
     } catch (err) {
       setError(String(err))
     }

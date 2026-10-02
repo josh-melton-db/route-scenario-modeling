@@ -25,6 +25,8 @@ env:
     value: route-solver-dev
   - name: ROUTE_EXECUTION_MODE
     value: strict_serving_road
+  - name: ROUTING_COVERAGE_MANIFEST
+    value: routing_coverage_samples/texas-candidates.v1.json
   - name: VALHALLA_APP_URL
     valueFrom: valhalla
   - name: VALHALLA_COSTING

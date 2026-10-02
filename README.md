@@ -171,6 +171,50 @@ not automatically for additional mapped endpoints.
 No Texas tiles, live endpoints, or workspace permissions were provisioned as part
 of the code implementation.
 
+October 2 provisioning: Texas build run `1001382283120031` uses the existing
+regional-build job's dedicated cluster configuration and preserves the Michigan
+archive/shared engine. `valhalla-texas-dev` was created with the existing assets
+Volume attached; it remains stopped until tiles are ready. Its runtime config is
+`valhalla_poc/deploy/texas/app.yaml`. The deployment manifest is
+`routing_coverage/texas-dev.v1.json`; its `building` status is deliberately not
+accepted by strict routing. Deployment and a successful artifact/matrix smoke
+check are still required before enabling it.
+
+The main App now has 19 attached resources, below the 20-resource limit. Network-table reads use
+an additive schema grant on the dedicated existing application schema instead
+of additional App attachments. This grants `USE_SCHEMA` and `SELECT`, not
+schema-wide writes or catalog-wide access. Dev bundle schema resources receive
+a development name prefix, so their `grants` cannot target the unprefixed schema
+read by this existing app. Apply the idempotent permission setup separately:
+
+```bash
+python3 scripts/grant-network-schema --profile DEFAULT \
+  --principal 7bf07fff-a994-41fb-91b0-1c33ab04ac25 \
+  --schema demos.route_scenario_modeling
+databricks bundle deploy -t dev --profile DEFAULT
+```
+
+The Texas endpoint is managed separately by `resources/valhalla-texas.yml`.
+Its `permissions` grant `CAN_USE` directly to the main App's service principal,
+without another main-App attachment. Michigan's original service is retained.
+After the tile build succeeds, deploy the Texas service with
+`databricks bundle run valhalla_texas -t dev --profile DEFAULT`, then smoke-check
+the exact `texas-20261002-v1` artifact. Only after success should the main App be
+redeployed with `--var routing_coverage_manifest=routing_coverage/texas-dev.v1.json`.
+
+To provision only the upstream North America network snapshot:
+
+```bash
+databricks bundle run network_bootstrap -t dev --profile DEFAULT
+```
+
+This job validates and creates only the 12 network tables, using the dynamic demo
+date anchor. It does not modify route-demo tables, rates, Lakebase scenario state,
+or raw files. Existing complete network snapshots are preserved; a partial
+existing snapshot is rejected before any writes. SQL CTAS without replacement
+also rejects a table created concurrently. This is an initial bootstrap, not a
+snapshot refresh/reset command.
+
 Run the focused browser checks against an already-running local frontend without
 starting or stopping any local apps:
 
