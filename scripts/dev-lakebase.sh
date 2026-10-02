@@ -10,7 +10,6 @@ export PGDATABASE=route_scenario_modeling
 export PGUSER=josh.melton@databricks.com
 export PGSSLMODE=require
 export DATABRICKS_CONFIG_PROFILE=DEFAULT
-export DATABRICKS_AUTH_STORAGE=plaintext
 export DATABRICKS_ROUTE_SOLVER_ENDPOINT=route-solver-dev
 
 echo "Lakebase branch: projects/route-scenario-modeling-lakebase/branches/dev"

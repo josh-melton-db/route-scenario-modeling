@@ -18,6 +18,21 @@ def projected_demand_rows(
     demand_plan_version_id: str,
     capacity_plan_version_id: str,
 ) -> list[dict[str, Any]]:
+    selected_demand = [
+        row for row in rows.get('demand_plan_daily', [])
+        if str(row['demand_plan_version_id']) == demand_plan_version_id
+    ]
+    selected_overlays = [
+        row for row in rows.get('network_customer_assignments_daily', [])
+        if (str(row['demand_plan_version_id']) == demand_plan_version_id
+            and str(row['capacity_plan_version_id']) == capacity_plan_version_id)
+    ]
+    # Published legacy snapshots may contain depot/market aggregates. Without
+    # reassignment there is nothing to project and their totals remain valid.
+    if not selected_overlays:
+        return [dict(row) for row in selected_demand]
+    if any(not row.get('customer_id') for row in selected_demand):
+        raise ValueError('Customer reassignment requires customer-level demand; this legacy baseline contains aggregate demand.')
     canonical: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
     for row in rows.get('demand_plan_daily', []):
         if str(row['demand_plan_version_id']) == demand_plan_version_id:

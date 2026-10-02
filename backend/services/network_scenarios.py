@@ -75,6 +75,8 @@ class NetworkScenarioRepository:
         return NetworkScenario.model_validate(
             {
                 **row,
+                "horizon_start": str(row["horizon_start"]),
+                "horizon_end": str(row["horizon_end"]),
                 "source_baseline_revision_id": row.get("source_baseline_revision_id") or assumptions.get("source_baseline_revision_id"),
                 "assumptions": assumptions,
                 "validation": _json_value(row.get("validation")),
@@ -479,7 +481,7 @@ class NetworkScenarioService:
         if source_revision is None:
             try:
                 from .baseline_service import baseline_service
-                source_revision = baseline_service.get_state().active_revision_id
+                source_revision = baseline_service.active_revision_id()
             except (ImportError, AttributeError):
                 source_revision = None
         assumptions_payload = request.assumptions.model_dump(mode="json")
@@ -487,7 +489,7 @@ class NetworkScenarioService:
             try:
                 from .baseline_service import baseline_service
 
-                metadata = baseline_service.get_revision(source_revision).rows.get(
+                metadata = baseline_service.option_rows(source_revision).get(
                     "baseline_revision_metadata", []
                 )
                 if metadata:
@@ -562,6 +564,17 @@ class NetworkScenarioService:
         if scenario.source_baseline_revision_id:
             try:
                 from .baseline_service import baseline_service
+                if (
+                    baseline_service.is_original_active()
+                    and scenario.source_baseline_revision_id
+                    == baseline_service.active_revision_id()
+                ):
+                    return network_overview_service.load_rows(
+                        demand_plan_version_id=scenario.demand_plan_version_id,
+                        capacity_plan_version_id=scenario.capacity_plan_version_id,
+                        horizon_start=date.fromisoformat(scenario.horizon_start),
+                        horizon_end=date.fromisoformat(scenario.horizon_end),
+                    )
                 return baseline_service.get_revision(
                     scenario.source_baseline_revision_id
                 ).rows

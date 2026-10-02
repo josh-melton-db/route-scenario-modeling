@@ -4,19 +4,23 @@ import {
   AlertTriangle,
   ArrowRight,
   Ban,
+  Check,
   Loader2,
+  Pencil,
   Play,
-  Save,
+  Plus,
   Search,
-  ShieldCheck,
   Trash2,
+  X,
 } from 'lucide-react'
 import EmptyState from '@/components/EmptyState'
 import ErrorState from '@/components/ErrorState'
 import KpiCard from '@/components/KpiCard'
 import NetworkDetailDrawer from '@/components/NetworkDetailDrawer'
 import NetworkFlowMap from '@/components/NetworkFlowMap'
-import NetworkTariffChangeCard from '@/components/NetworkTariffChangeCard'
+import NetworkTariffChangeCard, {
+  createNetworkTariffRule,
+} from '@/components/NetworkTariffChangeCard'
 import NetworkBaselineActions from '@/components/NetworkBaselineActions'
 import NetworkPricingNote, { hasComparablePricing } from '@/components/NetworkPricingNote'
 import {
@@ -31,6 +35,7 @@ import {
 } from '@/api/queries'
 import type {
   NetworkFlowChargeDetail,
+  NetworkLaneAggregate,
   NetworkScenario,
   NetworkScenarioAssumptions,
   NetworkScenarioException,
@@ -47,15 +52,15 @@ const SOLVED_STATUSES = new Set(['solved', 'depot_plans_running', 'reconciliatio
 
 type NetworkDraft = {
   scenarioId: string
-  name: string
   assumptions: NetworkScenarioAssumptions
   dirty: boolean
 }
 
 export default function NetworkScenarioDetailPage() {
   const { scenarioId = '', tab = 'scenario' } = useParams()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const pinnedRunId = searchParams.get('run')
+  const renameRequested = searchParams.get('rename') === '1'
   const navigate = useNavigate()
   const options = useNetworkOptions()
   const scenario = useNetworkScenario(scenarioId)
@@ -72,6 +77,11 @@ export default function NetworkScenarioDetailPage() {
   const basePath = `/network/scenarios/${encodeURIComponent(scenarioId)}`
   const [actionError, setActionError] = useState<string | null>(null)
   const [draft, setDraft] = useState<NetworkDraft | null>(null)
+  const [isEditingName, setIsEditingName] = useState(renameRequested)
+  const [nameEditorValue, setNameEditorValue] = useState('')
+  const [optimisticName, setOptimisticName] = useState<string | null>(null)
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const nameInputRef = useRef<HTMLInputElement>(null)
 
   const context = scenario.data
     ? {
@@ -85,6 +95,49 @@ export default function NetworkScenarioDetailPage() {
       }
     : null
   const linehaulOverview = useNetworkOverview(context)
+
+  useEffect(() => {
+    if (renameRequested && scenario.data) {
+      setNameEditorValue(scenario.data.scenario_name)
+      setIsEditingName(true)
+    }
+  }, [renameRequested, scenario.data?.scenario_id])
+
+  useEffect(() => {
+    if (!isEditingName) return
+    nameInputRef.current?.focus()
+    nameInputRef.current?.select()
+  }, [isEditingName])
+
+  useEffect(() => {
+    if (optimisticName && scenario.data?.scenario_name === optimisticName) {
+      setOptimisticName(null)
+    }
+  }, [optimisticName, scenario.data?.scenario_name])
+
+  useEffect(() => {
+    if (!draft?.dirty || draft.scenarioId !== scenarioId) return
+    const timer = window.setTimeout(() => {
+      setSaveState('saving')
+      void updateScenario
+        .mutateAsync({ assumptions: draft.assumptions })
+        .then(() => {
+          setDraft(null)
+          setSaveState('saved')
+        })
+        .catch((err) => {
+          setActionError(String(err))
+          setSaveState('error')
+        })
+    }, 700)
+    return () => window.clearTimeout(timer)
+  }, [draft, scenarioId, updateScenario])
+
+  useEffect(() => {
+    if (saveState !== 'saved') return
+    const timer = window.setTimeout(() => setSaveState('idle'), 2200)
+    return () => window.clearTimeout(timer)
+  }, [saveState])
 
   if (!['scenario', 'flow', 'lanes', 'charges', 'exceptions'].includes(tab)) {
     return <Navigate to={`${basePath}/scenario`} replace />
@@ -109,46 +162,20 @@ export default function NetworkScenarioDetailPage() {
   const hasPendingDraft = draft?.scenarioId === scenarioId && draft.dirty
   const planApplied = hasResult && !hasPendingDraft
 
-  async function save(next: {
-    scenario_name?: string
-    assumptions?: NetworkScenarioAssumptions
-  }): Promise<boolean> {
-    setActionError(null)
-    try {
-      await updateScenario.mutateAsync(next)
-      return true
-    } catch (err) {
-      setActionError(String(err))
-      return false
-    }
-  }
-
-  async function validate() {
-    setActionError(null)
-    try {
-      await validateScenario.mutateAsync()
-    } catch (err) {
-      setActionError(String(err))
-    }
-  }
-
   async function run() {
     setActionError(null)
     try {
       const pendingDraft = draft?.scenarioId === scenarioId && draft.dirty ? draft : null
       if (pendingDraft) {
         await updateScenario.mutateAsync({
-          scenario_name: pendingDraft.name.trim() || scenario.data?.scenario_name,
           assumptions: pendingDraft.assumptions,
         })
         setDraft(null)
       }
-      if (pendingDraft || !scenario.data?.validation?.valid) {
-        const validated = await validateScenario.mutateAsync()
-        if (!validated.validation?.valid) {
-          navigate(`${basePath}/scenario`)
-          return
-        }
+      const validated = await validateScenario.mutateAsync()
+      if (!validated.validation?.valid) {
+        setActionError(validated.validation?.summary ?? 'Resolve validation errors before running the plan.')
+        return
       }
       const completed = await runScenario.mutateAsync()
       const runId = completed.result.run_id
@@ -171,6 +198,47 @@ export default function NetworkScenarioDetailPage() {
     }
   }
 
+  function clearRenameHint() {
+    if (!searchParams.has('rename')) return
+    const next = new URLSearchParams(searchParams)
+    next.delete('rename')
+    setSearchParams(next, { replace: true })
+  }
+
+  function startEditingName() {
+    setNameEditorValue(scenario.data?.scenario_name ?? '')
+    setIsEditingName(true)
+  }
+
+  function cancelNameEdit() {
+    setNameEditorValue(scenario.data?.scenario_name ?? '')
+    setIsEditingName(false)
+    clearRenameHint()
+  }
+
+  async function commitName() {
+    if (!scenario.data) return
+    const nextName = nameEditorValue.trim()
+    if (!nextName || nextName === scenario.data.scenario_name) {
+      cancelNameEdit()
+      return
+    }
+    const previousName = scenario.data.scenario_name
+    setActionError(null)
+    setOptimisticName(nextName)
+    try {
+      await updateScenario.mutateAsync({ scenario_name: nextName })
+      setIsEditingName(false)
+      clearRenameHint()
+    } catch (err) {
+      setOptimisticName(previousName)
+      setActionError(String(err))
+      requestAnimationFrame(() => nameInputRef.current?.focus())
+    }
+  }
+
+  const displayName = optimisticName ?? scenario.data.scenario_name
+
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
       {tab === 'scenario' && (
@@ -178,9 +246,80 @@ export default function NetworkScenarioDetailPage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl font-semibold tracking-tight">
-                {scenario.data.scenario_name}
-              </h1>
+              {isEditingName ? (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void commitName()
+                  }}
+                  className="flex min-w-0 items-center gap-1"
+                >
+                  <input
+                    ref={nameInputRef}
+                    aria-label="Network plan name"
+                    value={nameEditorValue}
+                    onChange={(event) => setNameEditorValue(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.preventDefault()
+                        cancelNameEdit()
+                      }
+                    }}
+                    disabled={updateScenario.isPending}
+                    className="h-9 min-w-56 rounded-md border border-border bg-background px-2 text-xl font-semibold tracking-tight text-foreground disabled:opacity-60"
+                  />
+                  <button
+                    type="submit"
+                    aria-label="Save network plan name"
+                    disabled={updateScenario.isPending}
+                    onMouseDown={(event) => event.preventDefault()}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                  >
+                    {updateScenario.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Check className="h-4 w-4" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Cancel network plan rename"
+                    disabled={updateScenario.isPending}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={cancelNameEdit}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </form>
+              ) : (
+                <div className="flex min-w-0 items-center gap-1">
+                  <h1 className="truncate text-2xl font-semibold tracking-tight">
+                    {displayName}
+                  </h1>
+                  <button
+                    type="button"
+                    aria-label="Rename network plan"
+                    onClick={startEditingName}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Delete network plan"
+                    onClick={() => void handleDelete()}
+                    disabled={busy || deleteScenario.isPending || scenario.data.status === 'published'}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {deleteScenario.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              )}
               <StatusPill scenario={scenario.data} />
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -189,7 +328,19 @@ export default function NetworkScenarioDetailPage() {
               {scenario.data.revision}
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-3">
+            {saveState === 'saving' && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Saving…
+              </span>
+            )}
+            {saveState === 'saved' && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite">
+                <Check className="h-3.5 w-3.5" />
+                Saved
+              </span>
+            )}
             {planApplied ? (
               <button
                 type="button"
@@ -203,15 +354,15 @@ export default function NetworkScenarioDetailPage() {
               <button
                 type="button"
                 onClick={() => void run()}
-                disabled={busy || scenario.data.status === 'published'}
+                disabled={busy || scenario.data.status === 'published' || scenario.data.validation?.valid === false}
                 className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {runScenario.isPending ? (
+                {busy ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <Play className="h-4 w-4" />
                 )}
-                Run fixed-capacity plan
+                {busy ? 'Running plan…' : 'Run fixed-capacity plan'}
               </button>
             )}
           </div>
@@ -233,11 +384,6 @@ export default function NetworkScenarioDetailPage() {
           facilities={options.data.facilities}
           regions={options.data.regions}
           lanes={linehaulOverview.data?.lanes ?? []}
-          busy={busy}
-          onSave={save}
-          onValidate={validate}
-          onDelete={handleDelete}
-          deletePending={deleteScenario.isPending}
         />
       )}
       {tab === 'flow' && (
@@ -341,38 +487,62 @@ function ScenarioTab({
   facilities,
   regions,
   lanes,
-  busy,
-  onSave,
-  onValidate,
-  onDelete,
-  deletePending,
 }: {
   scenario: NetworkScenario
   draft: NetworkDraft | null
   onDraftChange: (draft: NetworkDraft | null) => void
   facilities: { facility_id: string; facility_name: string; facility_type: string; region_id: string }[]
   regions: { region_id: string; region_name: string }[]
-  lanes: { lane_id: string; lane_name: string }[]
-  busy: boolean
-  onSave: (next: { scenario_name?: string; assumptions?: NetworkScenarioAssumptions }) => Promise<boolean>
-  onValidate: () => Promise<void>
-  onDelete: () => Promise<void>
-  deletePending: boolean
+  lanes: NetworkLaneAggregate[]
 }) {
-  const name = draft?.name ?? scenario.scenario_name
   const assumptions = draft?.assumptions ?? scenario.assumptions
-  const dirty = draft?.dirty ?? false
 
   const disabledIds = new Set(assumptions.disabled_facility_ids)
   const disabledLaneIds = new Set(assumptions.disabled_lane_ids)
   const adjustedLaneIds = new Set(Object.keys(assumptions.lane_cost_adjustments_pct))
   const changedLaneIds = new Set([...disabledLaneIds, ...adjustedLaneIds])
-  const [addLaneId, setAddLaneId] = useState('')
+  const [addLaneOriginId, setAddLaneOriginId] = useState('')
+  const [addLaneDestinationId, setAddLaneDestinationId] = useState('')
   const [addLaneMode, setAddLaneMode] = useState<'disable' | 'adjust'>('disable')
   const [addAdjustPct, setAddAdjustPct] = useState('10')
+  const [openConstraints, setOpenConstraints] = useState<
+    Record<string, { facilities?: boolean; lanes?: boolean }>
+  >({})
+  const opened = openConstraints[scenario.scenario_id] ?? {}
+  const hasFacilityConstraints = disabledIds.size > 0
+  const hasLaneConstraints = changedLaneIds.size > 0
+  const tariffs = assumptions.tariffs ?? []
+  const hasTariffConstraints = tariffs.length > 0
+  const showFacilityPicker = opened.facilities || hasFacilityConstraints
+  const showLanePicker = opened.lanes || hasLaneConstraints
+  const hasAnyConstraint =
+    hasFacilityConstraints || hasLaneConstraints || hasTariffConstraints || showFacilityPicker || showLanePicker
+  const availableLanes = lanes.filter((lane) => !changedLaneIds.has(lane.lane_id))
+  const originOptions = uniqueLaneEndpoints(
+    availableLanes.filter(
+      (lane) =>
+        !addLaneDestinationId ||
+        lane.destination_endpoint_id === addLaneDestinationId,
+    ),
+    'origin_endpoint_id',
+    'origin_endpoint_name',
+  )
+  const destinationOptions = uniqueLaneEndpoints(
+    availableLanes.filter(
+      (lane) =>
+        !addLaneOriginId || lane.origin_endpoint_id === addLaneOriginId,
+    ),
+    'destination_endpoint_id',
+    'destination_endpoint_name',
+  )
+  const selectedLane = availableLanes.find(
+    (lane) =>
+      lane.origin_endpoint_id === addLaneOriginId &&
+      lane.destination_endpoint_id === addLaneDestinationId,
+  )
 
   function touchAssumptions(next: NetworkScenarioAssumptions) {
-    onDraftChange({ scenarioId: scenario.scenario_id, name, assumptions: next, dirty: true })
+    onDraftChange({ scenarioId: scenario.scenario_id, assumptions: next, dirty: true })
   }
 
   function toggleFacility(facilityId: string) {
@@ -388,8 +558,56 @@ function ScenarioTab({
     touchAssumptions({ ...assumptions, disabled_facility_ids: [...next].sort() })
   }
 
+  function openConstraint(kind: 'facilities' | 'lanes') {
+    setOpenConstraints((current) => ({
+      ...current,
+      [scenario.scenario_id]: {
+        ...current[scenario.scenario_id],
+        [kind]: true,
+      },
+    }))
+  }
+
+  function closeConstraint(kind: 'facilities' | 'lanes') {
+    setOpenConstraints((current) => ({
+      ...current,
+      [scenario.scenario_id]: {
+        ...current[scenario.scenario_id],
+        [kind]: false,
+      },
+    }))
+  }
+
+  function addTariffRule() {
+    touchAssumptions({
+      ...assumptions,
+      tariffs: [
+        ...tariffs,
+        createNetworkTariffRule(scenario.horizon_start, scenario.horizon_end),
+      ],
+    })
+  }
+
+  function clearFacilityConstraints() {
+    if (hasFacilityConstraints) {
+      touchAssumptions({ ...assumptions, disabled_facility_ids: [] })
+    }
+    closeConstraint('facilities')
+  }
+
+  function clearLaneConstraints() {
+    if (hasLaneConstraints) {
+      touchAssumptions({
+        ...assumptions,
+        disabled_lane_ids: [],
+        lane_cost_adjustments_pct: {},
+      })
+    }
+    closeConstraint('lanes')
+  }
+
   function addLaneOverride() {
-    const laneId = addLaneId
+    const laneId = selectedLane?.lane_id
     if (!laneId) return
     if (addLaneMode === 'disable') {
       const next = new Set(assumptions.disabled_lane_ids)
@@ -415,11 +633,11 @@ function ScenarioTab({
         },
       })
     }
-    setAddLaneId('')
+    setAddLaneOriginId('')
+    setAddLaneDestinationId('')
   }
 
   const validation = scenario.validation
-  const canRun = validation?.valid && !dirty
 
   return (
     <div className="flex flex-col gap-4">
@@ -429,36 +647,20 @@ function ScenarioTab({
           Published baseline · demand {scenario.demand_plan_version_id} · capacity {scenario.capacity_plan_version_id} · {scenario.horizon_start} to {scenario.horizon_end}
         </p>
       </section>
-      <NetworkTariffChangeCard
-        rules={assumptions.tariffs ?? []}
-        horizonStart={scenario.horizon_start}
-        horizonEnd={scenario.horizon_end}
-        onChange={(tariffs) => touchAssumptions({ ...assumptions, tariffs })}
-      />
+      {hasTariffConstraints && (
+        <NetworkTariffChangeCard
+          rules={tariffs}
+          onChange={(tariffs) => touchAssumptions({ ...assumptions, tariffs })}
+        />
+      )}
       <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
         <section className="flex flex-col gap-4 rounded-lg border border-border bg-card p-4">
           <div>
-            <h2 className="text-sm font-semibold">Scenario settings and network changes</h2>
+            <h2 className="text-sm font-semibold">Network changes</h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              Facility and lane cards are combined with tariff rules when the plan runs.
+              Layer only the changes this scenario needs. All active changes are applied together when the plan runs.
             </p>
           </div>
-          <label className="flex flex-col gap-1.5 text-sm">
-            <span className="font-medium">Scenario name</span>
-            <input
-              value={name}
-              onChange={(event) => {
-                onDraftChange({
-                  scenarioId: scenario.scenario_id,
-                  name: event.target.value,
-                  assumptions,
-                  dirty: true,
-                })
-              }}
-              className="h-10 rounded-md border border-border bg-background px-3 text-sm"
-            />
-          </label>
-
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="font-medium">Unmet-demand penalty ($ / case)</span>
             <input
@@ -479,9 +681,59 @@ function ScenarioTab({
             </span>
           </label>
 
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={addTariffRule}
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add tariff rule
+            </button>
+            {!showFacilityPicker && (
+              <button
+                type="button"
+                onClick={() => openConstraint('facilities')}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Facility availability
+              </button>
+            )}
+            {!showLanePicker && (
+              <button
+                type="button"
+                onClick={() => openConstraint('lanes')}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Lane rule
+              </button>
+            )}
+          </div>
+
+          {!hasAnyConstraint && (
+            <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+              No network changes yet. Add a tariff, restrict facility availability, or layer a lane rule.
+            </p>
+          )}
+
+          {showFacilityPicker && (
           <div className="flex flex-col gap-2 rounded-md border border-border/70 p-3">
-            <span className="text-sm font-semibold">Change facility availability</span>
-            <span className="text-xs text-muted-foreground">Disable DCs or depots while retaining published capacity for comparison.</span>
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-semibold">Facility availability</span>
+                <span className="text-xs text-muted-foreground">Disable DCs or depots while retaining published capacity for comparison.</span>
+              </div>
+              <button
+                type="button"
+                onClick={clearFacilityConstraints}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Remove
+              </button>
+            </div>
             <div className="max-h-64 overflow-auto rounded-md border border-border">
               {regions
                 .filter((region) => region.region_id !== 'ALL')
@@ -525,52 +777,115 @@ function ScenarioTab({
                 })}
             </div>
           </div>
+          )}
 
+          {showLanePicker && (
           <div className="flex flex-col gap-2 rounded-md border border-border/70 p-3">
-            <span className="text-sm font-semibold">Restrict or price a lane</span>
-            <span className="text-xs text-muted-foreground">Disable a linehaul lane or adjust its planning cost assumption.</span>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={addLaneId}
-                onChange={(event) => setAddLaneId(event.target.value)}
-                className="h-9 min-w-56 flex-1 rounded-md border border-border bg-background px-2 text-sm"
-              >
-                <option value="">Select a linehaul lane…</option>
-                {lanes
-                  .filter((lane) => !changedLaneIds.has(lane.lane_id))
-                  .map((lane) => (
-                    <option key={lane.lane_id} value={lane.lane_id}>
-                      {lane.lane_name}
-                    </option>
-                  ))}
-              </select>
-              <select
-                value={addLaneMode}
-                onChange={(event) =>
-                  setAddLaneMode(event.target.value as 'disable' | 'adjust')
-                }
-                className="h-9 rounded-md border border-border bg-background px-2 text-sm"
-              >
-                <option value="disable">Disable lane</option>
-                <option value="adjust">Adjust cost</option>
-              </select>
-              {addLaneMode === 'adjust' && (
-                <input
-                  type="number"
-                  value={addAdjustPct}
-                  onChange={(event) => setAddAdjustPct(event.target.value)}
-                  className="h-9 w-20 rounded-md border border-border bg-background px-2 text-sm"
-                  aria-label="Cost adjustment percent"
-                />
-              )}
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-semibold">Lane rule</span>
+                <span className="text-xs text-muted-foreground">Disable a linehaul lane or adjust its planning cost assumption.</span>
+              </div>
               <button
                 type="button"
-                onClick={addLaneOverride}
-                disabled={!addLaneId}
-                className="h-9 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent/50 disabled:opacity-50"
+                onClick={clearLaneConstraints}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-destructive"
               >
-                Add
+                <Trash2 className="h-3.5 w-3.5" />
+                Remove
               </button>
+            </div>
+            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+              <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+                <span>From</span>
+                <select
+                  aria-label="Lane from"
+                  value={addLaneOriginId}
+                  onChange={(event) => {
+                    const originId = event.target.value
+                    setAddLaneOriginId(originId)
+                    if (
+                      originId &&
+                      addLaneDestinationId &&
+                      !availableLanes.some(
+                        (lane) =>
+                          lane.origin_endpoint_id === originId &&
+                          lane.destination_endpoint_id === addLaneDestinationId,
+                      )
+                    ) {
+                      setAddLaneDestinationId('')
+                    }
+                  }}
+                  className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                >
+                  <option value="">Select origin…</option>
+                  {originOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+                <span>To</span>
+                <select
+                  aria-label="Lane to"
+                  value={addLaneDestinationId}
+                  onChange={(event) => {
+                    const destinationId = event.target.value
+                    setAddLaneDestinationId(destinationId)
+                    if (
+                      destinationId &&
+                      addLaneOriginId &&
+                      !availableLanes.some(
+                        (lane) =>
+                          lane.origin_endpoint_id === addLaneOriginId &&
+                          lane.destination_endpoint_id === destinationId,
+                      )
+                    ) {
+                      setAddLaneOriginId('')
+                    }
+                  }}
+                  className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+                >
+                  <option value="">Select destination…</option>
+                  {destinationOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="flex flex-wrap items-end gap-2 md:flex-nowrap">
+                <select
+                  aria-label="Lane change type"
+                  value={addLaneMode}
+                  onChange={(event) =>
+                    setAddLaneMode(event.target.value as 'disable' | 'adjust')
+                  }
+                  className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+                >
+                  <option value="disable">Disable lane</option>
+                  <option value="adjust">Adjust cost</option>
+                </select>
+                {addLaneMode === 'adjust' && (
+                  <input
+                    type="number"
+                    value={addAdjustPct}
+                    onChange={(event) => setAddAdjustPct(event.target.value)}
+                    className="h-9 w-20 rounded-md border border-border bg-background px-2 text-sm"
+                    aria-label="Cost adjustment percent"
+                  />
+                )}
+                <button
+                  type="button"
+                  onClick={addLaneOverride}
+                  disabled={!selectedLane}
+                  className="h-9 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent/50 disabled:opacity-50"
+                >
+                  Add
+                </button>
+              </div>
             </div>
             {changedLaneIds.size > 0 ? (
               <ul className="divide-y divide-border/60 rounded-md border border-border text-sm">
@@ -614,42 +929,11 @@ function ScenarioTab({
               </p>
             )}
           </div>
+          )}
         </section>
 
         <section className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4">
-          <h2 className="text-sm font-semibold">Validate and run</h2>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                void onSave({
-                  scenario_name: name.trim() || scenario.scenario_name,
-                  assumptions,
-                }).then((saved) => {
-                  if (saved) onDraftChange(null)
-                })
-              }}
-              disabled={!dirty || busy}
-              className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent/50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Save className="h-4 w-4" />
-              Save changes
-            </button>
-            <button
-              type="button"
-              onClick={() => void onValidate()}
-              disabled={dirty || busy}
-              className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent/50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <ShieldCheck className="h-4 w-4" />
-              Validate
-            </button>
-          </div>
-          {dirty && (
-            <p className="text-xs text-amber-500">
-              Unsaved changes — save and validate before running the plan.
-            </p>
-          )}
+          <h2 className="text-sm font-semibold">Plan checks</h2>
           {validation ? (
             <div className="flex flex-col gap-2">
               <p
@@ -680,31 +964,34 @@ function ScenarioTab({
             </div>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Validation checks assumptions against the published plans before the
-              solver runs.
+              Validation runs automatically before the plan is solved.
             </p>
           )}
           <p className="text-xs text-muted-foreground">
-            {canRun
-              ? 'Ready to run from the header button.'
-              : 'Save, then validate, to enable Run.'}
+            Run fixed-capacity plan from the header. The app saves pending edits,
+            validates the scenario, then solves.
           </p>
-          <button
-            type="button"
-            onClick={() => void onDelete()}
-            disabled={busy || deletePending || scenario.status === 'published'}
-            className="mt-auto inline-flex h-9 items-center gap-2 self-start rounded-md border border-destructive/50 px-3 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Trash2 className="h-4 w-4" />
-            Delete scenario
-          </button>
         </section>
       </div>
     </div>
   )
 }
 
-function laneNameFor(lanes: { lane_id: string; lane_name: string }[], laneId: string) {
+function uniqueLaneEndpoints(
+  lanes: NetworkLaneAggregate[],
+  idKey: 'origin_endpoint_id' | 'destination_endpoint_id',
+  nameKey: 'origin_endpoint_name' | 'destination_endpoint_name',
+) {
+  const endpoints = new Map<string, { id: string; name: string }>()
+  for (const lane of lanes) {
+    endpoints.set(lane[idKey], { id: lane[idKey], name: lane[nameKey] })
+  }
+  return [...endpoints.values()].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )
+}
+
+function laneNameFor(lanes: NetworkLaneAggregate[], laneId: string) {
   return lanes.find((lane) => lane.lane_id === laneId)?.lane_name ?? laneId
 }
 

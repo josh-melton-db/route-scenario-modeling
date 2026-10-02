@@ -96,6 +96,37 @@ class BaselineService:
     def active_rows(self) -> NetworkRows:
         return self.get_revision().rows
 
+    def option_rows(self, revision_id: str | None = None) -> NetworkRows:
+        self._ensure_seeded()
+        original_id, active_id = self.repository.ids()
+        selected_id = revision_id or active_id
+        try:
+            return self.repository.option_rows(selected_id)
+        except KeyError:
+            # Backfill one time for revisions created before option summaries
+            # existed. Future baseline and proposal writes populate this table
+            # directly, so the full JSONB snapshot stays untouched.
+            if original_id == selected_id:
+                rows = network_overview_service._load_option_rows()
+            else:
+                full_rows = self.repository.revision(selected_id).rows
+                rows = self.repository._option_payload(full_rows)
+            self.repository.save_option_rows(selected_id, rows)
+            return rows
+
+    def active_option_rows(self) -> NetworkRows:
+        return self.option_rows()
+
+    def is_original_active(self) -> bool:
+        self._ensure_seeded()
+        original_id, active_id = self.repository.ids()
+        return original_id == active_id
+
+    def active_revision_id(self) -> str:
+        self._ensure_seeded()
+        _, active_id = self.repository.ids()
+        return active_id
+
     @staticmethod
     def _plan_ids(rows: NetworkRows) -> tuple[str | None, str | None]:
         metadata = rows.get("baseline_revision_metadata", [])
@@ -218,38 +249,47 @@ class BaselineService:
     def get_state(self) -> BaselineState:
         self._ensure_seeded()
         original_id, active_id = self.repository.ids()
-        active = self.repository.revision(active_id)
-        demand_id, capacity_id = self._plan_ids(active.rows)
+        active_header = self.repository.revision_header(active_id)
+        option_rows = self.option_rows(active_id)
+        demand_id, capacity_id = self._plan_ids(option_rows)
         demand_version = next(
-            (row for row in active.rows.get("demand_plan_versions", [])
+            (row for row in option_rows.get("demand_plan_versions", [])
              if str(row["plan_version_id"]) == demand_id), None,
         )
-        active_dates = sorted({
-            str(row["service_date"])[:10]
-            for row in active.rows.get("demand_plan_daily", [])
-            if str(row.get("demand_plan_version_id")) == demand_id
-        })
         plan_start = (
             str(demand_version.get("horizon_start"))[:10]
             if demand_version and demand_version.get("horizon_start")
-            else active_dates[0] if active_dates else "unknown"
+            else "unknown"
         )
         plan_end = (
             str(demand_version.get("horizon_end"))[:10]
             if demand_version and demand_version.get("horizon_end")
-            else active_dates[-1] if active_dates else "unknown"
+            else "unknown"
         )
         plan_suffix = f"{active_id}.{demand_id}.{capacity_id}.{plan_start}.{plan_end}"
+        metadata = option_rows.get("baseline_revision_metadata", [])
+        route_coverage = (
+            BaselineRouteCoverage.model_validate(metadata[0]["route_coverage"])
+            if metadata and metadata[0].get("route_coverage")
+            else BaselineRouteCoverage(
+                ready=False,
+                covered_dates=0,
+                expected_dates=0,
+                covered_depots=0,
+                expected_depots=0,
+                message="No frozen depot route-plan results are attached to this baseline revision.",
+            )
+        )
         return BaselineState(
             original_revision_id=original_id,
             active_revision_id=active_id,
-            active_run_id=active.run_id,
+            active_run_id=active_header.get("run_id"),
             active_plan_run_id=f"baseline-plan-run.{plan_suffix}",
             active_plan_scenario_id=f"baseline-plan-scenario.{plan_suffix}",
             default_demand_plan_version_id=demand_id,
             default_capacity_plan_version_id=capacity_id,
-            accepted_at=active.accepted_at,
-            route_coverage=self._coverage(active.rows),
+            accepted_at=active_header.get("accepted_at"),
+            route_coverage=route_coverage,
         )
 
     @staticmethod
@@ -632,7 +672,6 @@ class BaselineService:
         This run is distinct from proposal provenance and is intentionally
         deterministic per baseline revision.
         """
-        revision = self.get_revision(revision_id)
         from ..models import (
             NetworkOverviewContext,
             NetworkPricingContext,
@@ -648,43 +687,53 @@ class BaselineService:
         from .rates import list_rate_contract_details
         from .store_provider import get_store
 
-        default_demand_id, default_capacity_id = self._plan_ids(revision.rows)
+        original_id, active_id = self.repository.ids()
+        target_revision_id = revision_id or active_id
+        option_rows = self.option_rows(target_revision_id)
+        default_demand_id, default_capacity_id = self._plan_ids(option_rows)
         demand_id = demand_plan_version_id or default_demand_id
         capacity_id = capacity_plan_version_id or default_capacity_id
         if not demand_id or not capacity_id:
             raise HTTPException(status_code=409, detail="Baseline planning inputs are incomplete.")
         demand_version = next(
-            (row for row in revision.rows.get("demand_plan_versions", [])
+            (row for row in option_rows.get("demand_plan_versions", [])
              if str(row["plan_version_id"]) == demand_id), None,
         )
         capacity_version = next(
-            (row for row in revision.rows.get("capacity_plan_versions", [])
+            (row for row in option_rows.get("capacity_plan_versions", [])
              if str(row["plan_version_id"]) == capacity_id), None,
         )
         if demand_version is None:
             raise HTTPException(status_code=404, detail="Demand plan version not found in baseline revision.")
         if capacity_version is None:
             raise HTTPException(status_code=404, detail="Capacity plan version not found in baseline revision.")
-        demand_rows = [
-            row for row in revision.rows.get("demand_plan_daily", [])
-            if str(row.get("demand_plan_version_id")) == demand_id
-        ]
-        dates = sorted({str(row["service_date"])[:10] for row in demand_rows})
-        if not dates:
+        start = horizon_start or str(demand_version["horizon_start"])[:10]
+        end = horizon_end or str(demand_version["horizon_end"])[:10]
+        if not start or not end:
             raise HTTPException(status_code=409, detail="Baseline planning horizon is empty.")
-        start = horizon_start or dates[0]
-        end = horizon_end or dates[-1]
         try:
             start, end = date.fromisoformat(start).isoformat(), date.fromisoformat(end).isoformat()
         except ValueError as exc:
             raise HTTPException(status_code=422, detail='Plan-run dates must use YYYY-MM-DD.') from exc
-        if end < start or start < dates[0] or end > dates[-1]:
+        demand_start = str(demand_version["horizon_start"])[:10]
+        demand_end = str(demand_version["horizon_end"])[:10]
+        if end < start or start < demand_start or end > demand_end:
             raise HTTPException(status_code=422, detail="Plan-run horizon must be ordered and covered by the demand plan.")
         capacity_start = str(capacity_version["horizon_start"])[:10]
         capacity_end = str(capacity_version["horizon_end"])[:10]
         if start < capacity_start or end > capacity_end:
             raise HTTPException(status_code=422, detail="Plan-run horizon must be covered by the capacity plan.")
-        suffix = f"{revision.revision_id}.{demand_id}.{capacity_id}.{start}.{end}"
+        if target_revision_id == original_id:
+            network_rows = network_overview_service._load_rows(
+                demand_plan_version_id=demand_id,
+                capacity_plan_version_id=capacity_id,
+                horizon_start=date.fromisoformat(start),
+                horizon_end=date.fromisoformat(end),
+            )
+        else:
+            revision = self.get_revision(target_revision_id)
+            network_rows = revision.rows
+        suffix = f"{target_revision_id}.{demand_id}.{capacity_id}.{start}.{end}"
         scenario_id = f"baseline-plan-scenario.{suffix}"
         plan_run_id = f"baseline-plan-run.{suffix}"
         with self._plan_cache_lock:
@@ -694,17 +743,17 @@ class BaselineService:
         if cached is not None:
             return cached.copy()
         generated_at = str(demand_version.get("published_at") or demand_version.get("as_of_date"))
-        metadata = revision.rows.get('baseline_revision_metadata', [])
+        metadata = option_rows.get('baseline_revision_metadata', [])
         baseline_tariffs = metadata[0].get('tariffs', []) if metadata else []
         scenario = NetworkScenario(
             scenario_id=scenario_id, scenario_name="Active baseline child-planning snapshot",
-            source_baseline_revision_id=revision.revision_id,
+            source_baseline_revision_id=target_revision_id,
             demand_plan_version_id=demand_id, capacity_plan_version_id=capacity_id,
             horizon_start=start, horizon_end=end, region_id="ALL",
             status="solved", created_at=generated_at, updated_at=generated_at,
             solved_at=generated_at,
             assumptions=NetworkScenarioAssumptions.model_validate({
-                'source_baseline_revision_id': revision.revision_id,
+                'source_baseline_revision_id': target_revision_id,
                 'tariffs': baseline_tariffs,
             }),
         )
@@ -715,13 +764,13 @@ class BaselineService:
             metric="assigned_flow",
         )
         flow_rows = [
-            deepcopy(row) for row in revision.rows.get("baseline_network_flow_daily", [])
+            deepcopy(row) for row in network_rows.get("baseline_network_flow_daily", [])
             if str(row.get("demand_plan_version_id")) == demand_id
             and str(row.get("capacity_plan_version_id")) == capacity_id
             and start <= str(row["service_date"])[:10] <= end
         ]
         cost_rows = [
-            deepcopy(row) for row in revision.rows.get("network_flow_cost_daily", [])
+            deepcopy(row) for row in network_rows.get("network_flow_cost_daily", [])
             if str(row.get("demand_plan_version_id", demand_id)) == demand_id
             and str(row.get("capacity_plan_version_id", capacity_id)) == capacity_id
             and start <= str(row["service_date"])[:10] <= end
@@ -737,13 +786,13 @@ class BaselineService:
             else list_rate_contract_details(get_store())
         )
         tariff_map = resolve_network_tariffs(
-            revision.rows, scenario.assumptions.tariffs, start, end
+            network_rows, scenario.assumptions.tariffs, start, end
         )
         rated = rate_network_flows(
-            revision.rows, flow_rows, tariff_map, contracts=contracts
+            network_rows, flow_rows, tariff_map, contracts=contracts
         )
         cost_rows = rated.cost_rows
-        comparable_rows = deepcopy(revision.rows)
+        comparable_rows = deepcopy(network_rows)
         comparable_rows["baseline_network_flow_daily"] = flow_rows
         comparable_rows["network_flow_cost_daily"] = cost_rows
         overview = network_overview_service.build_overview(
@@ -789,7 +838,7 @@ class BaselineService:
             ),
         )
         snapshot = NetworkRunSnapshot(
-            scenario=scenario, result=result, network_rows=revision.rows,
+            scenario=scenario, result=result, network_rows=network_rows,
             flow_rows=flow_rows, cost_rows=cost_rows,
         )
         with self._plan_cache_lock:

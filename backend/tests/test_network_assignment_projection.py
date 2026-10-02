@@ -53,3 +53,13 @@ def test_partial_rerun_preserves_other_dates_and_capacity_variants():
     merged = merge_assignment_overlays(current + other_date + other_capacity, replacement)
     assert merged == other_date + other_capacity + replacement
     assert current == _rows()['network_customer_assignments_daily']
+
+
+def test_legacy_aggregate_demand_is_preserved_without_matching_overlays():
+    rows = _rows()
+    del rows['demand_plan_daily'][0]['customer_id']
+    before = deepcopy(rows)
+    assert projected_demand_rows(rows, 'D', 'OTHER') == rows['demand_plan_daily']
+    assert rows == before
+    with pytest.raises(ValueError, match='requires customer-level demand'):
+        projected_demand_rows(rows, 'D', 'P')

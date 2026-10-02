@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "coverages": [
+    {
+      "coverage_id": "texas-delivery",
+      "artifact_version": "texas-20261002-v1",
+      "endpoint_url": "https://valhalla-texas-dev-860013386775689.aws.databricksapps.com",
+      "costing": "truck",
+      "max_points": 500,
+      "bounds": {"west": -106.7, "south": 25.8, "east": -93.5, "north": 36.5},
+      "depot_ids": ["DPT_TOLA_DALLAS", "DPT_TOLA_SAN_ANTONIO"],
+      "status": "building",
+      "source": {
+        "name": "Geofabrik Texas named extract",
+        "url": "https://download.geofabrik.de/north-america/us/texas-latest.osm.pbf"
+      },
+      "build": {
+        "valhalla_version": "3.5.1",
+        "profile": "DEFAULT",
+        "run_id": 1001382283120031,
+        "task_run_id": 310302840286406,
+        "volume_path": "/Volumes/demos/route_scenario_modeling/valhalla_assets",
+        "built_at": null
+      },
+      "artifact": {
+        "region_id": "texas",
+        "archive": "regions/texas/region.tar.gz"
+      },
+      "smoke_test": {
+        "result": "not_run",
+        "tested_at": null,
+        "coverage_id": "texas-delivery",
+        "artifact_version": "texas-20261002-v1",
+        "region_id": "texas",
+        "endpoint_url": "https://valhalla-texas-dev-860013386775689.aws.databricksapps.com"
+      }
+    }
+  ]
+}

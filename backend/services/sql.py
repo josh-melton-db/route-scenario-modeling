@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
+from urllib.parse import urlsplit
 
+import httpx
 from fastapi import HTTPException
 
 from ..config import (
@@ -37,13 +40,14 @@ def resolve_sql_warehouse_id() -> str:
     raise HTTPException(status_code=500, detail="No SQL warehouse available.")
 
 
-def _parse_results(execution: Any) -> list[dict[str, Any]]:
+def _parse_results(execution: Any, data_array=None) -> list[dict[str, Any]]:
     result = execution.result
     manifest = getattr(execution, "manifest", None)
     if not result or not manifest or not manifest.schema:
         return []
 
-    data_array = getattr(result, "data_array", None) or []
+    if data_array is None:
+        data_array = getattr(result, "data_array", None) or []
     columns = manifest.schema.columns
     col_names = [column.name for column in columns]
 
@@ -82,11 +86,69 @@ def _parse_results(execution: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _read_results(client, execution):
+    manifest = execution.manifest
+    if not manifest or not execution.result:
+        return []
+    if getattr(manifest, "truncated", False):
+        raise HTTPException(status_code=502, detail="SQL result was truncated; refusing an incomplete snapshot.")
+    rows = []
+    downloaded = set()
+    for index in range(getattr(manifest, "total_chunk_count", None) or 1):
+        if index in downloaded:
+            continue
+        chunk = (
+            execution.result if index == 0
+            else client.statement_execution.get_statement_result_chunk_n(execution.statement_id, index)
+        )
+        links = getattr(chunk, "external_links", None) or []
+        if not links:
+            rows.extend(_parse_results(execution, getattr(chunk, "data_array", None) or []))
+            continue
+        for link in links:
+            if link.chunk_index in downloaded:
+                continue
+            parsed = urlsplit(link.external_link)
+            app_storage_proxy = (
+                bool(os.getenv("DATABRICKS_APP_NAME"))
+                and parsed.scheme == "http"
+                and parsed.hostname == "storage-proxy.databricks.com"
+                and parsed.port in (None, 80)
+            )
+            if parsed.username or parsed.password or not (parsed.scheme == "https" or app_storage_proxy):
+                raise HTTPException(
+                    status_code=502,
+                    detail="SQL download requires HTTPS or the Databricks App storage proxy.",
+                )
+            try:
+                # Signed storage URLs must not receive workspace credentials.
+                response = httpx.get(link.external_link, timeout=60)
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, list) or any(not isinstance(row, list) for row in data):
+                    raise ValueError("Invalid result chunk")
+            except (httpx.HTTPError, ValueError):
+                raise HTTPException(status_code=502, detail="Could not download a complete SQL result chunk.") from None
+            if link.row_count is not None and len(data) != link.row_count:
+                raise HTTPException(status_code=502, detail="SQL result chunk row count mismatch.")
+            rows.extend(_parse_results(execution, data))
+            downloaded.add(link.chunk_index)
+    expected = getattr(manifest, "total_row_count", None)
+    if expected is not None and len(rows) != expected:
+        raise HTTPException(status_code=502, detail="SQL result row count mismatch; refusing an incomplete snapshot.")
+    return rows
+
+
 def execute_sql(
     query: str,
     parameters: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    from databricks.sdk.service.sql import StatementParameterListItem, StatementState
+    from databricks.sdk.service.sql import (
+        Disposition,
+        Format,
+        StatementParameterListItem,
+        StatementState,
+    )
 
     sdk_params = None
     if parameters:
@@ -99,12 +161,20 @@ def execute_sql(
             for p in parameters
         ]
 
-    execution = get_workspace_client().statement_execution.execute_statement(
+    client = get_workspace_client()
+    options = dict(
         warehouse_id=resolve_sql_warehouse_id(),
         statement=query,
         parameters=sdk_params,
+        format=Format.JSON_ARRAY,
         wait_timeout="30s",
     )
+    execution = client.statement_execution.execute_statement(**options)
+    error = str(execution.status.error) if execution.status and execution.status.error else ""
+    if "Inline byte limit exceeded" in error and query.lstrip().upper().startswith("SELECT"):
+        execution = client.statement_execution.execute_statement(
+            **options, disposition=Disposition.EXTERNAL_LINKS,
+        )
     state = execution.status.state if execution.status and execution.status.state else None
     if state != StatementState.SUCCEEDED:
         detail = (
@@ -113,7 +183,7 @@ def execute_sql(
             else "SQL execution failed."
         )
         raise HTTPException(status_code=400, detail=detail)
-    return _parse_results(execution)
+    return _read_results(client, execution)
 
 
 class SqlService:

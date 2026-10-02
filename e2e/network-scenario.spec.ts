@@ -19,30 +19,21 @@ test.describe('network scenario save, validate, and run', () => {
 
     // Create a scenario from the nav picker.
     await page.getByLabel('Network scenario').selectOption('__new__')
-    await expect(page.getByRole('heading', { name: 'New network plan' })).toBeVisible({
+    const nameInput = page.getByRole('textbox', { name: 'Network plan name', exact: true })
+    await expect(nameInput).toBeVisible({
       timeout: 30_000,
     })
+    await expect(nameInput).toHaveValue('New network plan')
     await expect(page.locator('header').getByText('draft', { exact: true })).toBeVisible()
     await expect(page.getByText('Unsaved changes')).toBeHidden()
 
-    const saveButton = page.getByRole('button', { name: 'Save changes' })
-    const validateButton = page.getByRole('button', { name: 'Validate', exact: true })
-    await expect(saveButton).toBeDisabled()
-    await expect(validateButton).toBeEnabled()
-
-    // Rename and edit an assumption: the tab becomes dirty and blocks validation.
-    await page.getByLabel('Scenario name').fill('E2E save flow')
+    // Rename and edit an assumption: both persist without explicit save/validate.
+    await nameInput.fill('E2E save flow')
+    await nameInput.press('Enter')
+    await expect(page.getByRole('heading', { name: 'E2E save flow' })).toBeVisible()
     const penalty = page.getByLabel('Unmet-demand penalty ($ / case)')
     await penalty.fill('300')
-    await expect(page.getByText('Unsaved changes')).toBeVisible()
-    await expect(validateButton).toBeDisabled()
-    await expect(saveButton).toBeEnabled()
-
-    // Saving persists the edit and clears the unsaved state.
-    await saveButton.click()
-    await expect(page.getByText('Unsaved changes')).toBeHidden({ timeout: 30_000 })
-    await expect(saveButton).toBeDisabled()
-    await expect(validateButton).toBeEnabled()
+    await expect(page.getByText('Saved', { exact: true })).toBeVisible({ timeout: 30_000 })
     await expect(page.getByRole('heading', { name: 'E2E save flow' })).toBeVisible()
     await expect(penalty).toHaveValue('300')
 
@@ -51,13 +42,7 @@ test.describe('network scenario save, validate, and run', () => {
     const persisted = (
       (await scenarios.json()) as { scenario_id: string; revision: number }[]
     ).find((row) => row.scenario_id === scenarioId)
-    expect(persisted?.revision).toBe(2)
-
-    // Validate, then run the fixed-capacity plan end to end.
-    await validateButton.click()
-    await expect(page.getByText(/Ready to solve with 1 advisory issue/)).toBeVisible({
-      timeout: 30_000,
-    })
+    expect(persisted?.revision).toBe(3)
 
     // The scenario workspace tabs are in the top nav.
     await expect(page.getByRole('link', { name: 'Plan flow' })).toBeVisible()
@@ -65,7 +50,8 @@ test.describe('network scenario save, validate, and run', () => {
 
     await page.getByRole('button', { name: 'Run fixed-capacity plan' }).click()
     await expect(page.getByText('Baseline vs. scenario')).toBeVisible({ timeout: 120_000 })
-    await expect(page.locator('header').getByText('solved', { exact: true })).toBeVisible()
+    const solvedScenario = await page.request.get(`/api/network/scenarios/${scenarioId}`)
+    expect((await solvedScenario.json()).status).toBe('solved')
     await expect(page.getByText('Depots with changed flow')).toBeVisible()
     await expect(page.getByText('Unmet cases').first()).toBeVisible()
 
@@ -78,7 +64,7 @@ test.describe('network scenario save, validate, and run', () => {
     await expect(page.getByText('Baseline vs. scenario')).toBeVisible({ timeout: 120_000 })
     const rerunScenario = await (await page.request.get(`/api/network/scenarios/${scenarioId}`)).json()
     const rerunResult = await (await page.request.get(`/api/network/scenarios/${scenarioId}/result`)).json()
-    expect(rerunScenario.revision).toBe(3)
+    expect(rerunScenario.revision).toBe(4)
     expect(rerunScenario.assumptions.tariffs[0].amount_per_case).toBe(0.1)
     expect(rerunResult.tariff_total_cost).toBeGreaterThan(0)
 
@@ -87,7 +73,7 @@ test.describe('network scenario save, validate, and run', () => {
 
     // Deleting from the scenario tab returns to the network overview.
     await page.getByRole('link', { name: 'Scenario', exact: true }).click()
-    await page.getByRole('button', { name: 'Delete scenario' }).click()
+    await page.getByRole('button', { name: 'Delete network plan' }).click()
     await expect(page).toHaveURL(/\/network(\?|$)/)
     await expect(page.getByLabel('Network baseline filters')).toBeVisible({ timeout: 30_000 })
   })

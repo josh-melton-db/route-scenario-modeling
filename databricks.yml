@@ -50,8 +50,8 @@ variables:
     description: Databricks Model Serving endpoint used for interactive route solves
     default: route-solver
   routing_coverage_manifest:
-    description: Operator-supplied validated coverage manifest path in the app deployment; blank blocks road solves with an actionable error
-    default: ""
+    description: Coverage manifest path in the app deployment; the default candidate blocks strict road solves until validated coverage is configured
+    default: routing_coverage_samples/texas-candidates.v1.json
   valhalla_app_name:
     description: Databricks App providing the directed road travel matrix
     default: valhalla-api-poc
@@ -92,7 +92,7 @@ targets:
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     variables:
       app_name: route-scenario-modeling-dev
-      warehouse_name: route-scenario-modeling-warehouse-dev
+      warehouse_name: route-scenario-modeling-rt-dev
       route_scenario_modeling_job_name: route-scenario-modeling-plan-dev
       route_solver_endpoint_name: route-solver-dev
 
@@ -113,9 +113,8 @@ resources:
       # SQL statements in parallel on each page load; this gives the warehouse
       # room to multiplex without queueing.
       min_num_clusters: 1
-      max_num_clusters: 5
-      auto_stop_mins: 10
-      warehouse_type: PRO
+      max_num_clusters: 1
+      auto_stop_mins: 15
 
   schemas:
     route_scenario_modeling_schema:
@@ -252,64 +251,4 @@ resources:
           uc_securable:
             securable_type: TABLE
             securable_full_name: ${var.catalog}.${var.schema}.cost_parameters
-            permission: SELECT
-        - name: dim_regions
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.dim_regions
-            permission: SELECT
-        - name: dim_facilities
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.dim_facilities
-            permission: SELECT
-        - name: facility_hierarchy
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.facility_hierarchy
-            permission: SELECT
-        - name: dim_markets
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.dim_markets
-            permission: SELECT
-        - name: dim_network_customers
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.dim_network_customers
-            permission: SELECT
-        - name: dim_network_lanes
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.dim_network_lanes
-            permission: SELECT
-        - name: demand_plan_versions
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.demand_plan_versions
-            permission: SELECT
-        - name: demand_plan_daily
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.demand_plan_daily
-            permission: SELECT
-        - name: capacity_plan_versions
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.capacity_plan_versions
-            permission: SELECT
-        - name: facility_capacity_daily
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.facility_capacity_daily
-            permission: SELECT
-        - name: lane_capacity_daily
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.lane_capacity_daily
-            permission: SELECT
-        - name: baseline_network_flow_daily
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.baseline_network_flow_daily
             permission: SELECT

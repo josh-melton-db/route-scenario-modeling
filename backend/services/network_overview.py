@@ -219,6 +219,8 @@ class NetworkOverviewService:
             )
 
         statements = {
+            "dim_regions": f"SELECT * FROM {table('dim_regions')}",
+            "facility_hierarchy": f"SELECT * FROM {table('facility_hierarchy')}",
             "dim_facilities": f"SELECT * FROM {table('dim_facilities')}",
             "dim_markets": f"SELECT * FROM {table('dim_markets')}",
             "dim_network_customers": f"SELECT * FROM {table('dim_network_customers')}",
@@ -229,51 +231,10 @@ class NetworkOverviewService:
             "capacity_plan_versions": (
                 f"SELECT * FROM {table('capacity_plan_versions')} ORDER BY published_at DESC"
             ),
-            "demand_plan_daily": f"""
-                SELECT
-                  demand_plan_version_id,
-                  CAST(service_date AS STRING) AS service_date,
-                  region_id,
-                  distribution_center_id,
-                  depot_id,
-                  market_id,
-                  SUM(demand_units) AS demand_units
-                FROM {table('demand_plan_daily')}
-                {demand_filter}
-                GROUP BY ALL
-                """,
-            "facility_capacity_daily": f"""
-                SELECT
-                  capacity_plan_version_id,
-                  CAST(service_date AS STRING) AS service_date,
-                  facility_id,
-                  SUM(capacity_units) AS capacity_units
-                FROM {table('facility_capacity_daily')}
-                {capacity_filter}
-                GROUP BY ALL
-                """,
-            "lane_capacity_daily": f"""
-                SELECT
-                  capacity_plan_version_id,
-                  CAST(service_date AS STRING) AS service_date,
-                  lane_id,
-                  SUM(capacity_units) AS capacity_units
-                FROM {table('lane_capacity_daily')}
-                {capacity_filter}
-                GROUP BY ALL
-                """,
-            "baseline_network_flow_daily": f"""
-                SELECT
-                  demand_plan_version_id,
-                  capacity_plan_version_id,
-                  CAST(service_date AS STRING) AS service_date,
-                  lane_id,
-                  lane_type,
-                  SUM(assigned_units) AS assigned_units
-                FROM {table('baseline_network_flow_daily')}
-                {flow_filter}
-                GROUP BY ALL
-                """,
+            "demand_plan_daily": f"SELECT * FROM {table('demand_plan_daily')}{demand_filter}",
+            "facility_capacity_daily": f"SELECT * FROM {table('facility_capacity_daily')}{capacity_filter}",
+            "lane_capacity_daily": f"SELECT * FROM {table('lane_capacity_daily')}{capacity_filter}",
+            "baseline_network_flow_daily": f"SELECT * FROM {table('baseline_network_flow_daily')}{flow_filter}",
         }
         return self._run_sql_queries(sql, statements)
 
@@ -285,7 +246,7 @@ class NetworkOverviewService:
 
         # Accepted revisions retain their own dated input catalog. A fixture
         # refresh must not silently swap those versions underneath the UI.
-        rows = baseline_service.active_rows()
+        rows = baseline_service.active_option_rows()
         demand_plans = sorted(
             rows["demand_plan_versions"],
             key=lambda row: _as_string(row["published_at"]),
@@ -296,7 +257,16 @@ class NetworkOverviewService:
             key=lambda row: _as_string(row["published_at"]),
             reverse=True,
         )
-        regions = sorted(rows["dim_regions"], key=lambda row: str(row["region_name"]))
+        # Older SQL snapshots omitted region labels. Read missing display
+        # metadata without modifying the immutable revision or its assignments.
+        region_rows = rows.get("dim_regions")
+        if region_rows is None:
+            region_ids = {str(row["region_id"]) for row in rows["dim_facilities"]}
+            region_rows = [
+                row for row in self._load_option_rows()["dim_regions"]
+                if str(row["region_id"]) in region_ids
+            ]
+        regions = sorted(region_rows, key=lambda row: str(row["region_name"]))
         if not demand_plans or not capacity_plans or not regions:
             raise HTTPException(
                 status_code=503,
@@ -391,12 +361,12 @@ class NetworkOverviewService:
         # Import lazily to avoid a baseline-service initialization cycle.
         from .baseline_service import baseline_service
 
-        rows = baseline_service.active_rows()
-        active_demand_id, active_capacity_id = baseline_service._plan_ids(rows)
+        option_rows = baseline_service.active_option_rows()
+        active_demand_id, active_capacity_id = baseline_service._plan_ids(option_rows)
         demand_id = demand_plan_version_id or active_demand_id or options.default_demand_plan_version_id
         capacity_id = capacity_plan_version_id or active_capacity_id or options.default_capacity_plan_version_id
         active_demand = next(
-            (row for row in rows.get("demand_plan_versions", [])
+            (row for row in option_rows.get("demand_plan_versions", [])
              if str(row["plan_version_id"]) == demand_id),
             None,
         )
@@ -411,6 +381,15 @@ class NetworkOverviewService:
         selected_region = region_id or options.default_region_id
         if end < start:
             raise HTTPException(status_code=400, detail="Horizon end must not precede start.")
+        if baseline_service.is_original_active():
+            rows = self._load_rows(
+                demand_plan_version_id=demand_id,
+                capacity_plan_version_id=capacity_id,
+                horizon_start=start,
+                horizon_end=end,
+            )
+        else:
+            rows = baseline_service.active_rows()
         active_demand_ids = {str(row["plan_version_id"]) for row in rows.get("demand_plan_versions", [])}
         active_capacity_ids = {str(row["plan_version_id"]) for row in rows.get("capacity_plan_versions", [])}
         if demand_id not in ({row.plan_version_id for row in options.demand_plans} | active_demand_ids):
