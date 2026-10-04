@@ -4,6 +4,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from valhalla_poc.smoke_coverage import main
+from backend.services.routing_coverage_smoke import main
 
 raise SystemExit(main())

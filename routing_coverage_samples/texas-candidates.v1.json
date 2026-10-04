@@ -16,7 +16,7 @@
       },
       "build": {
         "valhalla_version": "3.5.1",
-        "command": "scripts/setup-valhalla-extract texas ...",
+        "process": "build and deploy the Texas artifact from the independent Valhalla service repository",
         "built_at": null
       },
       "artifact": {

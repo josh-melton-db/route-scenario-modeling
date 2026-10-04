@@ -1,5 +1,5 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["backend/tests", "tests", "valhalla_poc"]
+testpaths = ["backend/tests", "tests"]
 norecursedirs = ["examples", "node_modules", "dist", ".git", ".venv"]
 addopts = "--strict-markers"

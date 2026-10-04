@@ -141,41 +141,30 @@ Bounds checks do not guarantee routability: every solve validates the full
 directed matrix and rejects unreachable or misaligned arcs. Changed stops are
 checked again. Matrix caching is currently disabled.
 
-Valhalla tooling is in a separate repository tracked at `valhalla_poc`. A fresh
-checkout needs `git submodule update --init valhalla_poc` (or clone with
-`--recurse-submodules`). Changes inside it must be committed there before a parent
-gitlink update can publish those changes; the parent commit alone is insufficient.
-The new setup/check tooling requires the updated Valhalla repository revision.
+Valhalla is an independently deployed service, not part of this accelerator's
+source tree. Provision its engine, regional tiles, App, Volume access, and service
+permissions using the service repository. This accelerator depends only on the
+service contract: `GET /health` reports the active coverage, region, and artifact;
+`POST /matrix` accepts ordered points and truck costing and returns a directed
+`sources_to_targets` matrix with seconds and kilometers.
 
-To inspect a Texas setup request without making platform calls:
-
-```bash
-scripts/setup-valhalla-extract texas \
-  --coverage-id texas-delivery --artifact-version tx-v1 \
-  --volume-path '/Volumes/<catalog>/<schema>/<volume>' \
-  --cluster-id '<authorized-cluster-id>' \
-  --notebook-path '/Workspace/<path>/build_valhalla'
-```
-
-Replace the placeholders with your values. Execution additionally requires
-`--execute --profile <chosen-profile>`; no profile is inferred. Existing engine
-assets can be reused; rebuilding the engine is an explicit option. Once the
-matching region/artifact is deployed, `scripts/check-valhalla-coverage` checks
-artifact identity and reachable bidirectional truck matrix cells and records the
-result in the manifest. See `valhalla_poc/README.md` for configuration and examples.
+Once the matching region/artifact is deployed, this repository's
+`scripts/check-valhalla-coverage` command checks artifact identity and reachable
+bidirectional truck matrix cells and records the result in the accelerator-owned
+coverage manifest.
 The smoke command requires `--profile <chosen-profile>` for authenticated managed
 Apps, or explicit `--unauthenticated` for local/public endpoints. Each mapped
 managed App endpoint needs `CAN_USE` permission; the solver endpoint needs
 `CAN_QUERY`. The bundle grants these for its configured Valhalla App and solver,
 not automatically for additional mapped endpoints.
-No Texas tiles, live endpoints, or workspace permissions were provisioned as part
-of the code implementation.
+Service provisioning remains an external prerequisite; a code checkout does not
+include Valhalla tiles, engine binaries, or an App deployment.
 
 October 2 provisioning: Texas build run `1001382283120031` uses the existing
 regional-build job's dedicated cluster configuration and preserves the Michigan
 archive/shared engine. `valhalla-texas-dev` was created with the existing assets
-Volume attached; it remains stopped until tiles are ready. Its runtime config is
-`valhalla_poc/deploy/texas/app.yaml`. The deployment manifest is
+Volume attached; it remains stopped until tiles are ready. Its runtime is managed
+from the separate Valhalla service repository. The accelerator deployment manifest is
 `routing_coverage/texas-dev.v1.json`; its `building` status is deliberately not
 accepted by strict routing. Deployment and a successful artifact/matrix smoke
 check are still required before enabling it.
@@ -194,13 +183,11 @@ python3 scripts/grant-network-schema --profile DEFAULT \
 databricks bundle deploy -t dev --profile DEFAULT
 ```
 
-The Texas endpoint is managed separately by `resources/valhalla-texas.yml`.
-Its `permissions` grant `CAN_USE` directly to the main App's service principal,
-without another main-App attachment. Michigan's original service is retained.
-After the tile build succeeds, deploy the Texas service with
-`databricks bundle run valhalla_texas -t dev --profile DEFAULT`, then smoke-check
-the exact `texas-20261002-v1` artifact. Only after success should the main App be
-redeployed with `--var routing_coverage_manifest=routing_coverage/texas-dev.v1.json`.
+The Texas endpoint is managed and deployed from the separate Valhalla service
+repository. That deployment must grant this App's service principal `CAN_USE`.
+After the tile build and service deployment succeed, smoke-check the exact
+`texas-20261002-v1` artifact. Only after success should the main App be redeployed
+with `--var routing_coverage_manifest=routing_coverage/texas-dev.v1.json`.
 
 To provision only the upstream North America network snapshot:
 

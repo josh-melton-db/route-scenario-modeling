@@ -17,6 +17,9 @@ mlruns/
 docs/
 examples/
 
+# Optional colocated checkout of the independently managed routing service
+/valhalla_poc/
+
 # Playwright
 playwright-report/
 test-results/
