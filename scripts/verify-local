@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if [[ ! -x .venv/bin/pytest ]]; then
+  echo "Missing .venv test environment. Run: npm run setup:python" >&2
+  exit 2
+fi
+if [[ ! -d node_modules ]]; then
+  echo "Missing frontend dependencies. Run: npm install" >&2
+  exit 2
+fi
+
+.venv/bin/pytest -q
+npm run lint
+npm run build
+npm run check:bundle
+git diff --check

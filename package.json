@@ -11,6 +11,7 @@
     "dev:lakebase": "bash scripts/dev-lakebase.sh",
     "lint": "tsc -b --pretty false",
     "check:bundle": "node scripts/check-bundle-size.mjs",
+    "verify:local": "scripts/verify-local",
     "setup:python": "python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt",
     "start": "vite preview --host 0.0.0.0 --port 8000",
     "test:e2e": "playwright test"

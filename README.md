@@ -73,6 +73,19 @@ pip install -r requirements.txt
 npm run dev:all    # Vite on :5180, FastAPI on :8002 with stub data
 ```
 
+### Local verification
+
+Automated GitHub Actions are intentionally disabled for this public accelerator.
+Run the complete verification gate locally before committing or pushing:
+
+```bash
+npm run verify:local
+```
+
+This runs the Python test suite, TypeScript checks, production frontend build,
+bundle-size limits, and Git whitespace validation. Install the local prerequisites
+once with `npm install` and `npm run setup:python`.
+
 The synthetic network uses a date anchor frozen when the backend process starts.
 By default it starts near today's local date and covers 28 days. For a repeatable
 demo, set `DEMO_DATE_ANCHOR=2026-09-30` before starting the backend. Demand,
