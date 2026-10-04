@@ -16,8 +16,12 @@ from route_opt.network_synthetic import (
     SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID,
     generate_national_network_dataset,
     generate_network_dataset,
+    _resolve_road_reachable_coordinate,
+    repair_generated_customer_reachability,
     validate_network_dataset,
 )
+from route_opt.land_mask import is_on_water, pull_to_land
+from route_opt.matrix import haversine_miles
 from route_opt.synthetic import generate_all, generate_depots
 
 
@@ -57,6 +61,101 @@ def test_canonical_network_shape_and_existing_depot_mapping() -> None:
         assert facility["lat"] == depot["lat"]
         assert facility["lng"] == depot["lng"]
         assert facility["parent_facility_id"]
+
+
+@pytest.mark.parametrize(
+    ("depot", "customer"),
+    [
+        ({"lat": 32.85, "lng": -96.85}, {"lat": 32.703639, "lng": -96.924945}),
+        ({"lat": 29.4241, "lng": -98.4936}, {"lat": 29.673251, "lng": -98.361473}),
+    ],
+)
+def test_known_dallas_sa_unreachable_points_get_bounded_deterministic_candidates(
+    depot, customer,
+) -> None:
+    original_distance = haversine_miles(
+        depot["lat"], depot["lng"], customer["lat"], customer["lng"]
+    )
+
+    def validator(anchor, point):
+        remaining = haversine_miles(
+            anchor["lat"], anchor["lng"], point["lat"], point["lng"]
+        )
+        return original_distance - remaining >= 2.0
+
+    kwargs = dict(
+        depot=depot, original_lat=customer["lat"], original_lng=customer["lng"],
+        validator=validator,
+        provenance={"costing": "truck", "coverage_id": "texas", "artifact_version": "v1"},
+    )
+    first = _resolve_road_reachable_coordinate(**kwargs)
+    second = _resolve_road_reachable_coordinate(**kwargs)
+    assert first == second
+    assert first[2]["road_reachability_status"] == "validated"
+    assert 2.0 <= first[2]["road_adjustment_miles"] <= 3.0
+    assert first[2]["road_adjustment_miles"] <= 5.0
+    assert first[2]["road_reachability_costing"] == "truck"
+    assert first[2]["road_coverage_id"] == "texas"
+    assert first[2]["road_artifact_version"] == "v1"
+
+
+def test_no_validator_preserves_generated_coordinates_and_unresolved_retains_original() -> None:
+    plain = generate_network_dataset(generate_depots(), seed=42, customers_per_depot=2)
+    again = generate_network_dataset(generate_depots(), seed=42, customers_per_depot=2)
+    assert plain["dim_network_customers"] == again["dim_network_customers"]
+    depot = {"lat": 32.85, "lng": -96.85}
+    original = {"lat": 32.703639, "lng": -96.924945}
+    lat, lng, metadata = _resolve_road_reachable_coordinate(
+        depot=depot, original_lat=original["lat"], original_lng=original["lng"],
+        validator=lambda *_: False, provenance={"costing": "truck"},
+    )
+    assert (lat, lng) == (original["lat"], original["lng"])
+    assert metadata["road_reachability_status"] == "unresolved"
+    assert metadata["road_adjustment_miles"] == 0
+
+
+def test_fresh_national_generation_adjusts_known_dallas_sa_regression_points() -> None:
+    blocked = {(32.703639, -96.924945), (29.673251, -98.361473)}
+
+    def validator(_depot, point):
+        rounded = (round(float(point["lat"]), 6), round(float(point["lng"]), 6))
+        return rounded not in blocked
+
+    generated = generate_national_network_dataset(
+        generate_depots(), seed=42,
+        road_reachability_validator=validator,
+        road_reachability_provenance={
+            "costing": "truck", "coverage_id": "texas-dev",
+            "artifact_version": "texas-v1",
+        },
+    )
+    by_id = {row["customer_id"]: row for row in generated["dim_network_customers"]}
+    for customer_id in ("NET-CUST-TOLA-0055", "NET-CUST-TOLA-0518"):
+        row = by_id[customer_id]
+        assert row["road_reachability_status"] == "validated"
+        assert 0 < row["road_adjustment_miles"] <= 5.0
+        assert (row["lat"], row["lng"]) != (
+            row["road_original_lat"], row["road_original_lng"]
+        )
+        assert row["road_coverage_id"] == "texas-dev"
+        assert row["road_artifact_version"] == "texas-v1"
+
+
+def test_repair_path_is_detached_bounded_and_preserves_land_water_guardrails() -> None:
+    dataset = generate_network_dataset(generate_depots(), seed=42, customers_per_depot=2)
+    source = dataset["dim_network_customers"]
+    original = [dict(row) for row in source]
+    repaired = repair_generated_customer_reachability(
+        source, dataset["dim_facilities"], validator=lambda *_: True,
+        provenance={"costing": "truck", "coverage_id": "fixture", "artifact_version": "v1"},
+    )
+    assert source == original
+    assert all(row["road_adjustment_miles"] <= 5.0 for row in repaired)
+    assert all(not is_on_water(float(row["lat"]), float(row["lng"])) for row in repaired)
+    assert is_on_water(43.5, -87.0)  # Lake Michigan remains water.
+    assert is_on_water(30.0, -80.0)  # Atlantic remains water.
+    inland = pull_to_land(43.5, -87.0, 41.85, -87.65)
+    assert not is_on_water(*inland)
 
 
 def test_every_lane_endpoint_exists_and_schema_rejects_wrong_lane_grain() -> None:

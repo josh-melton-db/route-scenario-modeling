@@ -1,7 +1,30 @@
 """Create the network demo snapshot without replacing existing route data."""
+from copy import deepcopy
+from collections.abc import Mapping
 from .network_synthetic import assert_valid_network_dataset
+from .network_synthetic import repair_generated_customer_reachability
 from .schemas import NETWORK_TABLES
 from .spark_io import _normalize_rows
+
+
+def prepare_reachable_network_revision(
+    dataset,
+    *,
+    validator,
+    provenance: Mapping[str, object],
+    max_adjustment_miles: float = 5.0,
+):
+    """Build a detached publishable revision; accepted source tables remain immutable."""
+    revised = deepcopy(dataset)
+    revised["dim_network_customers"] = repair_generated_customer_reachability(
+        revised["dim_network_customers"],
+        revised["dim_facilities"],
+        validator=validator,
+        provenance=provenance,
+        max_adjustment_miles=max_adjustment_miles,
+    )
+    assert_valid_network_dataset(revised)
+    return revised
 
 
 def bootstrap_network_tables(spark, dataset, *, catalog: str, schema: str) -> dict:

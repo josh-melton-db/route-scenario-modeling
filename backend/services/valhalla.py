@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import httpx
@@ -32,6 +32,37 @@ class ValhallaMatrixClient:
         self.timeout_seconds = timeout_seconds
         self.auth_headers = auth_headers or _databricks_auth_headers
         self.transport = transport
+
+    def is_bidirectionally_reachable(
+        self,
+        depot: Mapping[str, object],
+        point: Mapping[str, object],
+    ) -> bool:
+        """Generation/bootstrap validator using the same directed truck graph as solves."""
+        payload = {
+            "points": [
+                {"lat": float(depot["lat"]), "lon": float(depot.get("lng", depot.get("lon")))},
+                {"lat": float(point["lat"]), "lon": float(point.get("lng", point.get("lon")))},
+            ],
+            "costing": self.costing,
+        }
+        try:
+            with httpx.Client(transport=self.transport) as client:
+                response = client.post(
+                    f"{self.base_url}/matrix", json=payload,
+                    headers=self.auth_headers(), timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+                body = response.json()
+            cells = body["sources_to_targets"]
+            return all(
+                isinstance(cell, dict)
+                and isinstance(cell.get("distance"), (int, float))
+                and isinstance(cell.get("time"), (int, float))
+                for cell in (cells[0][1], cells[1][0])
+            )
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+            raise ValhallaMatrixError(f"Valhalla reachability request failed: {exc}") from exc
 
     def build_travel_matrix(
         self,

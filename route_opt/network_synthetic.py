@@ -22,7 +22,7 @@ def national_dataset_cached(seed: int = 42) -> dict[str, list]:
 import math
 import random
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
 
 from .land_mask import is_on_water, pull_to_land
@@ -50,6 +50,11 @@ from .network_schemas import (
 )
 
 NETWORK_SOURCE_SYSTEM = "synthetic_upstream_planning"
+ROAD_REACHABILITY_MAX_ADJUSTMENT_MILES = 5.0
+ROAD_REACHABILITY_ATTEMPTS = 6
+RoadReachabilityValidator = Callable[
+    [Mapping[str, object], Mapping[str, object]], bool
+]
 DEFAULT_NETWORK_HORIZON_START = demo_date_anchor()
 DEFAULT_NETWORK_HORIZON_DAYS = DEFAULT_DEMO_HORIZON_DAYS
 GREAT_LAKES_REGION_ID = "REGION_GREAT_LAKES"
@@ -643,6 +648,71 @@ def _build_markets(facilities: Sequence[NetworkFacility]) -> list[NetworkMarket]
     return markets
 
 
+def _resolve_road_reachable_coordinate(
+    *, depot: Mapping[str, object], original_lat: float, original_lng: float,
+    validator: RoadReachabilityValidator, provenance: Mapping[str, object],
+    max_adjustment_miles: float = ROAD_REACHABILITY_MAX_ADJUSTMENT_MILES,
+    attempts: int = ROAD_REACHABILITY_ATTEMPTS,
+) -> tuple[float, float, dict[str, object]]:
+    """Choose the first deterministic depot-reachable point on the original bearing."""
+    if attempts < 1 or max_adjustment_miles < 0:
+        raise ValueError("Road reachability bounds are invalid.")
+    depot_lat, depot_lng = float(depot["lat"]), float(depot["lng"])
+    original_distance = haversine_miles(depot_lat, depot_lng, original_lat, original_lng)
+    candidates: list[tuple[float, float, float]] = []
+    for attempt in range(attempts):
+        displacement = 0.0 if attempts == 1 else max_adjustment_miles * attempt / (attempts - 1)
+        displacement = min(displacement, original_distance)
+        fraction = 0.0 if original_distance == 0 else displacement / original_distance
+        candidates.append((
+            original_lat + (depot_lat - original_lat) * fraction,
+            original_lng + (depot_lng - original_lng) * fraction,
+            displacement,
+        ))
+    selected, selected_attempt, status = candidates[0], 0, "unresolved"
+    for attempt, candidate in enumerate(candidates):
+        if is_on_water(candidate[0], candidate[1]):
+            continue
+        if validator(depot, {"lat": candidate[0], "lng": candidate[1]}):
+            selected, selected_attempt, status = candidate, attempt, "validated"
+            break
+    return selected[0], selected[1], {
+        "road_original_lat": round(original_lat, 6),
+        "road_original_lng": round(original_lng, 6),
+        "road_adjustment_attempt": selected_attempt,
+        "road_adjustment_miles": round(selected[2], 3),
+        "road_reachability_status": status,
+        "road_reachability_costing": str(provenance.get("costing", "truck")),
+        "road_coverage_id": str(provenance.get("coverage_id", "unknown")),
+        "road_artifact_version": str(provenance.get("artifact_version", "unknown")),
+    }
+
+
+def repair_generated_customer_reachability(
+    customers: Sequence[Mapping[str, object]],
+    facilities: Sequence[Mapping[str, object]],
+    *, validator: RoadReachabilityValidator, provenance: Mapping[str, object],
+    max_adjustment_miles: float = ROAD_REACHABILITY_MAX_ADJUSTMENT_MILES,
+) -> list[dict[str, object]]:
+    """Return new generated rows for a new revision; never mutate accepted history."""
+    depots = {str(row["facility_id"]): row for row in facilities}
+    repaired: list[dict[str, object]] = []
+    for source in customers:
+        row = dict(source)
+        depot = depots.get(str(row.get("depot_id", "")))
+        if not str(row.get("customer_id", "")).startswith("NET-CUST-") or depot is None:
+            repaired.append(row)
+            continue
+        lat, lng, metadata = _resolve_road_reachable_coordinate(
+            depot=depot, original_lat=float(row["lat"]), original_lng=float(row["lng"]),
+            validator=validator, provenance=provenance,
+            max_adjustment_miles=max_adjustment_miles,
+        )
+        row.update(lat=round(lat, 6), lng=round(lng, 6), **metadata)
+        repaired.append(row)
+    return repaired
+
+
 def _build_customers(
     facilities: Sequence[NetworkFacility],
     markets: Sequence[NetworkMarket],
@@ -650,6 +720,8 @@ def _build_customers(
     customers_per_depot: int,
     rng: random.Random,
     customer_id_prefix: str = "NET-CUST",
+    road_reachability_validator: RoadReachabilityValidator | None = None,
+    road_reachability_provenance: Mapping[str, object] | None = None,
 ) -> tuple[list[NetworkCustomer], dict[str, int]]:
     if customers_per_depot < 1:
         raise ValueError("customers_per_depot must be at least 1.")
@@ -687,6 +759,15 @@ def _build_customers(
                 depot.lat,
                 depot.lng,
             )
+            road_metadata: dict[str, object] = {}
+            if road_reachability_validator is not None:
+                lat, lng, road_metadata = _resolve_road_reachable_coordinate(
+                    depot=depot.model_dump(mode="json"),
+                    original_lat=lat,
+                    original_lng=lng,
+                    validator=road_reachability_validator,
+                    provenance=road_reachability_provenance or {},
+                )
             customers.append(
                 NetworkCustomer(
                     customer_id=customer_id,
@@ -704,6 +785,7 @@ def _build_customers(
                     receiving_window_start="08:00",
                     receiving_window_end="17:00",
                     service_minutes=20,
+                    **road_metadata,
                 )
             )
             customer_number += 1
@@ -1223,6 +1305,8 @@ def generate_network_dataset(
     customers_per_depot: int = 12,
     horizon_start: date = DEFAULT_NETWORK_HORIZON_START,
     horizon_days: int = DEFAULT_NETWORK_HORIZON_DAYS,
+    road_reachability_validator: RoadReachabilityValidator | None = None,
+    road_reachability_provenance: Mapping[str, object] | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     """Generate one coherent regional network slice from immutable upstream plans."""
 
@@ -1244,6 +1328,8 @@ def generate_network_dataset(
         markets,
         customers_per_depot=customers_per_depot,
         rng=rng,
+        road_reachability_validator=road_reachability_validator,
+        road_reachability_provenance=road_reachability_provenance,
     )
     lanes = _build_lanes(facilities, markets, customers)
     demand = _build_demand(
@@ -1316,6 +1402,8 @@ def generate_national_network_dataset(
     customers_per_depot: int = 100,
     horizon_start: date = DEFAULT_NETWORK_HORIZON_START,
     horizon_days: int = DEFAULT_NETWORK_HORIZON_DAYS,
+    road_reachability_validator: RoadReachabilityValidator | None = None,
+    road_reachability_provenance: Mapping[str, object] | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     """Generate the seven-region North America planning demo with alternate DC paths."""
 
@@ -1371,6 +1459,8 @@ def generate_national_network_dataset(
             customers_per_depot=customers_per_depot,
             rng=random.Random(seed + region_index * 101),
             customer_id_prefix=f"NET-CUST-{prefix}",
+            road_reachability_validator=road_reachability_validator,
+            road_reachability_provenance=road_reachability_provenance,
         )
         region_lanes = _build_lanes(
             region_facilities,

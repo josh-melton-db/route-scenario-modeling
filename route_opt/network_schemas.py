@@ -74,6 +74,14 @@ class NetworkCustomer(NetworkModel):
     receiving_window_start: str | None = None
     receiving_window_end: str | None = None
     service_minutes: int | None = Field(default=None, ge=1)
+    road_original_lat: float | None = Field(default=None, ge=-90, le=90)
+    road_original_lng: float | None = Field(default=None, ge=-180, le=180)
+    road_adjustment_attempt: int | None = Field(default=None, ge=0)
+    road_adjustment_miles: float | None = Field(default=None, ge=0)
+    road_reachability_status: Literal["validated", "unresolved"] | None = None
+    road_reachability_costing: str | None = None
+    road_coverage_id: str | None = None
+    road_artifact_version: str | None = None
 
 
 class NetworkLane(NetworkModel):

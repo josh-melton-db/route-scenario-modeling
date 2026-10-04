@@ -81,6 +81,25 @@ def test_valhalla_matrix_preserves_unreachable_cells_as_prohibited_arcs() -> Non
     assert inbound["road_reachable"] is True
 
 
+def test_generation_reachability_validator_requires_both_directed_arcs() -> None:
+    responses = iter([
+        [[{"distance": 0, "time": 0}, {"distance": 1, "time": 60}],
+         [{"distance": 1, "time": 60}, {"distance": 0, "time": 0}]],
+        [[{"distance": 0, "time": 0}, {"distance": 1, "time": 60}],
+         [{"distance": None, "time": None}, {"distance": 0, "time": 0}]],
+    ])
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"sources_to_targets": next(responses)})
+    )
+    client = ValhallaMatrixClient(
+        "https://valhalla.example.test", auth_headers=lambda: {}, transport=transport
+    )
+    depot = {"lat": 32.85, "lng": -96.85}
+    point = {"lat": 32.7, "lng": -96.9}
+    assert client.is_bidirectionally_reachable(depot, point) is True
+    assert client.is_bidirectionally_reachable(depot, point) is False
+
+
 def test_valhalla_url_accepts_explicit_url(monkeypatch) -> None:
     monkeypatch.setenv("VALHALLA_APP_URL", "https://valhalla.example/")
     assert config.get_valhalla_app_url() == "https://valhalla.example"
