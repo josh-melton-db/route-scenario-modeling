@@ -97,7 +97,7 @@ with mlflow.start_run(run_name="register-route-solver-pyfunc") as run:
     model_kwargs = {
         "artifact_path": "route_solver",
         "python_model": RouteScenarioSolverModel(),
-        "pip_requirements": ["mlflow", "numpy<2", "ortools==9.8.3296", "pandas"],
+        "pip_requirements": ["mlflow", "numpy<2", "ortools==9.8.3296", "pandas==2.2.3"],
         "signature": signature,
         "input_example": input_example,
         "registered_model_name": solver_model_name,

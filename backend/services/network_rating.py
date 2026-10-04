@@ -115,6 +115,28 @@ def objective_lane_unit_costs(
     return result
 
 
+def linear_objective_cost(
+    flow_rows: list[dict[str, Any]],
+    lane_unit_costs_by_date_lane: Mapping[tuple[str, str], float],
+    tariff_by_date_lane: Mapping[tuple[str, str], tuple[float, str]],
+) -> float:
+    """Measure the solver's linear planning approximation for persisted flows."""
+
+    return round(sum(
+        int(row["assigned_units"])
+        * (
+            float(lane_unit_costs_by_date_lane.get(
+                (str(row["service_date"])[:10], str(row["lane_id"])), 0.0
+            ))
+            + float(tariff_by_date_lane.get(
+                (str(row["service_date"])[:10], str(row["lane_id"])), (0.0, "")
+            )[0])
+        )
+        for row in flow_rows
+        if str(row.get("lane_type", "LINEHAUL")) == "LINEHAUL"
+    ), 2)
+
+
 def rate_network_flows(
     rows: NetworkRows,
     flow_rows: list[dict[str, Any]],

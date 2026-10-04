@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from datetime import date
+import json
+from time import perf_counter
 
-from fastapi import APIRouter, status
+from typing import Literal
+
+from fastapi import APIRouter, Query, status
 from fastapi.responses import Response
 
 from ..models import (
     NetworkLaneType,
+    NetworkChargeAuditPage,
     NetworkMetric,
     NetworkOptions,
     NetworkOverview,
@@ -14,6 +19,8 @@ from ..models import (
     NetworkScenarioCreateRequest,
     NetworkScenarioResult,
     NetworkScenarioRunResponse,
+    NetworkRunLaunchRequest,
+    NetworkRunRecord,
     NetworkScenarioUpdateRequest,
     NetworkDemandChange,
     NetworkDemandChangeCreateRequest,
@@ -22,6 +29,7 @@ from ..models import (
 from ..services.network_overview import network_overview_service
 from ..services.network_scenarios import network_scenario_service
 from ..services.demand_changes import demand_change_service
+from ..services.network_run_jobs import network_run_manager
 
 router = APIRouter(prefix="/network", tags=["network"])
 
@@ -90,23 +98,68 @@ def validate_network_scenario(scenario_id: str) -> NetworkScenario:
 
 @router.post(
     "/scenarios/{scenario_id}/run",
-    response_model=NetworkScenarioRunResponse,
+    response_model=NetworkRunRecord,
+    status_code=status.HTTP_202_ACCEPTED,
 )
-def run_network_scenario(scenario_id: str) -> NetworkScenarioRunResponse:
-    return network_scenario_service.run(scenario_id)
+def run_network_scenario(
+    scenario_id: str, payload: NetworkRunLaunchRequest
+) -> NetworkRunRecord:
+    scenario = network_scenario_service.get(scenario_id)
+    if scenario.revision != payload.expected_revision:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=409, detail="Scenario revision is stale.")
+    return network_run_manager.launch(scenario)
+
+
+@router.get("/run-requests/{run_id}", response_model=NetworkRunRecord)
+def network_run_request(run_id: str) -> NetworkRunRecord:
+    return network_run_manager.repository.get(run_id)
+
+
+@router.post("/run-requests/{run_id}/cancel", response_model=NetworkRunRecord)
+def cancel_network_run(run_id: str) -> NetworkRunRecord:
+    return network_run_manager.cancel(run_id)
 
 
 @router.get(
     "/scenarios/{scenario_id}/result",
     response_model=NetworkScenarioResult,
+    response_model_exclude={"charge_details", "baseline_charge_details"},
 )
 def network_scenario_result(scenario_id: str) -> NetworkScenarioResult:
     return network_scenario_service.result(scenario_id)
 
 
-@router.get("/runs/{run_id}", response_model=NetworkScenarioResult)
-def network_run_result(run_id: str) -> NetworkScenarioResult:
-    return network_scenario_service.run_result(run_id)
+@router.get(
+    "/runs/{run_id}",
+    response_model=NetworkScenarioResult,
+    response_model_exclude={"charge_details", "baseline_charge_details"},
+)
+def network_run_result(run_id: str) -> Response:
+    result = network_scenario_service.run_result(run_id)
+    payload = result.model_dump(
+        mode="json", exclude={"charge_details", "baseline_charge_details"}
+    )
+    started = perf_counter()
+    encoded = json.dumps(payload, separators=(",", ":")).encode()
+    elapsed = perf_counter() - started
+    network_run_manager.repository.record_api_response(
+        run_id, encoding_seconds=elapsed, payload_bytes=len(encoded)
+    )
+    return Response(content=encoded, media_type="application/json")
+
+
+@router.get("/runs/{run_id}/charges", response_model=NetworkChargeAuditPage)
+def network_run_charges(
+    run_id: str,
+    side: Literal["scenario", "baseline"] = "scenario",
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=250),
+    query: str = Query(default="", max_length=200),
+) -> NetworkChargeAuditPage:
+    return network_scenario_service.charge_audit(
+        run_id, side=side, offset=offset, limit=limit, query=query
+    )
 
 
 @router.get("/runs/{run_id}/demand-changes", response_model=list[NetworkDemandChange])
@@ -124,8 +177,12 @@ def network_release_targets(run_id: str, depot_id: str, service_date: date) -> l
     return demand_change_service.release_targets(run_id, depot_id, service_date.isoformat())
 
 
-@router.post("/runs/{run_id}/reassign", response_model=NetworkScenarioRunResponse)
-def reassign_network_demand(run_id: str) -> NetworkScenarioRunResponse:
+@router.post(
+    "/runs/{run_id}/reassign",
+    response_model=NetworkRunRecord,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def reassign_network_demand(run_id: str) -> NetworkRunRecord:
     return demand_change_service.reassign(run_id)
 
 

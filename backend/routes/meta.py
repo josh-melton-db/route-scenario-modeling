@@ -9,35 +9,35 @@ router = APIRouter(prefix="/meta", tags=["meta"])
 
 
 @router.get("/depots", response_model=list[Depot])
-async def depots() -> list[Depot]:
+def depots() -> list[Depot]:
     return get_store().list_depots()
 
 
 @router.get("/scenario-types", response_model=list[ScenarioTypeSpec])
-async def scenario_types() -> list[ScenarioTypeSpec]:
+def scenario_types() -> list[ScenarioTypeSpec]:
     return get_store().list_scenario_types()
 
 
 @router.get("/days", response_model=list[str])
-async def days() -> list[str]:
+def days() -> list[str]:
     return get_store().list_days()
 
 
 @router.get("/carriers", response_model=list[Carrier])
-async def carriers() -> list[Carrier]:
+def carriers() -> list[Carrier]:
     return get_store().list_carriers()
 
 
 @router.get("/carrier-contracts", response_model=list[CarrierContract])
-async def carrier_contracts() -> list[CarrierContract]:
+def carrier_contracts() -> list[CarrierContract]:
     return get_store().list_carrier_contracts()
 
 
 @router.get("/operating-parameters", response_model=list[OperatingParameterSet])
-async def operating_parameters() -> list[OperatingParameterSet]:
+def operating_parameters() -> list[OperatingParameterSet]:
     return get_store().list_operating_parameters()
 
 
 @router.get("/cost-parameters", response_model=list[CostParameterSet])
-async def cost_parameters() -> list[CostParameterSet]:
+def cost_parameters() -> list[CostParameterSet]:
     return get_store().list_cost_parameters()

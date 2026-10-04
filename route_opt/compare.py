@@ -28,6 +28,7 @@ def kpi_deltas(
         "total_miles",
         "drive_minutes",
         "service_minutes",
+        "waiting_minutes",
         "total_cases",
         "avg_stops_per_route",
         "avg_capacity_utilization_pct",

@@ -11,6 +11,7 @@ back to this process on port 8002.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -21,28 +22,47 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_data_backend
+from .observability import install_observability
 from .routes.api import router as api_router
 from .services.lakebase_migrations import migrate_lakebase
 from .services.lakebase_store import lakebase_store
 from .services.depot_plans import depot_plan_service
 from .services.solve_runs import solve_run_manager
+from .services.network_run_jobs import network_run_manager
 
 api_app = FastAPI(title="Route Scenario Modeling API")
-api_app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+_cors_origins = [
+    value.strip()
+    for value in os.getenv(
+        "APP_CORS_ORIGINS",
+        "" if os.getenv("DATABRICKS_APP_PORT") else "http://localhost:5180,http://127.0.0.1:5180",
+    ).split(",")
+    if value.strip()
+]
+if _cors_origins:
+    api_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Accept", "Content-Type", "X-Request-ID"],
+    )
+install_observability(api_app)
 api_app.include_router(api_router)
 
 
 async def _recover_abandoned_lakebase_runs() -> None:
     while True:
         await asyncio.sleep(30)
-        solve_run_manager.recover_pending_runs()
-        depot_plan_service.recover_pending_plans()
+        try:
+            async with asyncio.timeout(20):
+                await asyncio.gather(
+                    asyncio.to_thread(solve_run_manager.recover_pending_runs),
+                    asyncio.to_thread(depot_plan_service.recover_pending_plans),
+                    asyncio.to_thread(network_run_manager.recover),
+                )
+        except Exception:
+            logging.getLogger(__name__).exception("Periodic recovery failed")
 
 
 @asynccontextmanager
@@ -53,9 +73,11 @@ async def _app_lifespan(_: FastAPI):
         migrate_lakebase(lakebase_store.postgres)
         solve_run_manager.recover_pending_runs()
         depot_plan_service.recover_pending_plans()
+        network_run_manager.recover()
         recovery_task = asyncio.create_task(_recover_abandoned_lakebase_runs())
     else:
         depot_plan_service.recover_pending_plans()
+        network_run_manager.recover()
     try:
         yield
     finally:

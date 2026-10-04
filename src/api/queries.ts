@@ -33,6 +33,13 @@ export const queryKeys = {
   networkScenarioResult: (scenarioId: string) =>
     ['network-scenario-result', scenarioId] as const,
   networkRunResult: (runId: string) => ['network-run-result', runId] as const,
+  networkRunCharges: (
+    runId: string,
+    side: 'scenario' | 'baseline',
+    offset: number,
+    limit: number,
+    query: string,
+  ) => ['network-run-charges', runId, side, offset, limit, query] as const,
   depotPlanBootstrap: (runId: string, depotId: string) =>
     ['depot-plan-bootstrap', runId, depotId] as const,
   depotPlan: (planSetId: string, routeScenarioId: string) =>
@@ -78,7 +85,7 @@ export function useNetworkOptions() {
 export function useNetworkOverview(params: NetworkOverviewParams | null) {
   return useQuery({
     queryKey: params ? queryKeys.networkOverview(params) : ['network-overview', 'disabled'],
-    queryFn: () => api.networkOverview(params as NetworkOverviewParams),
+    queryFn: ({ signal }) => api.networkOverview(params as NetworkOverviewParams, signal),
     enabled: Boolean(params),
   })
 }
@@ -455,7 +462,7 @@ export function useNetworkScenarios() {
 export function useNetworkScenario(scenarioId: string) {
   return useQuery({
     queryKey: queryKeys.networkScenario(scenarioId),
-    queryFn: () => api.networkScenario(scenarioId),
+    queryFn: ({ signal }) => api.networkScenario(scenarioId, signal),
     enabled: Boolean(scenarioId),
   })
 }
@@ -469,10 +476,24 @@ export function useNetworkScenarioResult(
     queryKey: runId
       ? queryKeys.networkRunResult(runId)
       : queryKeys.networkScenarioResult(scenarioId),
-    queryFn: () => runId
-      ? api.networkRunResult(runId)
-      : api.networkScenarioResult(scenarioId),
+    queryFn: ({ signal }) => runId
+      ? api.networkRunResult(runId, signal)
+      : api.networkScenarioResult(scenarioId, signal),
     enabled: Boolean(scenarioId) && enabled,
+  })
+}
+
+export function useNetworkRunCharges(
+  runId: string | undefined,
+  side: 'scenario' | 'baseline',
+  offset: number,
+  limit: number,
+  query: string,
+) {
+  return useQuery({
+    queryKey: queryKeys.networkRunCharges(runId ?? '', side, offset, limit, query),
+    queryFn: ({ signal }) => api.networkRunCharges(runId!, { side, offset, limit, query }, signal),
+    enabled: Boolean(runId),
   })
 }
 
@@ -495,7 +516,7 @@ export function useDepotPlanBootstrap(
 export function useDepotPlan(planSetId: string, routeScenarioId: string) {
   return useQuery({
     queryKey: queryKeys.depotPlan(planSetId, routeScenarioId),
-    queryFn: () => api.depotPlan(planSetId, routeScenarioId),
+    queryFn: ({ signal }) => api.depotPlan(planSetId, routeScenarioId, signal),
     enabled: Boolean(planSetId),
     refetchInterval: (query) => hasPendingDepotDays(query.state.data) ? 1500 : false,
   })
@@ -508,7 +529,7 @@ export function useDepotPlanDay(
 ) {
   return useQuery({
     queryKey: queryKeys.depotPlanDay(planSetId, serviceDate, routeScenarioId),
-    queryFn: () => api.depotPlanDay(planSetId, serviceDate, routeScenarioId),
+    queryFn: ({ signal }) => api.depotPlanDay(planSetId, serviceDate, routeScenarioId, signal),
     enabled: Boolean(planSetId && serviceDate),
     refetchInterval: (query) => {
       const data = query.state.data
@@ -590,7 +611,8 @@ export function useValidateNetworkScenario(scenarioId: string) {
 export function useRunNetworkScenario(scenarioId: string) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: () => api.runNetworkScenario(scenarioId),
+    mutationFn: (expectedRevision: number) =>
+      api.runNetworkScenario(scenarioId, expectedRevision),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.networkScenarios })
       void queryClient.invalidateQueries({

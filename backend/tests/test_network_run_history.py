@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from backend.main import app
 from backend.models import NetworkScenarioResult
 from backend.services.network_scenarios import network_scenario_service
+from backend.tests.network_run_helpers import run_network_scenario
 
 
 client = TestClient(app)
@@ -30,12 +31,10 @@ def _create_scenario(name: str) -> dict[str, object]:
 
 
 def _run(scenario_id: str) -> dict[str, object]:
-    response = client.post(f"/api/network/scenarios/{scenario_id}/run")
-    assert response.status_code == 200
-    return response.json()
+    return run_network_scenario(client, scenario_id).json()
 
 
-def test_run_ids_are_nonempty_unique_and_legacy_results_still_parse() -> None:
+def test_same_frozen_revision_is_idempotent_and_legacy_results_still_parse() -> None:
     scenario = _create_scenario("Run ID history")
     scenario_id = str(scenario["scenario_id"])
 
@@ -44,7 +43,7 @@ def test_run_ids_are_nonempty_unique_and_legacy_results_still_parse() -> None:
 
     assert first["run_id"]
     assert second["run_id"]
-    assert first["run_id"] != second["run_id"]
+    assert first["run_id"] == second["run_id"]
 
     legacy_payload = dict(first)
     legacy_payload.pop("run_id")
@@ -62,6 +61,7 @@ def test_snapshot_is_immutable_after_edit_and_rerun() -> None:
     updated = client.patch(
         f"/api/network/scenarios/{scenario_id}",
         json={
+            "expected_revision": scenario["revision"],
             "scenario_name": "Edited scenario name",
             "assumptions": {"unmet_penalty_per_case": 999},
         },
@@ -71,11 +71,17 @@ def test_snapshot_is_immutable_after_edit_and_rerun() -> None:
 
     historical = client.get(f"/api/network/runs/{first_run_id}")
     assert historical.status_code == 200
-    assert historical.json() == first_result
+    compact_first = dict(first_result)
+    compact_first.pop("charge_details", None)
+    compact_first.pop("baseline_charge_details", None)
+    assert historical.json() == compact_first
     assert second_result["run_id"] != first_run_id
     latest = client.get(f"/api/network/scenarios/{scenario_id}/result")
     assert latest.status_code == 200
-    assert latest.json() == second_result
+    compact_second = dict(second_result)
+    compact_second.pop("charge_details", None)
+    compact_second.pop("baseline_charge_details", None)
+    assert latest.json() == compact_second
     assert latest.json() != historical.json()
 
     retained = network_scenario_service.get_run_snapshot(first_run_id)
@@ -103,6 +109,9 @@ def test_historical_lookup_survives_scenario_deletion_and_missing_run_is_404() -
 
     historical = client.get(f"/api/network/runs/{run_id}")
     assert historical.status_code == 200
-    assert historical.json() == result
+    compact_result = dict(result)
+    compact_result.pop("charge_details", None)
+    compact_result.pop("baseline_charge_details", None)
+    assert historical.json() == compact_result
     assert client.get(f"/api/network/scenarios/{scenario_id}/result").status_code == 404
     assert client.get("/api/network/runs/does-not-exist").status_code == 404

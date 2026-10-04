@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from backend.main import app
 from backend.services.baseline_service import baseline_service
+from backend.tests.network_run_helpers import run_network_scenario
 
 
 def test_scenario_create_uses_pointer_and_option_summary(monkeypatch) -> None:
@@ -52,8 +53,7 @@ def test_real_regional_run_promotes_inherits_and_resets_without_rewriting_histor
     })
     assert created.status_code == 201, created.text
     scenario_id = created.json()['scenario_id']
-    solved = client.post(f'/api/network/scenarios/{scenario_id}/run')
-    assert solved.status_code == 200, solved.text
+    solved = run_network_scenario(client, scenario_id)
     result = solved.json()['result']
     run_id = result['run_id']
     historical = client.get(f'/api/network/runs/{run_id}').json()
@@ -78,8 +78,7 @@ def test_real_regional_run_promotes_inherits_and_resets_without_rewriting_histor
         assert child.status_code == 201, child.text
         assert child.json()['source_baseline_revision_id'] == accepted.json()['active_revision_id']
         assert child.json()['assumptions']['tariffs'] == created.json()['assumptions']['tariffs']
-        child_run = client.post(f"/api/network/scenarios/{child.json()['scenario_id']}/run")
-        assert child_run.status_code == 200, child_run.text
+        child_run = run_network_scenario(client, child.json()['scenario_id'])
         assert child_run.json()['result']['baseline_overview']['kpis'] == result['overview']['kpis']
         assert client.post('/api/network/baseline/proposals', json={'run_id': run_id}).status_code == 409
         assert client.get(f'/api/network/runs/{run_id}').json() == historical
@@ -87,7 +86,10 @@ def test_real_regional_run_promotes_inherits_and_resets_without_rewriting_histor
         assert baseline_plan.status_code == 200, baseline_plan.text
         baseline_run_id = baseline_plan.json()['run_id']
         assert baseline_run_id.startswith('baseline-plan-run.')
-        assert client.get(f'/api/network/runs/{baseline_run_id}').json() == baseline_plan.json()
+        compact_baseline = baseline_plan.json()
+        compact_baseline.pop('charge_details', None)
+        compact_baseline.pop('baseline_charge_details', None)
+        assert client.get(f'/api/network/runs/{baseline_run_id}').json() == compact_baseline
         assert client.get('/api/network/baseline/plan-run', params={**params, 'horizon_start': 'bad-date'}).status_code == 422
     finally:
         restored = client.post('/api/network/baseline/reset')

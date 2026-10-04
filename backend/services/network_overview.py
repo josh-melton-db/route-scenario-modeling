@@ -485,6 +485,7 @@ class NetworkOverviewService:
 
         has_scenario_costs = "network_flow_cost_daily" in rows
         scenario_cost_by_lane: defaultdict[str, float] = defaultdict(float)
+        scenario_tariff_by_lane: defaultdict[str, float] = defaultdict(float)
         for row in rows.get("network_flow_cost_daily", []):
             if (
                 not in_horizon(row)
@@ -501,6 +502,7 @@ class NetworkOverviewService:
             ):
                 continue
             scenario_cost_by_lane[str(row["lane_id"])] += float(row["total_cost"])
+            scenario_tariff_by_lane[str(row["lane_id"])] += float(row.get("tariff_total", 0))
 
         def endpoint(
             endpoint_type: str, endpoint_id: str
@@ -591,6 +593,7 @@ class NetworkOverviewService:
                     capacity_units=capacity,
                     utilization_pct=utilization,
                     total_cost=_round_money(lane_cost),
+                    tariff_total=_round_money(scenario_tariff_by_lane[lane_id]),
                     cost_per_unit=_round_money(lane_cost / assigned if assigned else 0),
                     on_time_pct=_lane_on_time_pct(
                         utilization, int(lane["transit_minutes"])

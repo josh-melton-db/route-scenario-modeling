@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def solver_diagnostic(
@@ -22,7 +22,7 @@ def solver_diagnostic(
         "status": status,
         "objective_value": objective_value,
         "message": message,
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     row.update(metadata)
     return row

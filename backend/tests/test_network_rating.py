@@ -6,7 +6,9 @@ import pytest
 
 from backend.models import RateContractDetail
 from backend.services import network_rating
-from backend.services.network_rating import rate_network_flows, resolve_network_tariffs
+from backend.services.network_rating import (
+    linear_objective_cost, rate_network_flows, resolve_network_tariffs,
+)
 from route_opt.rates import contract_detail_from_legacy
 
 
@@ -124,6 +126,21 @@ def test_partial_loads_use_whole_load_contract_basis_and_reconcile(
         assert detail.total_cost == round(
             detail.freight_total + detail.tariff_total, 2
         )
+
+
+def test_partial_load_billed_cost_discloses_linear_objective_gap() -> None:
+    flows = [{
+        "service_date": "2026-10-01", "lane_id": "LANE",
+        "lane_type": "LINEHAUL", "assigned_units": 901,
+    }]
+    rated = rate_network_flows(_rows(), flows, {}, contracts=[])
+    objective = linear_objective_cost(
+        flows, {("2026-10-01", "LANE"): 504 / 900}, {}
+    )
+
+    assert objective == 504.56
+    assert rated.charge_details[0].total_cost == 1008
+    assert rated.charge_details[0].total_cost - objective == 503.44
 
 
 def test_tariff_date_boundaries_are_inclusive() -> None:

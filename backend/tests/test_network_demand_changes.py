@@ -6,6 +6,7 @@ from backend.services.demand_changes import demand_change_service
 from backend.services.network_scenarios import network_scenario_service
 from backend.models import NetworkScenarioCreateRequest
 from types import SimpleNamespace
+from backend.tests.network_run_helpers import reassign_network_demand, run_network_scenario
 
 
 client = TestClient(app)
@@ -64,8 +65,14 @@ def test_active_baseline_plan_ids_resolve_without_repository_scenarios() -> None
     assert network_scenario_service.get(state.active_plan_scenario_id) == snapshot.scenario
     assert network_scenario_service.run_result(state.active_plan_run_id) == snapshot.result
     assert all(row.scenario_id != state.active_plan_scenario_id for row in network_scenario_service.list())
-    assert client.post(f"/api/network/scenarios/{state.active_plan_scenario_id}/run").status_code == 409
-    assert client.patch(f"/api/network/scenarios/{state.active_plan_scenario_id}", json={"scenario_name": "No"}).status_code == 409
+    assert client.post(
+        f"/api/network/scenarios/{state.active_plan_scenario_id}/run",
+        json={"expected_revision": snapshot.scenario.revision},
+    ).status_code == 202
+    assert client.patch(
+        f"/api/network/scenarios/{state.active_plan_scenario_id}",
+        json={"expected_revision": snapshot.scenario.revision, "scenario_name": "No"},
+    ).status_code == 409
     assert client.delete(f"/api/network/scenarios/{state.active_plan_scenario_id}").status_code == 409
 
 
@@ -81,8 +88,7 @@ def test_release_api_reassigns_conserves_and_preserves_parent_snapshot() -> None
         "horizon_start": day, "horizon_end": day, "region_id": "REGION_TOLA",
     })
     assert created.status_code == 201
-    solved = client.post(f"/api/network/scenarios/{created.json()['scenario_id']}/run")
-    assert solved.status_code == 200
+    solved = run_network_scenario(client, created.json()["scenario_id"])
     run_id = solved.json()["result"]["run_id"]
     parent_before = network_scenario_service.get_run_snapshot(run_id)
     lanes = {str(r["lane_id"]): r for r in parent_before.network_rows["dim_network_lanes"]}
@@ -100,8 +106,7 @@ def test_release_api_reassigns_conserves_and_preserves_parent_snapshot() -> None
     assert demand_change_service.has_pending(run_id)
     assert client.post(f"/api/network/runs/{run_id}/demand-changes", json=request).status_code == 409
 
-    reassigned = client.post(f"/api/network/runs/{run_id}/reassign")
-    assert reassigned.status_code == 200
+    reassigned = reassign_network_demand(client, run_id)
     new_run_id = reassigned.json()["result"]["run_id"]
     assert new_run_id != run_id
     assert not demand_change_service.has_pending(run_id)
@@ -118,8 +123,7 @@ def test_release_api_reassigns_conserves_and_preserves_parent_snapshot() -> None
     generated_lane_id = str(released_delivery[0]["lane_id"])
     generated_capacity = next(r for r in child.network_rows["lane_capacity_daily"] if str(r["lane_id"]) == generated_lane_id and str(r["service_date"])[:10] == day)
     assert int(generated_capacity["capacity_units"]) == request["cases"]
-    rerun = client.post(f"/api/network/scenarios/{child.scenario.scenario_id}/run")
-    assert rerun.status_code == 200
+    rerun = run_network_scenario(client, child.scenario.scenario_id)
     replay = network_scenario_service.get_run_snapshot(rerun.json()["result"]["run_id"])
     assert replay.scenario.assumptions.parent_run_id == run_id
     assert replay.scenario.assumptions.release_overlays

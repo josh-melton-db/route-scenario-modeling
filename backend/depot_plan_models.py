@@ -110,6 +110,8 @@ class PlanSet(StrictModel):
     kpis: Kpis | None = None
     is_partial: bool
     resource_source: str
+    fleet_snapshot: dict[str, object] | None = None
+    customer_constraint_snapshot: dict[str, object] | None = None
 
     @model_validator(mode="after")
     def validate_plan_set(self) -> "PlanSet":
@@ -137,15 +139,15 @@ class CreatePlanRequest(StrictModel):
 
 
 class CreateRouteScenarioRequest(StrictModel):
-    scenario_name: str = Field(min_length=1)
+    scenario_name: str = Field(min_length=1, max_length=120)
 
 
 class OverrideRequest(StrictModel):
     route_scenario_id: str = Field(min_length=1)
-    driver_delta: int = 0
+    driver_delta: int = Field(default=0, ge=-64, le=64)
     allow_overtime: bool | None = None
-    max_route_minutes: int | None = Field(default=None, gt=0)
-    max_stops_per_route: int | None = Field(default=None, gt=0)
+    max_route_minutes: int | None = Field(default=None, ge=1, le=1_440)
+    max_stops_per_route: int | None = Field(default=None, ge=1, le=149)
     new_depot_location: LatLng | None = None
 
     @model_validator(mode="after")

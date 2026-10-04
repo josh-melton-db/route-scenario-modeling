@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 from datetime import date, timedelta
 
 from backend.main import app
+from backend.tests.network_run_helpers import run_network_scenario
 
 
 client = TestClient(app)
@@ -256,8 +257,7 @@ def test_network_scenario_lifecycle() -> None:
         for issue in validated["validation"]["issues"]
     )
 
-    run = client.post(f"/api/network/scenarios/{scenario_id}/run")
-    assert run.status_code == 200
+    run = run_network_scenario(client, scenario_id)
     payload = run.json()
     assert payload["scenario"]["status"] == "solved"
     result = payload["result"]
@@ -290,7 +290,10 @@ def test_network_scenario_lifecycle() -> None:
 
     edited = client.patch(
         f"/api/network/scenarios/{scenario_id}",
-        json={"assumptions": {"disabled_facility_ids": ["DC_SOUTHEAST_ATLANTA"]}},
+        json={
+            "expected_revision": scenario["revision"],
+            "assumptions": {"disabled_facility_ids": ["DC_SOUTHEAST_ATLANTA"]},
+        },
     )
     assert edited.status_code == 200
     assert edited.json()["revision"] == 2
@@ -301,8 +304,7 @@ def test_network_scenario_lifecycle() -> None:
 
     revalidated = client.post(f"/api/network/scenarios/{scenario_id}/validate").json()
     assert revalidated["validation"]["valid"] is True
-    rerun = client.post(f"/api/network/scenarios/{scenario_id}/run")
-    assert rerun.status_code == 200
+    rerun = run_network_scenario(client, scenario_id)
     rerun_result = rerun.json()["result"]
     assert rerun_result["kpi_deltas"]["unmet_units"] > 0
     atlanta = next(
@@ -363,7 +365,11 @@ def test_network_scenario_validation_rejects_unknown_references() -> None:
         issue["code"] == "unknown_lane"
         for issue in validated["validation"]["issues"]
     )
-    assert client.post(f"/api/network/scenarios/{scenario_id}/run").status_code == 409
+    rejected = client.post(
+        f"/api/network/scenarios/{scenario_id}/run",
+        json={"expected_revision": created.json()["revision"]},
+    )
+    assert rejected.status_code == 202
     assert client.delete(f"/api/network/scenarios/{scenario_id}").status_code == 204
 
 

@@ -11,7 +11,7 @@ router = APIRouter(prefix="/scenarios", tags=["results"])
 
 
 @router.get("/{scenario_id}/results", response_model=ComparisonResult)
-async def scenario_results(scenario_id: str) -> ComparisonResult:
+def scenario_results(scenario_id: str) -> ComparisonResult:
     if get_data_backend() == "databricks":
         cached = solve_run_manager.get_result(scenario_id)
         if cached is not None:

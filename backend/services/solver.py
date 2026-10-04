@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, cast
@@ -39,6 +40,9 @@ OVERRIDE_TABLE_NAMES = [
 ]
 
 BASE_CACHE_TTL_SECONDS = 300
+_SERVING_METADATA_TTL_SECONDS = 300
+_serving_metadata_cache: dict[str, tuple[float, dict[str, object]]] = {}
+_serving_metadata_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -156,7 +160,7 @@ class SolverService:
         planning_stops: list[dict[str, object]],
         travel_matrix: list[dict[str, object]],
         cost_parameters: dict[str, object] | None = None,
-    ) -> dict[str, list[dict[str, object]]]:
+    ) -> dict[str, object]:
         row = make_input_row(
             scenario_id=scenario_id,
             depot_id=depot_id,
@@ -168,8 +172,10 @@ class SolverService:
             travel_matrix=travel_matrix,
             cost_parameters=cost_parameters,
         )
-        response = get_workspace_client().serving_endpoints.query(
-            name=get_route_solver_endpoint(),
+        workspace = get_workspace_client()
+        endpoint_name = get_route_solver_endpoint()
+        response = workspace.serving_endpoints.query(
+            name=endpoint_name,
             dataframe_records=[row],
         )
         output_row = _first_prediction(response)
@@ -185,6 +191,9 @@ class SolverService:
                     detail=f"Solver endpoint returned an invalid {column!r} payload.",
                 )
             result[column] = [dict(item) for item in decoded]
+        result["_metadata"] = _serving_endpoint_metadata(
+            workspace, endpoint_name, response
+        )  # type: ignore[assignment]
         return result
 
     def solve_and_compare(self, scenario: ScenarioDefinition) -> ComparisonResult:
@@ -472,6 +481,46 @@ def _first_prediction(response: object) -> dict[str, object]:
             if isinstance(first, dict):
                 return first
     raise HTTPException(status_code=502, detail="Solver endpoint returned no prediction rows.")
+
+
+def _serving_endpoint_metadata(
+    workspace: object, endpoint_name: str, response: object
+) -> dict[str, object]:
+    metadata: dict[str, object] = {"endpoint_name": endpoint_name}
+    response_dict = getattr(response, "as_dict", lambda: {})()
+    if isinstance(response_dict, dict):
+        for key in ("served_model_name", "model_version", "request_id"):
+            if response_dict.get(key) is not None:
+                metadata[key] = response_dict[key]
+    now = time.monotonic()
+    with _serving_metadata_lock:
+        cached = _serving_metadata_cache.get(endpoint_name)
+        if cached is not None and now - cached[0] < _SERVING_METADATA_TTL_SECONDS:
+            metadata.update(cached[1])
+            return metadata
+    try:
+        endpoint = workspace.serving_endpoints.get(name=endpoint_name)  # type: ignore[attr-defined]
+        endpoint_dict = getattr(endpoint, "as_dict", lambda: {})()
+        entities = (
+            endpoint_dict.get("config", {}).get("served_entities", [])
+            if isinstance(endpoint_dict, dict) else []
+        )
+        if entities:
+            entity = entities[0]
+            metadata.update({
+                "served_entity_name": entity.get("name"),
+                "model_entity_name": entity.get("entity_name"),
+                "model_entity_version": entity.get("entity_version"),
+            })
+    except Exception:
+        metadata["model_entity_version"] = "unavailable"
+    cache_value = {
+        key: value for key, value in metadata.items()
+        if key in {"served_entity_name", "model_entity_name", "model_entity_version"}
+    }
+    with _serving_metadata_lock:
+        _serving_metadata_cache[endpoint_name] = (now, cache_value)
+    return metadata
 
 
 solver_service = SolverService()

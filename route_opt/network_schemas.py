@@ -71,6 +71,9 @@ class NetworkCustomer(NetworkModel):
     market_id: str
     lat: float = Field(ge=-90, le=90)
     lng: float = Field(ge=-180, le=180)
+    receiving_window_start: str | None = None
+    receiving_window_end: str | None = None
+    service_minutes: int | None = Field(default=None, ge=1)
 
 
 class NetworkLane(NetworkModel):

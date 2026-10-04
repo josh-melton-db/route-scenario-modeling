@@ -49,11 +49,13 @@ def test_reader_rejects_incomplete_results():
 
 
 def test_mutation_is_never_reexecuted(monkeypatch):
-    service = NS(execute_statement=Mock(return_value=execution(None, error="Inline byte limit exceeded")))
+    service = NS(execute_statement=Mock(return_value=execution(None, error="secret_catalog.private_table failed")))
     monkeypatch.setattr(sql, "get_workspace_client", lambda: NS(statement_execution=service))
     monkeypatch.setattr(sql, "resolve_sql_warehouse_id", lambda: "W")
-    with pytest.raises(HTTPException):
+    with pytest.raises(HTTPException) as raised:
         sql.execute_sql("INSERT INTO network SELECT * FROM other")
+    assert raised.value.detail == "The analytics query could not be completed."
+    assert "secret_catalog" not in raised.value.detail
     assert service.execute_statement.call_count == 1
 
 

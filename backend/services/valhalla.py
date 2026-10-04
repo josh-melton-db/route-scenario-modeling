@@ -6,8 +6,11 @@ from typing import Any
 import httpx
 
 from route_opt.matrix import build_nodes
+from route_opt.solver.payload import MAX_SOLVER_POINTS
 
 KM_TO_MILES = 0.621371192237334
+PROHIBITED_ARC_DISTANCE_MILES = 1_000_000.0
+PROHIBITED_ARC_DURATION_MINUTES = 1_000_000
 
 
 class ValhallaMatrixError(RuntimeError):
@@ -39,9 +42,10 @@ class ValhallaMatrixClient:
         delivery_day: str,
     ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         nodes = build_nodes(scenario_id, depot, stops, delivery_day)
-        if len(nodes) > 500:
+        if len(nodes) > MAX_SOLVER_POINTS:
             raise ValhallaMatrixError(
-                f"Valhalla accepts at most 500 points; partition contains {len(nodes)}"
+                f"Route matrices support at most {MAX_SOLVER_POINTS} points; "
+                f"partition contains {len(nodes)}"
             )
         if len(nodes) == 1:
             node = nodes[0]
@@ -91,7 +95,7 @@ class ValhallaMatrixClient:
             if not isinstance(cell_row, list) or len(cell_row) != size:
                 raise ValhallaMatrixError("Valhalla returned a matrix with the wrong column count")
             for destination_index, cell in enumerate(cell_row):
-                miles, minutes = _cell_metrics(cell, origin_index, destination_index)
+                miles, minutes, reachable = _cell_metrics(cell, origin_index, destination_index)
                 origin = nodes[origin_index]
                 destination = nodes[destination_index]
                 rows.append(
@@ -108,24 +112,22 @@ class ValhallaMatrixClient:
                         "matrix_source": "valhalla",
                         "distance_method": "road_network",
                         "duration_method": f"valhalla_{self.costing}",
+                        "road_reachable": reachable,
                     }
                 )
         return nodes, rows
 
 
-def _cell_metrics(cell: Any, origin_index: int, destination_index: int) -> tuple[float, int]:
+def _cell_metrics(cell: Any, origin_index: int, destination_index: int) -> tuple[float, int, bool]:
     if not isinstance(cell, dict):
         raise ValhallaMatrixError(f"Valhalla cell {origin_index},{destination_index} is malformed")
     if origin_index == destination_index:
-        return 0.0, 0
+        return 0.0, 0, True
     distance = cell.get("distance")
     seconds = cell.get("time")
     if not isinstance(distance, (int, float)) or not isinstance(seconds, (int, float)):
-        status = cell.get("status", "unreachable")
-        raise ValhallaMatrixError(
-            f"Valhalla cell {origin_index},{destination_index} is unreachable ({status})"
-        )
-    return float(distance) * KM_TO_MILES, max(1, round(float(seconds) / 60))
+        return PROHIBITED_ARC_DISTANCE_MILES, PROHIBITED_ARC_DURATION_MINUTES, False
+    return float(distance) * KM_TO_MILES, max(1, round(float(seconds) / 60)), True
 
 
 def _databricks_auth_headers() -> dict[str, str]:

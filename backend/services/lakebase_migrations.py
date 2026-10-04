@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from threading import RLock
+from typing import Any, Iterable
 
 from .postgres import PostgresService
 
-MIGRATION_VERSION = "2026_09_30_depot_plan_sets_v11"
+MIGRATION_VERSION = "2026_10_02_combined_hardening_v14"
+_migration_lock = RLock()
+_migration_state: dict[str, Any] = {"state": "not_started", "version": MIGRATION_VERSION, "error": None}
+
+
+def migration_status() -> dict[str, Any]:
+    with _migration_lock:
+        return dict(_migration_state)
+
+
+def _set_migration_state(state: str, error: str | None = None) -> None:
+    with _migration_lock:
+        _migration_state.update(state=state, version=MIGRATION_VERSION, error=error)
 
 
 def _statements(postgres: PostgresService) -> Iterable[str]:
@@ -740,6 +753,54 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """
+    yield f"ALTER TABLE {table('network_run_snapshots')} ADD COLUMN IF NOT EXISTS network_rows_manifest JSONB"
+    yield f"ALTER TABLE {table('network_run_snapshots')} ADD COLUMN IF NOT EXISTS snapshot_envelope BYTEA"
+    yield f"ALTER TABLE {table('network_run_snapshots')} ADD COLUMN IF NOT EXISTS snapshot_codec TEXT"
+    yield f"ALTER TABLE {table('network_run_snapshots')} ADD COLUMN IF NOT EXISTS snapshot_uncompressed_bytes BIGINT"
+    yield f"ALTER TABLE {table('network_run_snapshots')} ADD COLUMN IF NOT EXISTS snapshot_sha256 TEXT"
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("network_run_jobs")} (
+            run_id TEXT PRIMARY KEY,
+            scenario_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL CHECK (
+                status IN ('queued','running','completion_pending','succeeded','failed','cancelled','stale')
+            ),
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            queued_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at TIMESTAMPTZ,
+            completed_at TIMESTAMPTZ,
+            lease_expires_at TIMESTAMPTZ,
+            error_code TEXT,
+            error_message TEXT,
+            retryable BOOLEAN NOT NULL DEFAULT FALSE,
+            run_kind TEXT NOT NULL DEFAULT 'scenario',
+            parent_run_id TEXT,
+            demand_change_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+            diagnostics JSONB
+        )
+    """
+    yield f"ALTER TABLE {table('network_run_jobs')} ADD COLUMN IF NOT EXISTS run_kind TEXT NOT NULL DEFAULT 'scenario'"
+    yield f"ALTER TABLE {table('network_run_jobs')} ADD COLUMN IF NOT EXISTS parent_run_id TEXT"
+    yield f"ALTER TABLE {table('network_run_jobs')} ADD COLUMN IF NOT EXISTS demand_change_ids JSONB NOT NULL DEFAULT '[]'::jsonb"
+    # Expand the original status constraint for post-commit callbacks.
+    yield f"ALTER TABLE {table('network_run_jobs')} DROP CONSTRAINT IF EXISTS network_run_jobs_status_check"
+    yield f"ALTER TABLE {table('network_run_jobs')} ADD CONSTRAINT network_run_jobs_status_check CHECK (status IN ('queued','running','completion_pending','succeeded','failed','cancelled','stale'))"
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("network_run_charge_details")} (
+            run_id TEXT NOT NULL,
+            side TEXT NOT NULL CHECK (side IN ('scenario','baseline')),
+            service_date DATE NOT NULL,
+            lane_id TEXT NOT NULL,
+            total_cost DOUBLE PRECISION NOT NULL,
+            rate_source TEXT NOT NULL,
+            contract_id TEXT,
+            assigned_units INTEGER NOT NULL,
+            payload JSONB NOT NULL,
+            PRIMARY KEY (run_id, side, service_date, lane_id)
+        )
+    """
     yield f"""
         CREATE TABLE IF NOT EXISTS {table("depot_plan_sets")} (
             plan_set_id TEXT PRIMARY KEY,
@@ -752,6 +813,70 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
             UNIQUE (parent_run_id, depot_id)
         )
     """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("depot_plan_days")} (
+            plan_set_id TEXT NOT NULL REFERENCES {table("depot_plan_sets")} (plan_set_id) ON DELETE CASCADE,
+            service_date DATE NOT NULL,
+            default_status TEXT NOT NULL,
+            assigned_cases INTEGER NOT NULL,
+            payload JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (plan_set_id, service_date)
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("depot_plan_jobs")} (
+            job_id TEXT NOT NULL,
+            plan_set_id TEXT NOT NULL REFERENCES {table("depot_plan_sets")} (plan_set_id) ON DELETE CASCADE,
+            service_date DATE NOT NULL,
+            route_scenario_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL CHECK (status IN ('queued','running','completed','infeasible','failed')),
+            request_payload JSONB,
+            result_id TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            worker_id TEXT,
+            lease_expires_at TIMESTAMPTZ,
+            retry_at TIMESTAMPTZ,
+            error_message TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (plan_set_id, job_id)
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("depot_plan_results")} (
+            result_id TEXT PRIMARY KEY,
+            plan_set_id TEXT NOT NULL REFERENCES {table("depot_plan_sets")} (plan_set_id) ON DELETE CASCADE,
+            service_date DATE NOT NULL,
+            route_scenario_id TEXT NOT NULL,
+            payload JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("depot_plan_routes")} (
+            result_id TEXT NOT NULL REFERENCES {table("depot_plan_results")} (result_id) ON DELETE CASCADE,
+            route_id TEXT NOT NULL,
+            plan_set_id TEXT NOT NULL,
+            service_date DATE NOT NULL,
+            route_position INTEGER NOT NULL,
+            payload JSONB NOT NULL,
+            PRIMARY KEY (result_id, route_id)
+        )
+    """
+    yield f"CREATE INDEX IF NOT EXISTS depot_plan_routes_page_idx ON {table('depot_plan_routes')} (result_id, route_position, route_id)"
+    yield f"""
+        CREATE TABLE IF NOT EXISTS {table("route_matrix_cache")} (
+            cache_key TEXT PRIMARY KEY,
+            payload JSONB NOT NULL,
+            byte_size INTEGER NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMPTZ NOT NULL
+        )
+    """
+    yield f"CREATE INDEX IF NOT EXISTS route_matrix_cache_expiry_idx ON {table('route_matrix_cache')} (expires_at)"
     yield f"""
         CREATE TABLE IF NOT EXISTS {table("network_flow_results")} (
             scenario_id TEXT NOT NULL,
@@ -801,38 +926,45 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
     yield f"CREATE INDEX IF NOT EXISTS editor_audit_events_session_idx ON {table('editor_audit_events')} (session_id, created_at)"
     yield f"CREATE INDEX IF NOT EXISTS network_scenarios_updated_idx ON {table('network_scenarios')} (updated_at DESC)"
     yield f"CREATE INDEX IF NOT EXISTS network_run_snapshots_scenario_idx ON {table('network_run_snapshots')} (scenario_id, created_at DESC)"
+    yield f"CREATE INDEX IF NOT EXISTS network_run_jobs_queue_idx ON {table('network_run_jobs')} (status, queued_at)"
+    yield f"CREATE INDEX IF NOT EXISTS network_run_jobs_scenario_idx ON {table('network_run_jobs')} (scenario_id, revision, queued_at DESC)"
+    yield f"CREATE INDEX IF NOT EXISTS network_run_charges_page_idx ON {table('network_run_charge_details')} (run_id, side, total_cost DESC, service_date, lane_id)"
     yield f"CREATE INDEX IF NOT EXISTS depot_plan_sets_pending_idx ON {table('depot_plan_sets')} (has_pending, created_at)"
+    yield f"CREATE INDEX IF NOT EXISTS depot_plan_jobs_claim_idx ON {table('depot_plan_jobs')} (status, retry_at, lease_expires_at, created_at)"
+    yield f"CREATE INDEX IF NOT EXISTS depot_plan_results_day_idx ON {table('depot_plan_results')} (plan_set_id, service_date, created_at DESC)"
     yield f"CREATE INDEX IF NOT EXISTS network_flow_results_lane_idx ON {table('network_flow_results')} (scenario_id, lane_id)"
 
 
 def migrate_lakebase(postgres: PostgresService | None = None) -> None:
     """Create or add only app-owned Lakebase objects; no UC resources are touched."""
     service = postgres or PostgresService()
-    service.initialize()
-    migrations_table = service.qualified_table("schema_migrations")
     try:
-        applied = service.query_one(
-            f"SELECT 1 AS applied FROM {migrations_table} WHERE version = %s",
-            (MIGRATION_VERSION,),
-        )
+        _set_migration_state("running")
+        service.initialize()
+        migrations_table = service.qualified_table("schema_migrations")
+        statements = list(_statements(service))
+        with service.transaction() as connection:
+            service.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                ("route_scenario_modeling_schema_migrations",),
+                connection=connection,
+            )
+            service.execute(statements[0], connection=connection)
+            service.execute(statements[1], connection=connection)
+            applied = service.query_one(
+                f"SELECT 1 AS applied FROM {migrations_table} WHERE version = %s",
+                (MIGRATION_VERSION,),
+                connection=connection,
+            )
+            if applied is None:
+                for statement in statements[2:]:
+                    service.execute(statement, connection=connection)
+                service.execute(
+                    f"INSERT INTO {migrations_table} (version) VALUES (%s) ON CONFLICT (version) DO NOTHING",
+                    (MIGRATION_VERSION,),
+                    connection=connection,
+                )
+        _set_migration_state("ready")
     except Exception as exc:
-        # The app service principal creates the schema on its first deployed
-        # startup. A later operator-led seed can safely skip DDL once that
-        # migration is recorded, rather than requiring table ownership.
-        if getattr(exc, "sqlstate", None) not in {"42P01", "3F000"}:
-            raise
-        applied = None
-    if applied is not None:
-        return
-    with service.transaction() as connection:
-        for statement in _statements(service):
-            service.execute(statement, connection=connection)
-        service.execute(
-            f"""
-            INSERT INTO {migrations_table} (version)
-            VALUES (%s)
-            ON CONFLICT (version) DO NOTHING
-            """,
-            (MIGRATION_VERSION,),
-            connection=connection,
-        )
+        _set_migration_state("failed", type(exc).__name__)
+        raise

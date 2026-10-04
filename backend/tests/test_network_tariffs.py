@@ -9,6 +9,7 @@ from backend.main import app
 from backend.models import NetworkScenarioAssumptions, NetworkTariffRule
 from backend.services import network_scenarios
 from backend.services.network_scenarios import NetworkScenarioService
+from backend.tests.network_run_helpers import run_network_scenario
 
 
 client = TestClient(app)
@@ -189,8 +190,8 @@ def test_run_reports_tariff_economics_separately() -> None:
         "/api/network/scenarios",
         json={"scenario_name": "TOLA no tariff", **common},
     )
-    baseline_result = client.post(
-        f"/api/network/scenarios/{baseline_created.json()['scenario_id']}/run"
+    baseline_result = run_network_scenario(
+        client, baseline_created.json()["scenario_id"]
     ).json()["result"]
     created = client.post(
         "/api/network/scenarios",
@@ -211,8 +212,8 @@ def test_run_reports_tariff_economics_separately() -> None:
             },
         },
     )
-    result = client.post(
-        f"/api/network/scenarios/{created.json()['scenario_id']}/run"
+    result = run_network_scenario(
+        client, created.json()["scenario_id"]
     ).json()["result"]
     tariff_charges = [
         row for row in result["charge_details"] if row["tariff_rule_ids"]
@@ -248,6 +249,7 @@ def test_run_reports_tariff_economics_separately() -> None:
     updated = client.patch(
         f"/api/network/scenarios/{created.json()['scenario_id']}",
         json={
+            "expected_revision": created.json()["revision"],
             "assumptions": {
                 "tariffs": [
                     {
@@ -263,8 +265,8 @@ def test_run_reports_tariff_economics_separately() -> None:
         },
     )
     assert updated.status_code == 200
-    high_tariff = client.post(
-        f"/api/network/scenarios/{created.json()['scenario_id']}/run"
+    high_tariff = run_network_scenario(
+        client, created.json()["scenario_id"]
     ).json()["result"]
     assert high_tariff["tariff_total_cost"] == 0
     assert high_tariff["baseline_tariff_exposure"] == (

@@ -3,7 +3,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from backend.services.valhalla import KM_TO_MILES, ValhallaMatrixClient, ValhallaMatrixError
+from backend.services.valhalla import (
+    KM_TO_MILES,
+    PROHIBITED_ARC_DURATION_MINUTES,
+    ValhallaMatrixClient,
+    ValhallaMatrixError,
+)
 from backend import config
 
 
@@ -46,7 +51,7 @@ def test_valhalla_matrix_converts_directed_cells_to_solver_rows() -> None:
     assert outbound["matrix_source"] == "valhalla"
 
 
-def test_valhalla_matrix_rejects_unreachable_cells() -> None:
+def test_valhalla_matrix_preserves_unreachable_cells_as_prohibited_arcs() -> None:
     transport = httpx.MockTransport(
         lambda request: httpx.Response(
             200,
@@ -63,13 +68,17 @@ def test_valhalla_matrix_rejects_unreachable_cells() -> None:
         auth_headers=lambda: {},
         transport=transport,
     )
-    with pytest.raises(ValhallaMatrixError, match="unreachable"):
-        client.build_travel_matrix(
-            scenario_id="scn-1",
-            depot={"depot_id": "D1", "lat": 42.0, "lng": -83.0},
-            stops=[{"customer_id": "C1", "lat": 42.1, "lng": -83.1}],
-            delivery_day="Tuesday",
-        )
+    _, rows = client.build_travel_matrix(
+        scenario_id="scn-1",
+        depot={"depot_id": "D1", "lat": 42.0, "lng": -83.0},
+        stops=[{"customer_id": "C1", "lat": 42.1, "lng": -83.1}],
+        delivery_day="Tuesday",
+    )
+    outbound = next(row for row in rows if row["origin_index"] == 0 and row["destination_index"] == 1)
+    inbound = next(row for row in rows if row["origin_index"] == 1 and row["destination_index"] == 0)
+    assert outbound["road_reachable"] is False
+    assert outbound["duration_minutes"] == PROHIBITED_ARC_DURATION_MINUTES
+    assert inbound["road_reachable"] is True
 
 
 def test_valhalla_url_accepts_explicit_url(monkeypatch) -> None:

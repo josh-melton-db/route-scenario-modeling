@@ -387,6 +387,8 @@ class Route(StrictModel):
     total_miles: float
     drive_minutes: int
     service_minutes: int
+    waiting_minutes: int = 0
+    route_minutes: int | None = None
     total_cases: int
     capacity_cases: int
     capacity_utilization_pct: float
@@ -430,6 +432,7 @@ class Kpis(StrictModel):
     total_miles: float
     drive_minutes: int
     service_minutes: int
+    waiting_minutes: int = 0
     total_cases: int
     avg_stops_per_route: float
     avg_capacity_utilization_pct: float
@@ -449,6 +452,7 @@ class KpiDeltas(StrictModel):
     total_miles: float
     drive_minutes: int
     service_minutes: int
+    waiting_minutes: int = 0
     total_cases: int
     avg_stops_per_route: float
     avg_capacity_utilization_pct: float
@@ -829,6 +833,7 @@ class NetworkLaneAggregate(StrictModel):
     capacity_units: int = Field(ge=0)
     utilization_pct: float = Field(ge=0)
     total_cost: float = Field(ge=0)
+    tariff_total: float = Field(default=0, ge=0)
     cost_per_unit: float = Field(ge=0)
     on_time_pct: float = Field(ge=0, le=100)
     contract_coverage: Literal["covered", "partial", "not_required"]
@@ -962,6 +967,7 @@ class NetworkScenarioCreateRequest(StrictModel):
 
 
 class NetworkScenarioUpdateRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
     scenario_name: str | None = None
     assumptions: NetworkScenarioAssumptions | None = None
 
@@ -1028,6 +1034,55 @@ class NetworkPricingContext(StrictModel):
     objective_cost_basis: str = "legacy_horizon_start_linear_estimate"
 
 
+class NetworkRunDiagnostics(StrictModel):
+    stage_seconds: dict[str, float] = Field(default_factory=dict)
+    scenario_charge_count: int = Field(default=0, ge=0)
+    baseline_charge_count: int = Field(default=0, ge=0)
+    solver_day_count: int = Field(default=0, ge=0)
+    summary_json_bytes: int = Field(default=0, ge=0)
+    snapshot_json_bytes: int = Field(default=0, ge=0)
+    retention_pruned_runs: int = Field(default=0, ge=0)
+    api_response_bytes: int = Field(default=0, ge=0)
+
+
+NetworkRunStatus = Literal[
+    "queued", "running", "completion_pending", "succeeded", "failed", "cancelled", "stale"
+]
+
+
+class NetworkRunLaunchRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+
+
+class NetworkRunRecord(StrictModel):
+    run_id: str
+    scenario_id: str
+    revision: int = Field(ge=1)
+    idempotency_key: str
+    status: NetworkRunStatus
+    status_url: str
+    attempt_count: int = Field(default=0, ge=0)
+    queued_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    lease_expires_at: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    retryable: bool = False
+    run_kind: Literal["scenario", "reassignment"] = "scenario"
+    parent_run_id: str | None = None
+    demand_change_ids: list[str] = Field(default_factory=list)
+    diagnostics: NetworkRunDiagnostics | None = None
+
+
+class NetworkChargeAuditPage(StrictModel):
+    items: list[NetworkFlowChargeDetail]
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    limit: int = Field(gt=0, le=250)
+    coverage: NetworkRateCoverage
+
+
 class NetworkScenarioResult(StrictModel):
     run_id: str | None = None
     scenario_id: str
@@ -1044,7 +1099,7 @@ class NetworkScenarioResult(StrictModel):
     baseline_cross_border_assigned_units: int = Field(default=0, ge=0)
     domestic_shift_units: int = 0
     optimization_freight_cost_basis: str = (
-        "governed_full_load_per_case_with_planning_fallback"
+        "linear_planning_approximation_full_load_per_case_not_billed_cost"
     )
     charge_details: list[NetworkFlowChargeDetail] = Field(default_factory=list)
     baseline_charge_details: list[NetworkFlowChargeDetail] = Field(default_factory=list)
@@ -1052,10 +1107,15 @@ class NetworkScenarioResult(StrictModel):
     baseline_tariff_total_cost: float = Field(default=0, ge=0)
     baseline_total_modeled_cost: float = Field(default=0, ge=0)
     scenario_total_modeled_cost: float = Field(default=0, ge=0)
+    optimization_objective_cost: float = Field(default=0, ge=0)
+    objective_to_rated_cost_gap: float = 0
+    objective_to_rated_cost_gap_pct: float | None = None
+    objective_gap_material: bool = False
     original_published_baseline_cost: float | None = Field(default=None, ge=0)
     baseline_rate_coverage: NetworkRateCoverage = Field(default_factory=NetworkRateCoverage)
     scenario_rate_coverage: NetworkRateCoverage = Field(default_factory=NetworkRateCoverage)
     pricing_context: NetworkPricingContext = Field(default_factory=NetworkPricingContext)
+    diagnostics: NetworkRunDiagnostics | None = None
     exceptions: list[NetworkScenarioException] = Field(default_factory=list)
 
 

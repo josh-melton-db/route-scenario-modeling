@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response, status
 
 from .baseline import router as baseline_router
 from .data_editor import router as data_editor_router
@@ -13,13 +13,22 @@ from .rates import router as rates_router
 from .runs import router as runs_router
 from .scenarios import router as scenarios_router
 from .uploads import router as uploads_router
+from ..services.platform_health import readiness_snapshot
 
 router = APIRouter()
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
+def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/ready")
+def ready(response: Response) -> dict:
+    is_ready, payload = readiness_snapshot()
+    if not is_ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return payload
 
 
 router.include_router(meta_router)

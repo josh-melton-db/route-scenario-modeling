@@ -157,7 +157,9 @@ def solve_scenario_partition(
             time_limit_seconds=time_limit_seconds,
         )
 
-    routes, route_stops = _extract_routes(problem, routing, manager, assignment, params)
+    routes, route_stops = _extract_routes(
+        problem, routing, manager, assignment, time_dimension, params
+    )
     unassigned = _extract_unassigned(problem, routing, manager, assignment)
     status = "infeasible" if unassigned else "succeeded"
     message = (
@@ -209,6 +211,7 @@ def _extract_routes(
     routing: pywrapcp.RoutingModel,
     manager: pywrapcp.RoutingIndexManager,
     assignment,
+    time_dimension: pywrapcp.RoutingDimension,
     params: CostParameters,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     routes: list[dict[str, object]] = []
@@ -241,6 +244,12 @@ def _extract_routes(
             sequence_rows=sequence_rows,
             ordered_node_indexes=ordered_node_indexes,
             problem=problem,
+            route_start_minutes=assignment.Value(
+                time_dimension.CumulVar(routing.Start(vehicle_index))
+            ),
+            route_end_minutes=assignment.Value(
+                time_dimension.CumulVar(routing.End(vehicle_index))
+            ),
             params=params,
         )
         routes.append(route)
@@ -255,6 +264,8 @@ def _apply_matrix_route_metrics(
     sequence_rows: list[dict[str, object]],
     ordered_node_indexes: list[int],
     problem: SolverProblem,
+    route_start_minutes: int,
+    route_end_minutes: int,
     params: CostParameters,
 ) -> None:
     """Make reported route timing and cost use the same directed arcs as optimization."""
@@ -293,7 +304,8 @@ def _apply_matrix_route_metrics(
         previous_node = node_index
 
     service_minutes = sum(int(row["service_minutes"]) for row in sequence_rows)
-    route_minutes = drive_minutes + service_minutes
+    route_minutes = route_end_minutes - route_start_minutes
+    waiting_minutes = max(0, route_minutes - drive_minutes - service_minutes)
     costs = route_cost(
         miles=total_miles,
         route_minutes=route_minutes,
@@ -305,6 +317,8 @@ def _apply_matrix_route_metrics(
             "total_miles": total_miles,
             "drive_minutes": drive_minutes,
             "service_minutes": service_minutes,
+            "waiting_minutes": waiting_minutes,
+            "route_minutes": route_minutes,
             "driver_utilization_pct": min(
                 100.0,
                 round(100 * max(route_minutes, 360) / params.overtime_threshold_minutes, 1),

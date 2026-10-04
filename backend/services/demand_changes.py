@@ -188,13 +188,21 @@ class DemandChangeService:
         self.repository.recover_stale_claims()
         pending = self.repository.claim(run_id)
         from .network_scenarios import network_scenario_service
+        from .network_run_jobs import network_run_manager
         try:
-            response = network_scenario_service.reassign(run_id, pending)
+            scenario, key = network_scenario_service.prepare_reassignment(
+                run_id, pending
+            )
+            return network_run_manager.launch(
+                scenario,
+                idempotency_key=key,
+                run_kind="reassignment",
+                parent_run_id=run_id,
+                demand_change_ids=[row.change_id for row in pending],
+            )
         except Exception:
             self.repository.release_claim(run_id)
             raise
-        self.repository.resolve(run_id, str(response.result.run_id), {row.change_id for row in pending})
-        return response
 
 
 demand_change_service = DemandChangeService()

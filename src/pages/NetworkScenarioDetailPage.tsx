@@ -29,6 +29,7 @@ import {
   useNetworkOverview,
   useNetworkScenario,
   useNetworkScenarioResult,
+  useNetworkRunCharges,
   useRunNetworkScenario,
   useUpdateNetworkScenario,
   useValidateNetworkScenario,
@@ -120,7 +121,10 @@ export default function NetworkScenarioDetailPage() {
     const timer = window.setTimeout(() => {
       setSaveState('saving')
       void updateScenario
-        .mutateAsync({ assumptions: draft.assumptions })
+        .mutateAsync({
+          expected_revision: scenario.data?.revision ?? 1,
+          assumptions: draft.assumptions,
+        })
         .then(() => {
           setDraft(null)
           setSaveState('saved')
@@ -168,6 +172,7 @@ export default function NetworkScenarioDetailPage() {
       const pendingDraft = draft?.scenarioId === scenarioId && draft.dirty ? draft : null
       if (pendingDraft) {
         await updateScenario.mutateAsync({
+          expected_revision: scenario.data!.revision,
           assumptions: pendingDraft.assumptions,
         })
         setDraft(null)
@@ -177,7 +182,7 @@ export default function NetworkScenarioDetailPage() {
         setActionError(validated.validation?.summary ?? 'Resolve validation errors before running the plan.')
         return
       }
-      const completed = await runScenario.mutateAsync()
+      const completed = await runScenario.mutateAsync(validated.revision)
       const runId = completed.result.run_id
       navigate(runId ? `${basePath}/flow?run=${encodeURIComponent(runId)}` : `${basePath}/flow`)
     } catch (err) {
@@ -227,7 +232,10 @@ export default function NetworkScenarioDetailPage() {
     setActionError(null)
     setOptimisticName(nextName)
     try {
-      await updateScenario.mutateAsync({ scenario_name: nextName })
+      await updateScenario.mutateAsync({
+        expected_revision: scenario.data.revision,
+        scenario_name: nextName,
+      })
       setIsEditingName(false)
       clearRenameHint()
     } catch (err) {
@@ -1201,11 +1209,6 @@ function FlowTab({
           ).join('; ')}
         </p>
       )}
-      {tariffTotal === 0 && (baselineTariffExposure ?? 0) > 0 && (
-          <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-            The solver rerouted all tariff-eligible cases. It paid no tariff and avoided {formatCurrency(baselineTariffExposure ?? 0)} that the unchanged baseline would incur. A higher tariff alone will not change this allocation.
-          </p>
-        )}
       <div className="grid min-h-0 gap-4 xl:h-[calc(100svh-20rem)] xl:min-h-[720px] xl:grid-cols-[minmax(0,1fr)_340px]">
         <NetworkFlowMap
           facilities={overview.facilities}
@@ -1358,11 +1361,6 @@ function LaneChangesTab({
 }) {
   const rows = useMemo(() => {
     if (!result.data) return []
-    const tariffByLane = new Map<string, number>()
-    for (const detail of result.data.charge_details) {
-      if (detail.tariff_total == null) continue
-      tariffByLane.set(detail.lane_id, (tariffByLane.get(detail.lane_id) ?? 0) + detail.tariff_total)
-    }
     const baselineByLane = new Map(
       result.data.baseline_overview.lanes.map((lane) => [lane.lane_id, lane]),
     )
@@ -1375,7 +1373,7 @@ function LaneChangesTab({
           baselineUnits,
           delta: lane.assigned_units - baselineUnits,
           baselineCost: base?.total_cost ?? 0,
-          tariffTotal: tariffByLane.get(lane.lane_id),
+          tariffTotal: lane.tariff_total,
         }
       })
       .filter((row) => row.delta !== 0 || row.lane.total_cost !== row.baselineCost)
@@ -1482,24 +1480,28 @@ function RateAuditTab({
   onBackToScenario: () => void
 }) {
   const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
   const [pricingSide, setPricingSide] = useState<'scenario' | 'baseline'>('scenario')
+  const [offset, setOffset] = useState(0)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const limit = 100
+  const audit = useNetworkRunCharges(
+    result.data?.run_id,
+    pricingSide,
+    offset,
+    limit,
+    debouncedQuery,
+  )
 
-  const rows = useMemo(() => {
-    if (!result.data) return []
-    const charges = pricingSide === 'baseline' ? result.data.baseline_charge_details ?? [] : result.data.charge_details
-    const needle = query.trim().toLowerCase()
-    const filtered = needle
-      ? charges.filter(
-          (row) =>
-            row.lane_id.toLowerCase().includes(needle) ||
-            (row.contract_id ?? '').toLowerCase().includes(needle),
-        )
-      : charges
-    return [...filtered]
-      .sort((a, b) => b.total_cost - a.total_cost)
-      .slice(0, 100)
-  }, [result.data, query, pricingSide])
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(query.trim())
+      setOffset(0)
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [query])
+
+  const rows = audit.data?.items ?? []
 
   if (result.isLoading) {
     return (
@@ -1518,11 +1520,8 @@ function RateAuditTab({
     )
   }
 
-  const auditCharges = pricingSide === 'baseline' ? result.data.baseline_charge_details ?? [] : result.data.charge_details
-  const governed = auditCharges.filter(
-    (row) => row.rate_source === 'governed_contract',
-  ).length
-  const fallback = auditCharges.length - governed
+  const governed = audit.data?.coverage.governed_charge_count ?? 0
+  const fallback = audit.data?.coverage.fallback_charge_count ?? 0
 
   return (
     <div className="flex flex-col gap-3">
@@ -1534,7 +1533,7 @@ function RateAuditTab({
         </p>
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
           Audit plan
-          <select aria-label="Audit plan" value={pricingSide} onChange={(event) => { setPricingSide(event.target.value as 'scenario' | 'baseline'); setExpanded(null) }} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground">
+          <select aria-label="Audit plan" value={pricingSide} onChange={(event) => { setPricingSide(event.target.value as 'scenario' | 'baseline'); setOffset(0); setExpanded(null) }} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground">
             <option value="scenario">Scenario</option>
             <option value="baseline" disabled={!hasComparablePricing(result.data)}>Comparable baseline</option>
           </select>
@@ -1550,6 +1549,14 @@ function RateAuditTab({
         </label>
       </div>
       <section className="overflow-hidden rounded-lg border border-border bg-card">
+        {audit.isLoading && (
+          <div className="flex h-20 items-center justify-center text-sm text-muted-foreground">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading charge details...
+          </div>
+        )}
+        {audit.error && (
+          <div className="px-4 py-6 text-sm text-destructive">Could not load charge details: {String(audit.error)}</div>
+        )}
         <div className="max-h-[600px] overflow-auto">
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-card">
@@ -1590,6 +1597,17 @@ function RateAuditTab({
           </table>
         </div>
       </section>
+      {audit.data && audit.data.total > 0 && (
+        <div className="flex items-center justify-between text-sm text-muted-foreground">
+          <span>
+            Showing {formatNumber(offset + 1)}–{formatNumber(Math.min(offset + limit, audit.data.total))} of {formatNumber(audit.data.total)}
+          </span>
+          <div className="flex gap-2">
+            <button type="button" className="rounded-md border border-border px-3 py-1.5 disabled:opacity-50" disabled={offset === 0 || audit.isFetching} onClick={() => setOffset(Math.max(0, offset - limit))}>Previous</button>
+            <button type="button" className="rounded-md border border-border px-3 py-1.5 disabled:opacity-50" disabled={offset + limit >= audit.data.total || audit.isFetching} onClick={() => setOffset(offset + limit)}>Next</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

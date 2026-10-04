@@ -174,3 +174,39 @@ def resolve_coverage(
         key: coverage[key]
         for key in ("coverage_id", "artifact_version", "endpoint_url", "costing", "max_points", "bounds")
     }
+
+
+def validated_routing_coverages(
+    manifest_path: str | os.PathLike[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return deployment-safe coverage inventory for readiness and support UI."""
+    selected_path = manifest_path or os.environ.get("ROUTING_COVERAGE_MANIFEST")
+    if not selected_path:
+        return []
+    manifest = _load_manifest(Path(selected_path))
+    coverages: list[dict[str, Any]] = []
+    for value in manifest["coverages"]:
+        coverage = _validate_entry(value)
+        smoke = coverage["smoke_test"]
+        identity_matches = all(
+            smoke.get(key) == expected
+            for key, expected in {
+                "coverage_id": coverage["coverage_id"],
+                "artifact_version": coverage["artifact_version"],
+                "region_id": coverage["artifact"]["region_id"],
+                "endpoint_url": coverage["endpoint_url"],
+            }.items()
+        )
+        if coverage.get("status") != "validated" or smoke.get("result") != "success" or not identity_matches:
+            continue
+        coverages.append(
+            {
+                "coverage_id": coverage["coverage_id"],
+                "artifact_version": coverage["artifact_version"],
+                "region_id": coverage["artifact"]["region_id"],
+                "depot_ids": sorted(coverage["depot_ids"]),
+                "costing": coverage["costing"],
+                "max_points": coverage["max_points"],
+            }
+        )
+    return sorted(coverages, key=lambda item: item["coverage_id"])

@@ -48,19 +48,19 @@ def _require_lakebase() -> None:
 
 
 @router.post("/sessions", response_model=EditorSession)
-async def open_editor_session(request: Request) -> EditorSession:
+def open_editor_session(request: Request) -> EditorSession:
     _require_lakebase()
     return ground_truth_store.open_session(_principal(request))
 
 
 @router.get("/sessions/{session_id}", response_model=EditorSession)
-async def editor_session(session_id: str, request: Request) -> EditorSession:
+def editor_session(session_id: str, request: Request) -> EditorSession:
     _require_lakebase()
     return ground_truth_store.get_session(session_id, _principal(request))
 
 
 @router.get("/sessions/{session_id}/rows/{entity_type}", response_model=EditorPage)
-async def editor_rows(
+def editor_rows(
     session_id: str,
     entity_type: EditorEntityType,
     request: Request,
@@ -81,7 +81,7 @@ async def editor_rows(
     "/sessions/{session_id}/rows/{entity_type}",
     response_model=EditorRow,
 )
-async def insert_editor_row(
+def insert_editor_row(
     session_id: str,
     entity_type: EditorEntityType,
     payload: EditorInsertRequest,
@@ -100,7 +100,7 @@ async def insert_editor_row(
     "/sessions/{session_id}/rows/{entity_type}/{row_id}",
     response_model=EditorRow,
 )
-async def patch_editor_row(
+def patch_editor_row(
     session_id: str,
     entity_type: EditorEntityType,
     row_id: str,
@@ -121,7 +121,7 @@ async def patch_editor_row(
     "/sessions/{session_id}/rows/{entity_type}/{row_id}",
     response_model=EditorSession,
 )
-async def delete_editor_row(
+def delete_editor_row(
     session_id: str,
     entity_type: EditorEntityType,
     row_id: str,
@@ -142,7 +142,7 @@ async def delete_editor_row(
     "/sessions/{session_id}/validate",
     response_model=EditorValidationResponse,
 )
-async def validate_editor_session(
+def validate_editor_session(
     session_id: str,
     request: Request,
 ) -> EditorValidationResponse:
@@ -154,7 +154,7 @@ async def validate_editor_session(
     "/sessions/{session_id}/preview",
     response_model=EditorPreviewResponse,
 )
-async def preview_editor_baseline(
+def preview_editor_baseline(
     session_id: str,
     payload: EditorPreviewRequest,
     request: Request,
@@ -167,7 +167,7 @@ async def preview_editor_baseline(
     "/sessions/{session_id}/commit",
     response_model=EditorCommitResponse,
 )
-async def commit_editor_session(
+def commit_editor_session(
     session_id: str,
     request: Request,
 ) -> EditorCommitResponse:
@@ -179,7 +179,7 @@ async def commit_editor_session(
     "/sessions/{session_id}/discard",
     response_model=EditorSession,
 )
-async def discard_editor_session(
+def discard_editor_session(
     session_id: str,
     request: Request,
 ) -> EditorSession:

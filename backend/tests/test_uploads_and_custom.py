@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import zipfile
 
 from fastapi.testclient import TestClient
 
@@ -40,6 +41,40 @@ def test_upload_deliveries_endpoint() -> None:
     payload = response.json()
     assert len(payload["deliveries"]) == 1
     assert payload["errors"] == []
+
+
+def test_rejects_malformed_workbook() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/api/scenarios/uploads/deliveries",
+        files={"file": ("deliveries.xlsx", io.BytesIO(b"not-a-zip"), "application/octet-stream")},
+    )
+    assert response.status_code == 400
+
+
+def test_rejects_external_workbook_relationship() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "_rels/.rels",
+            '<Relationships><Relationship TargetMode="External" Target="https://example.test"/></Relationships>',
+        )
+    client = TestClient(app)
+    response = client.post(
+        "/api/scenarios/uploads/deliveries",
+        files={"file": ("deliveries.xlsx", io.BytesIO(buffer.getvalue()), "application/octet-stream")},
+    )
+    assert response.status_code == 400
+    assert "External" in response.json()["detail"]
+
+
+def test_rejects_macro_extension() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/api/scenarios/uploads/deliveries",
+        files={"file": ("deliveries.xlsm", io.BytesIO(build_template_bytes()), "application/octet-stream")},
+    )
+    assert response.status_code == 400
 
 
 def test_download_template_endpoint() -> None:

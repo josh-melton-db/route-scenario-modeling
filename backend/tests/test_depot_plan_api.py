@@ -170,6 +170,20 @@ class FakeDepotPlanService:
         self._call("get_day", plan_set_id, service_date, route_scenario_id)
         return _day_detail(route_scenario_id)
 
+    def list_day_results(
+        self, plan_set_id: str, service_date: str, *, limit: int, offset: int
+    ) -> dict[str, object]:
+        self._call("list_day_results", plan_set_id, service_date, limit=limit, offset=offset)
+        return {"items": [_day_result("RES-2")], "total": 3, "limit": limit, "offset": offset}
+
+    def list_result_routes(
+        self, plan_set_id: str, result_id: str, *, limit: int, offset: int
+    ) -> dict[str, object]:
+        self._call("list_result_routes", plan_set_id, result_id, limit=limit, offset=offset)
+        if result_id == "missing":
+            raise KeyError("Unknown depot result 'missing'.")
+        return {"items": [{"route_id": "ROUTE-2"}], "total": 2, "limit": limit, "offset": offset}
+
     def create_scenario(
         self, plan_set_id: str, scenario_name: str
     ) -> dict[str, object]:
@@ -305,3 +319,42 @@ def test_service_404_is_preserved(fake_service: FakeDepotPlanService) -> None:
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Network run not found."
+
+
+def test_depot_result_and_route_history_pagination_contract(
+    fake_service: FakeDepotPlanService,
+) -> None:
+    client = TestClient(app)
+
+    results = client.get(
+        "/api/depot-plans/DPS-1/days/2026-09-30/results",
+        params={"limit": 2, "offset": 1},
+    )
+    assert results.status_code == 200
+    assert results.json()["total"] == 3
+    assert results.json()["limit"] == 2
+    assert results.json()["offset"] == 1
+
+    routes = client.get(
+        "/api/depot-plans/DPS-1/results/RES-2/routes",
+        params={"limit": 1, "offset": 1},
+    )
+    assert routes.status_code == 200
+    assert routes.json()["items"] == [{"route_id": "ROUTE-2"}]
+    assert fake_service.calls[-1] == (
+        "list_result_routes",
+        ("DPS-1", "RES-2"),
+        {"limit": 1, "offset": 1},
+    )
+
+    assert client.get(
+        "/api/depot-plans/DPS-1/results/missing/routes"
+    ).status_code == 404
+    assert client.get(
+        "/api/depot-plans/DPS-1/days/2026-09-30/results",
+        params={"limit": 101},
+    ).status_code == 422
+    assert client.get(
+        "/api/depot-plans/DPS-1/results/RES-2/routes",
+        params={"offset": -1},
+    ).status_code == 422

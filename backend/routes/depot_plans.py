@@ -5,6 +5,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from ..services.depot_plan_jobs import DepotPlanQueueFullError
+
 from ..depot_plan_models import (
     CreatePlanRequest,
     CreateRouteScenarioRequest,
@@ -38,6 +40,8 @@ def _service_call(method: Any, *args: Any, **kwargs: Any) -> Any:
         raise HTTPException(status_code=404, detail=detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except DepotPlanQueueFullError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
 
 
 @router.post(
@@ -86,6 +90,40 @@ def get_depot_plan_day(
         plan_set_id,
         _date_text(service_date),
         route_scenario_id=route_scenario_id,
+    )
+
+
+@router.get("/depot-plans/{plan_set_id}/days/{service_date}/results")
+def list_depot_plan_day_results(
+    plan_set_id: str,
+    service_date: date,
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    service: Any = Depends(get_depot_plan_service),
+) -> dict[str, object]:
+    return _service_call(
+        service.list_day_results,
+        plan_set_id,
+        _date_text(service_date),
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/depot-plans/{plan_set_id}/results/{result_id}/routes")
+def list_depot_result_routes(
+    plan_set_id: str,
+    result_id: str,
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    service: Any = Depends(get_depot_plan_service),
+) -> dict[str, object]:
+    return _service_call(
+        service.list_result_routes,
+        plan_set_id,
+        result_id,
+        limit=limit,
+        offset=offset,
     )
 
 

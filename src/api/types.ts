@@ -170,6 +170,7 @@ export interface NetworkLaneAggregate {
   capacity_units: number
   utilization_pct: number
   total_cost: number
+  tariff_total?: number
   cost_per_unit: number
   on_time_pct: number
   contract_coverage: 'covered' | 'partial' | 'not_required'
@@ -286,6 +287,7 @@ export interface NetworkScenarioCreateRequest {
 }
 
 export interface NetworkScenarioUpdateRequest {
+  expected_revision: number
   scenario_name?: string
   assumptions?: NetworkScenarioAssumptions
 }
@@ -338,7 +340,7 @@ export interface NetworkScenarioResult {
   baseline_overview: NetworkOverview
   kpi_deltas: NetworkScenarioKpiDeltas
   affected_depot_ids: string[]
-  charge_details: NetworkFlowChargeDetail[]
+  charge_details?: NetworkFlowChargeDetail[]
   exceptions: NetworkScenarioException[]
   tariff_total_cost?: number
   baseline_tariff_exposure?: number
@@ -351,6 +353,10 @@ export interface NetworkScenarioResult {
   baseline_tariff_total_cost?: number
   baseline_total_modeled_cost?: number
   scenario_total_modeled_cost?: number
+  optimization_objective_cost?: number
+  objective_to_rated_cost_gap?: number
+  objective_to_rated_cost_gap_pct?: number | null
+  objective_gap_material?: boolean
   original_published_baseline_cost?: number | null
   baseline_rate_coverage?: NetworkRateCoverage
   scenario_rate_coverage?: NetworkRateCoverage
@@ -363,6 +369,14 @@ export interface NetworkScenarioResult {
   }
 }
 
+export interface NetworkChargeAuditPage {
+  items: NetworkFlowChargeDetail[]
+  total: number
+  offset: number
+  limit: number
+  coverage: NetworkRateCoverage
+}
+
 export interface NetworkRateCoverage {
   governed_charge_count: number
   fallback_charge_count: number
@@ -373,6 +387,17 @@ export interface NetworkRateCoverage {
 export interface NetworkScenarioRunResponse {
   scenario: NetworkScenario
   result: NetworkScenarioResult
+}
+
+export interface NetworkRunRecord {
+  run_id: string
+  scenario_id: string
+  revision: number
+  status: 'queued' | 'running' | 'completion_pending' | 'succeeded' | 'failed' | 'cancelled' | 'stale'
+  status_url: string
+  attempt_count: number
+  error_code: string | null
+  error_message: string | null
 }
 
 export interface NetworkBaselineState {
@@ -729,6 +754,8 @@ export interface Route {
   total_miles: number
   drive_minutes: number
   service_minutes: number
+  waiting_minutes?: number
+  route_minutes?: number | null
   total_cases: number
   capacity_cases: number
   capacity_utilization_pct: number
@@ -772,6 +799,7 @@ export interface Kpis {
   total_miles: number
   drive_minutes: number
   service_minutes: number
+  waiting_minutes?: number
   total_cases: number
   avg_stops_per_route: number
   avg_capacity_utilization_pct: number
@@ -883,6 +911,7 @@ export interface KpiDeltas {
   total_miles: number
   drive_minutes: number
   service_minutes: number
+  waiting_minutes?: number
   total_cases: number
   avg_stops_per_route: number
   avg_capacity_utilization_pct: number

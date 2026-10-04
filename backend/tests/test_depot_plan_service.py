@@ -7,7 +7,17 @@ import pytest
 
 from backend.models import Kpis, Route
 from backend.services.depot_plan_jobs import DepotPlanJobManager
-from backend.services.depot_plans import DepotPlanService, _route_cost_parameters
+from backend.services.depot_plans import (
+    DepotPlanService,
+    _cost_content_hash,
+    _fleet_content_hash,
+    _apply_customer_constraint_snapshot,
+    _customer_constraint_hash,
+    _freeze_customer_constraints,
+    _route_cost_parameters,
+    _verify_fleet_snapshot,
+    _verify_cost_snapshot,
+)
 from route_opt.cost import CostParameters
 from route_opt.depot_planning import solve_depot_plan
 
@@ -320,16 +330,156 @@ def test_route_cost_parameters_are_pinned_by_depot_and_date() -> None:
         )
 
 
-def test_strict_plan_creation_rejects_default_synthetic_fleet(monkeypatch) -> None:
+def test_strict_plan_creation_rejects_genuinely_unpinned_fleet(monkeypatch) -> None:
     monkeypatch.setenv("ROUTE_EXECUTION_MODE", "strict_serving_road")
     service = DepotPlanService(
         repository=FakeRepository(),
         snapshot_provider=lambda run_id: deepcopy(_snapshot()),
+        fleet_provider=lambda _snapshot, depot_id: (
+            [{"vehicle_id": "TEMP-1", "depot_id": depot_id, "capacity_cases": 720}],
+            "synthetic_unpinned:runtime_generated",
+        ),
         job_manager=DepotPlanJobManager(max_workers=1, start_workers=False),
     )
 
     with pytest.raises(ValueError, match="requires a real pinned fleet source"):
         service.get_or_create_plan("RUN-STRICT", DEPOT_ID)
+
+
+def test_strict_plan_creation_accepts_and_freezes_versioned_generated_fixture(
+    monkeypatch,
+) -> None:
+    import backend.services.depot_plans as depot_plans_module
+
+    monkeypatch.setenv("ROUTE_EXECUTION_MODE", "strict_serving_road")
+
+    class EmptyStore:
+        def load_solver_base_tables(self):
+            return {
+                "fleet": [],
+                "cost_parameters": [
+                    {"parameter_set_id": "default", **CostParameters().as_dict()}
+                ],
+            }
+
+    monkeypatch.setattr(depot_plans_module, "get_store", lambda: EmptyStore())
+    repository = FakeRepository()
+    service = DepotPlanService(
+        repository=repository,
+        snapshot_provider=lambda _run_id: deepcopy(_snapshot()),
+        job_manager=DepotPlanJobManager(max_workers=1, start_workers=False),
+    )
+
+    plan = _payload(service.get_or_create_plan("RUN-PINNED-FIXTURE", DEPOT_ID))
+    stored = repository.get(plan["plan_set_id"])
+    expected_hash = _fleet_content_hash(stored["fleet"])
+
+    assert len(stored["fleet"]) == 16
+    assert stored["resource_source"].startswith(
+        "pinned_fixture:fixed_16x720_normal_shift.v1:sha256:"
+    )
+    assert stored["resource_source"].endswith(expected_hash)
+    assert stored["fleet_snapshot"] == {
+        "source": stored["resource_source"],
+        "vehicle_count": 16,
+        "content_hash": f"sha256:{expected_hash}",
+        "immutable": True,
+    }
+    assert plan["fleet_snapshot"] == stored["fleet_snapshot"]
+    assert sum(int(row["capacity_cases"]) for row in stored["fleet"]) == 16 * 720
+    expected_cost_hash = _cost_content_hash(stored["route_cost_parameters"])
+    assert stored["cost_resource_source"] == (
+        "configured_store:solver_base:cost_parameters"
+    )
+    assert stored["cost_snapshot"] == {
+        "source": "configured_store:solver_base:cost_parameters",
+        "row_count": 1,
+        "content_hash": f"sha256:{expected_cost_hash}",
+        "immutable": True,
+    }
+    tampered_costs = deepcopy(stored["route_cost_parameters"])
+    tampered_costs[0]["cost_per_mile"] = 999.0
+    with pytest.raises(ValueError, match="do not reconcile"):
+        _verify_cost_snapshot(tampered_costs, stored["cost_snapshot"])
+
+    tampered = deepcopy(stored["fleet"])
+    tampered[0]["capacity_cases"] = 1
+    with pytest.raises(ValueError, match="do not reconcile"):
+        _verify_fleet_snapshot(tampered, stored["fleet_snapshot"])
+
+
+@pytest.mark.parametrize("customer_id", ["NET-CUST-TOLA-0001", "NET-CUST-TOLA-0501"])
+def test_generated_tola_customer_constraints_are_versioned_pinned_and_reconciled(
+    customer_id: str,
+) -> None:
+    snapshot = _snapshot()
+    customer = snapshot["network_rows"]["dim_network_customers"][0]
+    customer["customer_id"] = customer_id
+    customer.pop("receiving_window_start")
+    customer.pop("receiving_window_end")
+    customer.pop("service_minutes")
+    snapshot["network_rows"]["dim_network_lanes"][0]["destination_endpoint_id"] = customer_id
+
+    adjusted, provenance = _freeze_customer_constraints(snapshot["network_rows"], DEPOT_ID)
+    frozen = provenance["constraints"]
+
+    assert adjusted["dim_network_customers"][0]["receiving_window_start"] == "08:00"
+    assert adjusted["dim_network_customers"][0]["receiving_window_end"] == "17:00"
+    assert adjusted["dim_network_customers"][0]["service_minutes"] == 20
+    assert provenance["source"] == (
+        "pinned_fixture_overlay:generated_customer_route_constraints.v1"
+    )
+    assert provenance["version"] == "generated_customer_route_constraints.v1"
+    assert provenance["content_hash"] == f"sha256:{_customer_constraint_hash(frozen)}"
+
+    reapplied = _apply_customer_constraint_snapshot(snapshot["network_rows"], provenance)
+    assert reapplied["dim_network_customers"][0]["service_minutes"] == 20
+    tampered = deepcopy(provenance)
+    tampered["constraints"][0]["service_minutes"] = 1
+    with pytest.raises(ValueError, match="do not reconcile"):
+        _apply_customer_constraint_snapshot(snapshot["network_rows"], tampered)
+
+
+def test_unknown_missing_customer_constraints_are_not_silently_pinned() -> None:
+    snapshot = _snapshot()
+    customer = snapshot["network_rows"]["dim_network_customers"][0]
+    customer.pop("receiving_window_start")
+    customer.pop("receiving_window_end")
+    customer.pop("service_minutes")
+
+    adjusted, provenance = _freeze_customer_constraints(snapshot["network_rows"], DEPOT_ID)
+
+    assert adjusted["dim_network_customers"][0].get("service_minutes") is None
+    assert provenance["source"] == "snapshot:dim_network_customers"
+
+
+def test_strict_pinned_fixture_still_rejects_when_no_pinned_costs_exist(
+    monkeypatch,
+) -> None:
+    import backend.services.depot_plans as depot_plans_module
+
+    monkeypatch.setenv("ROUTE_EXECUTION_MODE", "strict_serving_road")
+
+    class EmptyStore:
+        def load_solver_base_tables(self):
+            return {"fleet": [], "cost_parameters": []}
+
+    monkeypatch.setattr(depot_plans_module, "get_store", lambda: EmptyStore())
+    jobs = DepotPlanJobManager(max_workers=1, start_workers=False)
+    service = DepotPlanService(
+        repository=FakeRepository(),
+        snapshot_provider=lambda _run_id: deepcopy(_snapshot()),
+        job_manager=jobs,
+    )
+
+    plan = service.get_or_create_plan("RUN-NO-PINNED-COSTS", DEPOT_ID)
+    assert jobs.run_next()
+    day = service.get_day(plan.plan_set_id, DATE_ONE)
+    assert day.default_status == "failed"
+    assert day.error == (
+        f"Strict route execution requires pinned route cost parameters for "
+        f"{DEPOT_ID} on {DATE_ONE}."
+    )
 
 
 def test_strict_empty_horizon_needs_no_fleet_cost_matrix_or_endpoint(monkeypatch) -> None:

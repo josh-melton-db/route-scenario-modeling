@@ -1,20 +1,23 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { Layout } from './components/Layout'
-import BaselinePage from './pages/BaselinePage'
-import DataEditorPage from './pages/DataEditorPage'
-import OptimizationRunsPage from './pages/OptimizationRunsPage'
-import ScenarioBuilderPage from './pages/ScenarioBuilderPage'
-import RatesPage from './pages/RatesPage'
-import ContractDetailPage from './pages/ContractDetailPage'
-import NetworkPage from './pages/NetworkPage'
-import DcPage from './pages/DcPage'
-import NetworkScenarioDetailPage from './pages/NetworkScenarioDetailPage'
+
+const BaselinePage = lazy(() => import('./pages/BaselinePage'))
+const DataEditorPage = lazy(() => import('./pages/DataEditorPage'))
+const OptimizationRunsPage = lazy(() => import('./pages/OptimizationRunsPage'))
+const ScenarioBuilderPage = lazy(() => import('./pages/ScenarioBuilderPage'))
+const RatesPage = lazy(() => import('./pages/RatesPage'))
+const ContractDetailPage = lazy(() => import('./pages/ContractDetailPage'))
+const NetworkPage = lazy(() => import('./pages/NetworkPage'))
+const DcPage = lazy(() => import('./pages/DcPage'))
+const NetworkScenarioDetailPage = lazy(() => import('./pages/NetworkScenarioDetailPage'))
 
 export default function App() {
   return (
     <BrowserRouter>
       <Layout>
-        <Routes>
+        <Suspense fallback={<div className="p-8 text-sm text-muted-foreground">Loading workspace…</div>}>
+          <Routes>
           <Route path="/" element={<Navigate to="/network" replace />} />
           <Route path="/network" element={<NetworkPage />} />
           <Route path="/network/scenarios" element={<Navigate to="/network" replace />} />
@@ -31,7 +34,8 @@ export default function App() {
           <Route path="/data-editor" element={<DataEditorPage />} />
           <Route path="/runs/:runId" element={<OptimizationRunsPage />} />
           <Route path="/comparison/:scenarioId" element={<LegacyComparisonRedirect />} />
-        </Routes>
+          </Routes>
+        </Suspense>
       </Layout>
     </BrowserRouter>
   )

@@ -14,6 +14,11 @@ export default function NetworkPricingNote({ result, detailed = false }: { resul
   return (
     <div role="note" aria-label="Comparison pricing basis" className="text-xs text-muted-foreground">
       <p>Comparable linehaul pricing: both plans use the same pinned, dated rate books and {formatNumber(result.pricing_context!.load_size_cases)}-case whole-load basis. Costs cover the selected network region, not optimized last-mile routes.</p>
+      {result.objective_gap_material && (
+        <p className="mt-1 text-warning">
+          Planning-objective warning: billed cost differs from the solver&apos;s linear approximation by {formatCurrency(Math.abs(result.objective_to_rated_cost_gap ?? 0))} ({formatNumber(Math.abs(result.objective_to_rated_cost_gap_pct ?? 0))}%) because reported freight purchases whole loads.
+        </p>
+      )}
       {detailed && <>
         <p className="mt-1">Baseline freight {formatCurrency(result.baseline_freight_total_cost ?? 0)} + tariffs {formatCurrency(result.baseline_tariff_total_cost ?? 0)} = {formatCurrency(result.baseline_total_modeled_cost ?? 0)}. Scenario freight {formatCurrency(result.freight_total_cost ?? 0)} + tariffs {formatCurrency(result.tariff_total_cost ?? 0)} = {formatCurrency(result.scenario_total_modeled_cost ?? 0)}.</p>
         {baseline && scenario && <p className="mt-1">Rate coverage · baseline: {formatNumber(baseline.governed_charge_count)} contract / {formatNumber(baseline.fallback_charge_count)} estimated charges · scenario: {formatNumber(scenario.governed_charge_count)} contract / {formatNumber(scenario.fallback_charge_count)} estimated charges. Uncovered lanes use the same estimation policy in both plans.</p>}

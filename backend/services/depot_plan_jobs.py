@@ -10,6 +10,10 @@ from dataclasses import dataclass, field
 JobKey = tuple[str, str, str, str]
 
 
+class DepotPlanQueueFullError(RuntimeError):
+    """The bounded local adapter cannot admit more durable work yet."""
+
+
 @dataclass(order=True)
 class _QueuedJob:
     priority: int
@@ -21,10 +25,20 @@ class _QueuedJob:
 class DepotPlanJobManager:
     """Small bounded priority worker pool with active-job de-duplication."""
 
-    def __init__(self, *, max_workers: int = 2, start_workers: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        max_workers: int = 2,
+        max_queue_size: int = 100,
+        start_workers: bool = True,
+    ) -> None:
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1.")
-        self._queue: queue.PriorityQueue[_QueuedJob] = queue.PriorityQueue()
+        if max_queue_size < 1:
+            raise ValueError("max_queue_size must be at least 1.")
+        self._queue: queue.PriorityQueue[_QueuedJob] = queue.PriorityQueue(
+            maxsize=max_queue_size
+        )
         self._active: set[JobKey] = set()
         self._condition = threading.Condition()
         self._sequence = itertools.count()
@@ -52,6 +66,10 @@ class DepotPlanJobManager:
                 raise RuntimeError("Depot plan job manager is closed.")
             if key in self._active:
                 return False
+            if self._queue.full():
+                raise DepotPlanQueueFullError(
+                    "The depot optimization queue is full; retry after existing work completes."
+                )
             self._active.add(key)
             self._queue.put(
                 _QueuedJob(

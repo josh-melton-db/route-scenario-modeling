@@ -95,6 +95,8 @@ targets:
       warehouse_name: route-scenario-modeling-rt-dev
       route_scenario_modeling_job_name: route-scenario-modeling-plan-dev
       route_solver_endpoint_name: route-solver-dev
+      routing_coverage_manifest: routing_coverage/texas-dev.v1.json
+      valhalla_app_name: valhalla-texas-dev
 
   prod:
     mode: production
@@ -158,7 +160,7 @@ resources:
           - name: VALHALLA_COSTING
             value: truck
           - name: VALHALLA_ALLOW_HAVERSINE_FALLBACK
-            value: "false"
+            value: "true"
       resources:
         - name: lakebase
           postgres:

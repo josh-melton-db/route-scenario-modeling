@@ -10,7 +10,7 @@ from mlflow.types.schema import ColSpec, Schema
 import pandas as pd
 
 from .ortools_cvrptw import solve_scenario_partition
-from .payload import INPUT_SCHEMA, OUTPUT_COLUMNS, make_input_row
+from .payload import INPUT_SCHEMA, OUTPUT_COLUMNS, expand_travel_matrix, make_input_row
 from ..cost import CostParameters
 
 
@@ -28,7 +28,7 @@ class RouteScenarioSolverModel(mlflow.pyfunc.PythonModel):
                 planning_customers=_payload(row.get("planning_customers")),
                 planning_fleet=_payload(row.get("planning_fleet")),
                 planning_stops=_payload(row.get("planning_stops")),
-                travel_matrix=_payload(row.get("travel_matrix")),
+                travel_matrix=_matrix_payload(row.get("travel_matrix")),
                 params=_cost_parameters(row.get("cost_parameters")),
                 time_limit_seconds=int(row.get("time_limit_seconds", 5) or 5),
             )
@@ -73,6 +73,13 @@ def _payload(value: object) -> list[dict[str, object]]:
         if isinstance(decoded, list):
             return decoded
     raise TypeError(f"Expected JSON list payload, got {type(value).__name__}")
+
+
+def _matrix_payload(value: object) -> list[dict[str, object]]:
+    if value is None or (isinstance(value, float) and pd.isna(value)) or value == "":
+        return []
+    decoded = json.loads(value) if isinstance(value, str) else value
+    return expand_travel_matrix(decoded)
 
 
 def _cost_parameters(value: object) -> CostParameters | None:

@@ -8,9 +8,15 @@ from .baseline import summarize_kpis
 from .cost import CostParameters
 from .schemas import MATRIX_SOURCE
 from .solver import solve_scenario_partition
+from .solver.payload import MAX_SOLVER_POINTS
 
 
 NetworkRows = Mapping[str, Sequence[Mapping[str, object]]]
+MAX_ROUTE_VEHICLES = 64
+
+
+class UnsupportedSplitDeliveryError(ValueError):
+    """A customer order cannot be represented without split-delivery semantics."""
 
 
 def materialize_depot_targets(
@@ -160,6 +166,29 @@ def solve_depot_plan(
     targets = materialize_depot_targets(network_rows, flow_rows, depot_id, service_date)
     service_date_text = str(targets["service_date"])
     planning_fleet = _available_fleet(fleet, depot_id, service_date_text)
+    if len(planning_fleet) > MAX_ROUTE_VEHICLES:
+        raise ValueError(
+            f"Route solve has {len(planning_fleet)} vehicles; supported limit is {MAX_ROUTE_VEHICLES}."
+        )
+    planning_stops = list(targets["planning_stops"])
+    if len(planning_stops) + 1 > MAX_SOLVER_POINTS:
+        raise ValueError(
+            f"Route solve has {len(planning_stops) + 1} matrix points; supported limit is "
+            f"{MAX_SOLVER_POINTS}. Partition the problem before solving."
+        )
+    if planning_fleet:
+        max_capacity = max(int(vehicle["capacity_cases"]) for vehicle in planning_fleet)
+        oversized = [
+            stop for stop in planning_stops
+            if int(stop["demand_cases"]) > max_capacity
+        ]
+        if oversized:
+            stop = oversized[0]
+            raise UnsupportedSplitDeliveryError(
+                "Split deliveries are not supported: customer "
+                f"{stop['customer_id']!r} has {stop['demand_cases']} cases but the largest "
+                f"available vehicle holds {max_capacity}."
+            )
     matrix_rows = list(travel_matrix) if travel_matrix is not None else None
     solver_result = partition_solver(
         scenario_id=scenario_id,
@@ -168,7 +197,7 @@ def solve_depot_plan(
         planning_depots=list(targets["planning_depots"]),
         planning_customers=list(targets["planning_customers"]),
         planning_fleet=planning_fleet,
-        planning_stops=list(targets["planning_stops"]),
+        planning_stops=planning_stops,
         travel_matrix=matrix_rows,
         params=cost_parameters,
         time_limit_seconds=time_limit_seconds,
@@ -340,6 +369,11 @@ def _route_contracts(
                 "total_miles": route["total_miles"],
                 "drive_minutes": route["drive_minutes"],
                 "service_minutes": route["service_minutes"],
+                "waiting_minutes": route.get("waiting_minutes", 0),
+                "route_minutes": route.get(
+                    "route_minutes",
+                    int(route["drive_minutes"]) + int(route["service_minutes"]),
+                ),
                 "total_cases": route["total_cases"],
                 "capacity_cases": route["capacity_cases"],
                 "capacity_utilization_pct": route["capacity_utilization_pct"],

@@ -701,6 +701,9 @@ def _build_customers(
                     market_id=market.market_id,
                     lat=round(lat, 6),
                     lng=round(lng, 6),
+                    receiving_window_start="08:00",
+                    receiving_window_end="17:00",
+                    service_minutes=20,
                 )
             )
             customer_number += 1

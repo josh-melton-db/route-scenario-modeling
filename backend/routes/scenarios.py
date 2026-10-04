@@ -21,14 +21,14 @@ router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
 
 @router.get("", response_model=list[ScenarioHistoryItem])
-async def recent_scenarios(
+def recent_scenarios(
     limit: int = Query(default=10, ge=1, le=50),
 ) -> list[ScenarioHistoryItem]:
     return get_store().list_recent_scenarios(limit)
 
 
 @router.post("", response_model=CreateScenarioResponse)
-async def create_scenario(payload: ScenarioCreateRequest) -> CreateScenarioResponse:
+def create_scenario(payload: ScenarioCreateRequest) -> CreateScenarioResponse:
     store = get_store()
     backend = get_data_backend()
     started_at = time.perf_counter()
@@ -42,23 +42,23 @@ async def create_scenario(payload: ScenarioCreateRequest) -> CreateScenarioRespo
 
 
 @router.get("/{scenario_id}", response_model=ScenarioDefinition)
-async def scenario_definition(scenario_id: str) -> ScenarioDefinition:
+def scenario_definition(scenario_id: str) -> ScenarioDefinition:
     return get_store().get_scenario_definition(scenario_id)
 
 
 @router.delete("/{scenario_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_scenario(scenario_id: str) -> Response:
+def delete_scenario(scenario_id: str) -> Response:
     get_store().delete_scenario(scenario_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{scenario_id}/validate", response_model=ValidationResponse)
-async def validate_scenario(scenario_id: str) -> ValidationResponse:
+def validate_scenario(scenario_id: str) -> ValidationResponse:
     return get_store().validate_scenario(scenario_id)
 
 
 @router.post("/{scenario_id}/run", response_model=RunStartResponse)
-async def run_scenario(scenario_id: str) -> RunStartResponse:
+def run_scenario(scenario_id: str) -> RunStartResponse:
     store = get_store()
     if get_data_backend() in {"databricks", "lakebase"}:
         if get_data_backend() == "databricks":

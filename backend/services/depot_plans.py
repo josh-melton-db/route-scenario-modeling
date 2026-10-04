@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import uuid
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
@@ -21,6 +25,8 @@ from .store_provider import get_store
 DEFAULT_SCENARIO_ID = "default"
 FINISHED_STATUSES = {"completed", "infeasible"}
 PENDING_STATUSES = {"queued", "running"}
+MAX_ROUTE_SCENARIOS_PER_PLAN = 20
+MAX_PENDING_OVERRIDE_JOBS_PER_PLAN = 20
 
 
 class DepotPlanService:
@@ -45,6 +51,7 @@ class DepotPlanService:
         self.solver = solver
         self.job_manager = job_manager
         self.now = now or (lambda: datetime.now(timezone.utc))
+        self.worker_id = f"depot-worker-{uuid.uuid4()}"
 
     def get_or_create_plan(
         self,
@@ -64,7 +71,9 @@ class DepotPlanService:
         if priority_date_text is not None and priority_date_text not in dates:
             raise ValueError("priority_date must be inside the parent run horizon.")
 
-        network_rows = _snapshot_value(snapshot, "network_rows")
+        network_rows, customer_constraint_snapshot = _freeze_customer_constraints(
+            _snapshot_value(snapshot, "network_rows"), depot_id
+        )
         flow_rows = list(_snapshot_value(snapshot, "flow_rows"))
         daily_targets = {
             service_date: materialize_depot_targets(network_rows, flow_rows, depot_id, service_date)
@@ -88,15 +97,18 @@ class DepotPlanService:
             fleet_rows, resource_source = fleet_value, "injected_fleet"
             frozen_cost_rows, cost_resource_source = _snapshot_cost_rows(snapshot)
         fleet = [dict(row) for row in fleet_rows]
-        if (
-            get_route_execution_mode() == "strict_serving_road"
-            and str(resource_source).startswith("synthetic_unpinned:")
+        if get_route_execution_mode() == "strict_serving_road" and _fleet_source_is_unpinned(
+            str(resource_source)
         ):
             raise ValueError(
                 "Strict route execution requires a real pinned fleet source; "
                 f"received {resource_source!r}."
             )
         frozen_fleet = [deepcopy(row) for row in fleet]
+        fleet_snapshot = _fleet_snapshot_provenance(frozen_fleet, str(resource_source))
+        cost_snapshot = _cost_snapshot_provenance(
+            frozen_cost_rows, str(cost_resource_source)
+        )
         plan_set_id = f"depot-plan-{uuid.uuid4()}"
         created_at = self._timestamp()
         record: dict[str, object] = {
@@ -107,8 +119,11 @@ class DepotPlanService:
             "horizon_end": horizon_end,
             "resource_source": resource_source,
             "fleet": frozen_fleet,
+            "fleet_snapshot": fleet_snapshot,
+            "customer_constraint_snapshot": customer_constraint_snapshot,
             "route_cost_parameters": deepcopy(frozen_cost_rows),
             "cost_resource_source": cost_resource_source,
+            "cost_snapshot": cost_snapshot,
             "scenarios": {
                 DEFAULT_SCENARIO_ID: {
                     "route_scenario_id": DEFAULT_SCENARIO_ID,
@@ -176,6 +191,47 @@ class DepotPlanService:
             _day_detail_payload(record, day, route_scenario_id)
         )
 
+    def list_day_results(
+        self,
+        plan_set_id: str,
+        service_date: str | date,
+        *,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        service_date_text = _date_text(service_date)
+        lister = getattr(self.repository, "list_results", None)
+        if callable(lister):
+            return lister(
+                plan_set_id, service_date_text, limit=limit, offset=offset
+            )
+        record = self.repository.get(plan_set_id)
+        day = _require_day(record, service_date_text)
+        results = sorted(
+            day.get("results", {}).values(),
+            key=lambda result: str(result.get("created_at", "")),
+            reverse=True,
+        )
+        return {
+            "items": results[offset:offset + limit],
+            "total": len(results),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def list_result_routes(
+        self,
+        plan_set_id: str,
+        result_id: str,
+        *,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        lister = getattr(self.repository, "list_result_routes", None)
+        if not callable(lister):
+            raise RuntimeError("Selected depot repository cannot page result routes.")
+        return lister(plan_set_id, result_id, limit=limit, offset=offset)
+
     def create_scenario(self, plan_set_id: str, scenario_name: str) -> RouteScenario:
         name = scenario_name.strip()
         if not name:
@@ -183,6 +239,10 @@ class DepotPlanService:
         route_scenario_id = f"route-scenario-{uuid.uuid4()}"
 
         def add_scenario(record: dict[str, object]) -> None:
+            if len(record["scenarios"]) >= MAX_ROUTE_SCENARIOS_PER_PLAN:
+                raise ValueError(
+                    f"A depot plan supports at most {MAX_ROUTE_SCENARIOS_PER_PLAN} route scenarios."
+                )
             record["scenarios"][route_scenario_id] = {
                 "route_scenario_id": route_scenario_id,
                 "scenario_name": name,
@@ -206,9 +266,22 @@ class DepotPlanService:
         service_date_text = _date_text(service_date)
         job_id = f"override-{route_scenario_id}-{uuid.uuid4()}"
 
-        def queue_override(record: dict[str, object]) -> None:
-            _require_scenario(record, route_scenario_id, named=True)
-            day = _require_day(record, service_date_text)
+        current = self.repository.get(plan_set_id)
+        _require_scenario(current, route_scenario_id, named=True)
+        pending_overrides = sum(
+            1
+            for candidate_day in current["days"].values()
+            for candidate_job in candidate_day["jobs"].values()
+            if candidate_job.get("route_scenario_id") != DEFAULT_SCENARIO_ID
+            and candidate_job.get("status") in PENDING_STATUSES
+        )
+        if pending_overrides >= MAX_PENDING_OVERRIDE_JOBS_PER_PLAN:
+            raise ValueError(
+                f"A depot plan supports at most {MAX_PENDING_OVERRIDE_JOBS_PER_PLAN} "
+                "queued or running override jobs."
+            )
+
+        def queue_override(day: dict[str, object]) -> None:
             day.setdefault("latest_override_job_ids", {})
             day["override_statuses"][route_scenario_id] = "queued"
             day["override_errors"][route_scenario_id] = None
@@ -219,9 +292,8 @@ class DepotPlanService:
                 "status": "queued",
                 "request": request_payload,
             }
-            record["updated_at"] = self._timestamp()
 
-        self.repository.mutate(plan_set_id, queue_override)
+        self._mutate_day(plan_set_id, service_date_text, queue_override)
         self._submit_job(
             plan_set_id,
             service_date_text,
@@ -242,9 +314,10 @@ class DepotPlanService:
             raise ValueError("The default scenario cannot be reset.")
         service_date_text = _date_text(service_date)
 
-        def reset(record: dict[str, object]) -> None:
-            _require_scenario(record, route_scenario_id, named=True)
-            day = _require_day(record, service_date_text)
+        current = self.repository.get(plan_set_id)
+        _require_scenario(current, route_scenario_id, named=True)
+
+        def reset(day: dict[str, object]) -> None:
             day.setdefault("latest_override_job_ids", {})
             day["selected_result_ids"].pop(route_scenario_id, None)
             day["override_statuses"].pop(route_scenario_id, None)
@@ -256,9 +329,8 @@ class DepotPlanService:
                     and str(job.get("status")) in PENDING_STATUSES
                 ):
                     job["discard_selection"] = True
-            record["updated_at"] = self._timestamp()
 
-        self.repository.mutate(plan_set_id, reset)
+        self._mutate_day(plan_set_id, service_date_text, reset)
         return self.get_day(plan_set_id, service_date_text, route_scenario_id)
 
     def recover_pending_plans(self) -> int:
@@ -334,29 +406,54 @@ class DepotPlanService:
         job_id: str,
         request: dict[str, object] | None,
     ) -> None:
-        def mark_running(record: dict[str, object]) -> None:
-            day = _require_day(record, service_date)
+        claim = getattr(self.repository, "claim_job", None)
+        attempt = (
+            claim(plan_set_id, service_date, job_id, self.worker_id)
+            if callable(claim)
+            else 1
+        )
+        if attempt is None:
+            return
+
+        def mark_running(day: dict[str, object]) -> None:
             job = day["jobs"].get(job_id)
             if job is None or str(job["status"]) in FINISHED_STATUSES | {"failed"}:
                 return
             job["status"] = "running"
+            job["attempt_count"] = attempt
+            job["worker_id"] = self.worker_id
+            job["lease_expires_at"] = (
+                self.now() + timedelta(seconds=600)
+            ).isoformat()
             if route_scenario_id == DEFAULT_SCENARIO_ID:
                 day["default_status"] = "running"
             else:
                 day["override_statuses"][route_scenario_id] = "running"
-            record["updated_at"] = self._timestamp()
 
-        running_record = self.repository.mutate(plan_set_id, mark_running)
+        running_record = self._mutate_day(plan_set_id, service_date, mark_running)
         day = _require_day(running_record, service_date)
         job = day["jobs"].get(job_id)
         if job is None or str(job["status"]) != "running":
             return
 
         try:
+            heartbeat_stop = threading.Event()
+            heartbeat = getattr(self.repository, "heartbeat_job", None)
+            heartbeat_thread = threading.Thread(
+                target=_heartbeat_loop,
+                args=(heartbeat_stop, heartbeat, plan_set_id, job_id, self.worker_id),
+                daemon=True,
+            ) if callable(heartbeat) else None
+            if heartbeat_thread is not None:
+                heartbeat_thread.start()
             snapshot = self.snapshot_provider(str(running_record["parent_run_id"]))
             network_rows = deepcopy(_snapshot_value(snapshot, "network_rows"))
+            network_rows = _apply_customer_constraint_snapshot(
+                network_rows, running_record.get("customer_constraint_snapshot")
+            )
             flow_rows = list(_snapshot_value(snapshot, "flow_rows"))
             fleet = [deepcopy(row) for row in running_record["fleet"]]
+            _verify_fleet_snapshot(fleet, running_record.get("fleet_snapshot"))
             frozen_cost_rows = running_record.get("route_cost_parameters")
             if frozen_cost_rows is None:
                 # Compatibility for records created before route inputs were frozen.
@@ -365,6 +462,9 @@ class DepotPlanService:
                 legacy_cost_source = str(
                     running_record.get("cost_resource_source") or "legacy_snapshot"
                 )
+            _verify_cost_snapshot(
+                frozen_cost_rows, running_record.get("cost_snapshot")
+            )
             cost_parameters, cost_parameter_source = _route_cost_parameters(
                 frozen_cost_rows,
                 str(running_record["depot"]["depot_id"]),
@@ -396,20 +496,44 @@ class DepotPlanService:
             execution = solved.get("execution")
             if isinstance(execution, dict):
                 execution["resource_source"] = running_record["resource_source"]
+                execution["fleet_snapshot"] = deepcopy(
+                    running_record.get("fleet_snapshot")
+                    or _fleet_snapshot_provenance(
+                        fleet, str(running_record["resource_source"])
+                    )
+                )
+                execution["customer_constraint_snapshot"] = deepcopy(
+                    running_record.get("customer_constraint_snapshot")
+                )
                 execution["cost_parameter_source"] = cost_parameter_source
+                execution["cost_snapshot"] = deepcopy(
+                    running_record.get("cost_snapshot")
+                    or _cost_snapshot_provenance(
+                        frozen_cost_rows, legacy_cost_source
+                    )
+                )
+                execution["job_attempt"] = attempt
             result = _day_result(solved, service_date, self._timestamp())
         except Exception as exc:
+            if "heartbeat_stop" in locals():
+                heartbeat_stop.set()
+            if "heartbeat_thread" in locals() and heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=1)
             self._store_failure(
                 plan_set_id,
                 service_date,
                 route_scenario_id,
                 job_id,
                 str(exc),
+                retryable=_is_transient_route_error(exc) and attempt < 3,
+                attempt=attempt,
             )
             return
+        if heartbeat_thread is not None:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1)
 
-        def store_result(record: dict[str, object]) -> None:
-            current_day = _require_day(record, service_date)
+        def store_result(current_day: dict[str, object]) -> None:
             current_job = current_day["jobs"].get(job_id)
             if current_job is None:
                 return
@@ -433,9 +557,8 @@ class DepotPlanService:
                     )
                     current_day["override_errors"][route_scenario_id] = None
                     current_day["selected_result_ids"][route_scenario_id] = result_id
-            record["updated_at"] = self._timestamp()
 
-        self.repository.mutate(plan_set_id, store_result)
+        self._mutate_day(plan_set_id, service_date, store_result)
 
     def _store_failure(
         self,
@@ -444,15 +567,21 @@ class DepotPlanService:
         route_scenario_id: str,
         job_id: str,
         message: str,
+        *,
+        retryable: bool = False,
+        attempt: int = 1,
     ) -> None:
-        def fail(record: dict[str, object]) -> None:
-            day = _require_day(record, service_date)
+        def fail(day: dict[str, object]) -> None:
             job = day["jobs"].get(job_id)
             if job is not None:
-                job["status"] = "failed"
+                job["status"] = "queued" if retryable else "failed"
                 job["error"] = message
+                job["retryable"] = retryable
+                job["retry_at"] = (
+                    self.now() + timedelta(seconds=min(30 * (2 ** (attempt - 1)), 300))
+                ).isoformat() if retryable else None
             if route_scenario_id == DEFAULT_SCENARIO_ID:
-                day["default_status"] = "failed"
+                day["default_status"] = "queued" if retryable else "failed"
                 day["error"] = message
             else:
                 day.setdefault("latest_override_job_ids", {})
@@ -460,11 +589,28 @@ class DepotPlanService:
                     day["latest_override_job_ids"].get(route_scenario_id) == job_id
                 )
                 if is_latest and not (job or {}).get("discard_selection"):
-                    day["override_statuses"][route_scenario_id] = "failed"
+                    day["override_statuses"][route_scenario_id] = (
+                        "queued" if retryable else "failed"
+                    )
                     day["override_errors"][route_scenario_id] = message
+
+        self._mutate_day(plan_set_id, service_date, fail)
+
+    def _mutate_day(
+        self,
+        plan_set_id: str,
+        service_date: str,
+        callback: Callable[[dict[str, object]], None],
+    ) -> dict[str, object]:
+        mutate_day = getattr(self.repository, "mutate_day", None)
+        if callable(mutate_day):
+            return mutate_day(plan_set_id, service_date, callback)
+
+        def legacy(record: dict[str, object]) -> None:
+            callback(_require_day(record, service_date))
             record["updated_at"] = self._timestamp()
 
-        self.repository.mutate(plan_set_id, fail)
+        return self.repository.mutate(plan_set_id, legacy)
 
     def _timestamp(self) -> str:
         return self.now().isoformat().replace("+00:00", "Z")
@@ -500,6 +646,8 @@ def _plan_set_payload(record: Mapping[str, object], scenario_id: str) -> dict[st
         "kpis": _rollup_kpis(selected_results) if selected_results else None,
         "is_partial": coverage["solved_days"] != coverage["total_days"],
         "resource_source": record["resource_source"],
+        "fleet_snapshot": record.get("fleet_snapshot"),
+        "customer_constraint_snapshot": record.get("customer_constraint_snapshot"),
     }
 
 
@@ -618,6 +766,7 @@ def _rollup_kpis(results: Sequence[Mapping[str, object]]) -> dict[str, object]:
         "total_miles": round(sum(float(row["total_miles"]) for row in kpis), 1),
         "drive_minutes": sum(int(row["drive_minutes"]) for row in kpis),
         "service_minutes": sum(int(row["service_minutes"]) for row in kpis),
+        "waiting_minutes": sum(int(row.get("waiting_minutes", 0)) for row in kpis),
         "total_cases": sum(int(row["total_cases"]) for row in kpis),
         "avg_stops_per_route": weighted("avg_stops_per_route"),
         "avg_capacity_utilization_pct": weighted("avg_capacity_utilization_pct"),
@@ -709,13 +858,16 @@ def _default_fleet_provider(
             return supplied, f"snapshot:{table_name}", snapshot_costs, snapshot_cost_source
     store = get_store()
     loader = getattr(store, "load_solver_base_tables", None)
+    configured_costs: list[dict[str, object]] = []
     if callable(loader):
         base = loader()
         supplied = [
             dict(row) for row in base.get("fleet", [])
             if str(row.get("depot_id")) == depot_id
         ]
-        costs = [dict(row) for row in base.get("cost_parameters", [])]
+        configured_costs = [
+            dict(row) for row in base.get("cost_parameters", [])
+        ]
         if supplied:
             fixture = all(
                 any(
@@ -728,12 +880,11 @@ def _default_fleet_provider(
             return (
                 supplied,
                 f"configured_store:solver_base:fleet:{label}",
-                costs or snapshot_costs,
+                configured_costs or snapshot_costs,
                 "configured_store:solver_base:cost_parameters"
-                if costs else snapshot_cost_source,
+                if configured_costs else snapshot_cost_source,
             )
-    return (
-        [
+    fixture = [
             {
                 "vehicle_id": f"SYN-{depot_id}-{index + 1:02d}",
                 "depot_id": depot_id,
@@ -743,11 +894,183 @@ def _default_fleet_provider(
                 "fixed_truck_daily_cost": 340.0,
             }
             for index in range(16)
-        ],
-        "synthetic_unpinned:fixed_16x720_normal_shift",
-        snapshot_costs,
-        snapshot_cost_source,
+        ]
+    fixture_revision = "fixed_16x720_normal_shift.v1"
+    fixture_hash = _fleet_content_hash(fixture)
+    return (
+        fixture,
+        f"pinned_fixture:{fixture_revision}:sha256:{fixture_hash}",
+        configured_costs or snapshot_costs,
+        "configured_store:solver_base:cost_parameters"
+        if configured_costs else snapshot_cost_source,
     )
+
+
+def _fleet_content_hash(fleet: Sequence[Mapping[str, object]]) -> str:
+    canonical = sorted(
+        (dict(row) for row in fleet), key=lambda row: str(row.get("vehicle_id", ""))
+    )
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _cost_content_hash(rows: Sequence[Mapping[str, object]]) -> str:
+    canonical = sorted(
+        (dict(row) for row in rows),
+        key=lambda row: str(row.get("parameter_set_id", "")),
+    )
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _fleet_snapshot_provenance(
+    fleet: Sequence[Mapping[str, object]], resource_source: str
+) -> dict[str, object]:
+    return {
+        "source": resource_source,
+        "vehicle_count": len(fleet),
+        "content_hash": f"sha256:{_fleet_content_hash(fleet)}",
+        "immutable": not _fleet_source_is_unpinned(resource_source),
+    }
+
+
+def _verify_fleet_snapshot(
+    fleet: Sequence[Mapping[str, object]], provenance: object
+) -> None:
+    """Reconcile frozen rows with their immutable provenance before every solve."""
+    if provenance is None:
+        return  # Compatibility for plans created before fleet provenance existed.
+    if not isinstance(provenance, Mapping):
+        raise ValueError("Fleet snapshot provenance is malformed.")
+    expected = str(provenance.get("content_hash", ""))
+    actual = f"sha256:{_fleet_content_hash(fleet)}"
+    if expected != actual or int(provenance.get("vehicle_count", -1)) != len(fleet):
+        raise ValueError(
+            "Frozen fleet rows do not reconcile with the pinned fleet snapshot."
+        )
+
+
+def _cost_snapshot_provenance(
+    rows: Sequence[Mapping[str, object]], resource_source: str
+) -> dict[str, object]:
+    return {
+        "source": resource_source,
+        "row_count": len(rows),
+        "content_hash": f"sha256:{_cost_content_hash(rows)}",
+        "immutable": bool(rows),
+    }
+
+
+def _verify_cost_snapshot(rows: object, provenance: object) -> None:
+    """Reconcile frozen cost rows with their immutable provenance before solving."""
+    if provenance is None:
+        return  # Compatibility for plans created before cost provenance existed.
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        raise ValueError("Frozen route cost parameters are malformed.")
+    if not isinstance(provenance, Mapping):
+        raise ValueError("Route cost snapshot provenance is malformed.")
+    expected = str(provenance.get("content_hash", ""))
+    actual = f"sha256:{_cost_content_hash(rows)}"
+    if expected != actual or int(provenance.get("row_count", -1)) != len(rows):
+        raise ValueError(
+            "Frozen route cost rows do not reconcile with the pinned cost snapshot."
+        )
+
+
+def _fleet_source_is_unpinned(resource_source: str) -> bool:
+    normalized = resource_source.strip().lower()
+    return (
+        normalized == "injected_fleet"
+        or normalized.startswith("synthetic_unpinned:")
+        or normalized.startswith("unpinned:")
+    )
+
+
+_GENERATED_CUSTOMER_ID = re.compile(r"^NET-CUST-[A-Z]+-\d{4}$")
+_CUSTOMER_CONSTRAINT_FIXTURE_VERSION = "generated_customer_route_constraints.v1"
+_CUSTOMER_CONSTRAINT_KEYS = (
+    "receiving_window_start",
+    "receiving_window_end",
+    "service_minutes",
+)
+
+
+def _customer_constraint_hash(rows: Sequence[Mapping[str, object]]) -> str:
+    canonical = sorted(
+        (dict(row) for row in rows), key=lambda row: str(row.get("customer_id", ""))
+    )
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _freeze_customer_constraints(
+    network_rows: Mapping[str, Sequence[Mapping[str, object]]], depot_id: str
+) -> tuple[dict[str, list[dict[str, object]]], dict[str, object]]:
+    frozen_network = {
+        name: [dict(row) for row in rows] for name, rows in network_rows.items()
+    }
+    constraint_rows: list[dict[str, object]] = []
+    overlay_used = False
+    for customer in frozen_network.get("dim_network_customers", []):
+        if str(customer.get("depot_id")) != depot_id:
+            continue
+        missing = [key for key in _CUSTOMER_CONSTRAINT_KEYS if customer.get(key) in (None, "")]
+        customer_id = str(customer.get("customer_id", ""))
+        if missing and _GENERATED_CUSTOMER_ID.fullmatch(customer_id):
+            customer.update(
+                receiving_window_start="08:00",
+                receiving_window_end="17:00",
+                service_minutes=20,
+            )
+            overlay_used = True
+        constraint_rows.append({
+            "customer_id": customer_id,
+            **{key: customer.get(key) for key in _CUSTOMER_CONSTRAINT_KEYS},
+        })
+    digest = _customer_constraint_hash(constraint_rows)
+    source = (
+        f"pinned_fixture_overlay:{_CUSTOMER_CONSTRAINT_FIXTURE_VERSION}"
+        if overlay_used
+        else "snapshot:dim_network_customers"
+    )
+    return frozen_network, {
+        "source": source,
+        "version": _CUSTOMER_CONSTRAINT_FIXTURE_VERSION,
+        "customer_count": len(constraint_rows),
+        "content_hash": f"sha256:{digest}",
+        "constraints": constraint_rows,
+        "immutable": True,
+    }
+
+
+def _apply_customer_constraint_snapshot(
+    network_rows: Mapping[str, Sequence[Mapping[str, object]]], provenance: object
+) -> dict[str, list[dict[str, object]]]:
+    adjusted = {name: [dict(row) for row in rows] for name, rows in network_rows.items()}
+    if provenance is None:
+        return adjusted
+    if not isinstance(provenance, Mapping):
+        raise ValueError("Customer constraint snapshot provenance is malformed.")
+    constraints = provenance.get("constraints")
+    if not isinstance(constraints, list) or not all(isinstance(row, Mapping) for row in constraints):
+        raise ValueError("Customer constraint snapshot rows are malformed.")
+    expected = str(provenance.get("content_hash", ""))
+    actual = f"sha256:{_customer_constraint_hash(constraints)}"
+    if expected != actual or int(provenance.get("customer_count", -1)) != len(constraints):
+        raise ValueError("Customer constraint rows do not reconcile with the pinned snapshot.")
+    by_id = {str(row.get("customer_id")): row for row in constraints}
+    matched: set[str] = set()
+    for customer in adjusted.get("dim_network_customers", []):
+        customer_id = str(customer.get("customer_id", ""))
+        frozen = by_id.get(customer_id)
+        if frozen is None:
+            continue
+        matched.add(customer_id)
+        for key in _CUSTOMER_CONSTRAINT_KEYS:
+            customer[key] = frozen.get(key)
+    if matched != set(by_id):
+        raise ValueError("Pinned customer constraint snapshot does not match network customers.")
+    return adjusted
 
 
 def _snapshot_cost_rows(snapshot: object) -> tuple[list[dict[str, object]], str]:
@@ -843,6 +1166,36 @@ def _date_text(value: object) -> str:
 
 def _optional_date_text(value: object | None) -> str | None:
     return None if value is None else _date_text(value)
+
+
+def _is_transient_route_error(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    message = str(exc).lower()
+    return any(
+        marker in name or marker in message
+        for marker in (
+            "timeout", "connection", "operationalerror", "unavailable", "temporar",
+            "rate limit", "429", "502", "503",
+            "valhalla matrix request failed", "serving endpoint returned no prediction",
+        )
+    )
+
+
+def _heartbeat_loop(
+    stop: threading.Event,
+    heartbeat: Callable[..., bool],
+    plan_set_id: str,
+    job_id: str,
+    worker_id: str,
+) -> None:
+    while not stop.wait(30):
+        try:
+            if not heartbeat(plan_set_id, job_id, worker_id):
+                return
+        except Exception:
+            # The main attempt still owns its original lease. A later recovery pass
+            # can reclaim it if the database remains unavailable beyond that lease.
+            continue
 
 
 def _request_payload(request: object) -> dict[str, object]:

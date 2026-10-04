@@ -177,12 +177,8 @@ def execute_sql(
         )
     state = execution.status.state if execution.status and execution.status.state else None
     if state != StatementState.SUCCEEDED:
-        detail = (
-            str(execution.status.error)
-            if execution.status and execution.status.error
-            else "SQL execution failed."
-        )
-        raise HTTPException(status_code=400, detail=detail)
+        # Raw warehouse errors can contain catalog names, query text, and resource IDs.
+        raise HTTPException(status_code=502, detail="The analytics query could not be completed.")
     return _read_results(client, execution)
 
 

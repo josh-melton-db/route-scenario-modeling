@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from backend.services.routing_coverage import RoutingCoverageError, resolve_coverage
+from backend.services.routing_coverage import RoutingCoverageError, resolve_coverage, validated_routing_coverages
 
 
 def entry(**changes):
@@ -89,3 +89,17 @@ def test_strict_binds_smoke_success_to_exact_identity(tmp_path, field, value):
     value_entry["smoke_test"][field] = value
     with pytest.raises(RoutingCoverageError, match="exact coverage, artifact, region, and endpoint"):
         resolve_coverage("DALLAS", [], manifest_path=manifest(tmp_path, [value_entry]))
+
+
+def test_readiness_inventory_only_lists_validated_exact_smoke_identity(tmp_path):
+    candidate = entry(coverage_id="candidate", artifact_version="candidate-v1", status="candidate")
+    assert validated_routing_coverages(manifest(tmp_path, [entry(), candidate])) == [
+        {
+            "coverage_id": "texas-v1",
+            "artifact_version": "texas-2026-10-01",
+            "region_id": "texas",
+            "depot_ids": ["DALLAS", "SAN_ANTONIO"],
+            "costing": "truck",
+            "max_points": 4,
+        }
+    ]

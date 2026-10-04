@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
 from backend.models import Kpis, Route
-from route_opt.depot_planning import materialize_depot_targets, solve_depot_plan
+from route_opt.cost import CostParameters
+from route_opt.depot_planning import (
+    UnsupportedSplitDeliveryError,
+    materialize_depot_targets,
+    solve_depot_plan,
+)
 
 
 DATE_ONE = "2026-09-28"
@@ -143,14 +150,31 @@ def test_real_solver_returns_route_and_preserves_date_windows_and_ids() -> None:
     assert all(stop.stop_id.startswith("STOP-ORD-") for route in routes for stop in route.stops)
 
 
-def test_constrained_supplied_fleet_leaves_cases_unserved_without_expansion() -> None:
-    result = solve_depot_plan(_network_rows(), _flow_rows(), DEPOT_ID, DATE_ONE, _fleet(100))
+def test_oversized_customer_is_rejected_before_unsupported_split_delivery() -> None:
+    with pytest.raises(UnsupportedSplitDeliveryError, match="Split deliveries are not supported"):
+        solve_depot_plan(_network_rows(), _flow_rows(), DEPOT_ID, DATE_ONE, _fleet(100))
 
-    assert result["assigned_cases"] == 120
-    assert result["routed_cases"] == 0
-    assert result["unserved_cases"] == 120
-    assert result["unserved_orders"][0]["reason"] == "capacity_infeasible"
-    assert result["diagnostics"][0]["vehicle_count"] == 1
+
+def test_waiting_time_is_included_in_route_duration_and_overtime_cost() -> None:
+    rows = _network_rows()
+    customer = rows["dim_network_customers"][0]
+    customer["receiving_window_start"] = "15:00"
+    customer["receiving_window_end"] = "15:30"
+    params = CostParameters(overtime_threshold_minutes=480)
+
+    result = solve_depot_plan(
+        rows, _flow_rows(), DEPOT_ID, DATE_ONE, _fleet(), cost_parameters=params
+    )
+
+    route = result["routes"][0]
+    assert route["waiting_minutes"] > 0
+    assert route["route_minutes"] == (
+        route["drive_minutes"] + route["service_minutes"] + route["waiting_minutes"]
+    )
+    assert route["overtime_minutes"] == max(
+        0, route["route_minutes"] - params.overtime_threshold_minutes
+    )
+    assert result["kpis"]["waiting_minutes"] == route["waiting_minutes"]
 
 
 def test_duplicate_inbound_sources_do_not_duplicate_delivery_targets() -> None:

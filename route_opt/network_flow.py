@@ -75,6 +75,15 @@ def solve_fixed_capacity_network(
     all hard bounds.
     """
 
+    selected_demand = [
+        row
+        for row in rows.get("demand_plan_daily", [])
+        if str(row.get("demand_plan_version_id")) == demand_plan_version_id
+        and _in_horizon(row.get("service_date"), horizon_start, horizon_end)
+    ]
+    customer_level_demand = bool(selected_demand) and all(
+        row.get("customer_id") not in (None, "") for row in selected_demand
+    )
     selected_parent_assignments = [
         row
         for row in rows.get("network_customer_assignments_daily", [])
@@ -82,7 +91,11 @@ def solve_fixed_capacity_network(
         and str(row.get("capacity_plan_version_id")) == capacity_plan_version_id
         and _in_horizon(row.get("service_date"), horizon_start, horizon_end)
     ]
-    if release_requests or selected_parent_assignments:
+    if release_requests and not customer_level_demand:
+        raise ValueError(
+            "Customer release requests require customer-level demand rows."
+        )
+    if customer_level_demand and (release_requests or selected_parent_assignments):
         return _solve_with_reassignment(
             rows,
             demand_plan_version_id=demand_plan_version_id,
@@ -355,6 +368,12 @@ def solve_fixed_capacity_network(
             if market_lane_id:
                 flow_by_key[(service_date, market_lane_id)]["assigned_units"] = assigned
             customer_rows = demand_by_date_depot_customers[(service_date, depot_id)]
+            if not customer_rows or any(
+                row.get("customer_id") in (None, "")
+                or str(row["customer_id"]) not in delivery_lane_by_customer
+                for row in customer_rows
+            ):
+                continue
             customer_allocations = _proportional_allocations(customer_rows, assigned)
             for customer_id, customer_assigned in customer_allocations.items():
                 delivery_lane_id = delivery_lane_by_customer[customer_id]

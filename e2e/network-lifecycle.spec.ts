@@ -136,7 +136,16 @@ test('releases assigned but route-unserved cases and explicitly reruns the paren
       }
       return route.fulfill({ json: pending ? [change] : [] })
     }
-    if (path === '/api/network/runs/run-1/reassign') { rerun = true; return route.fulfill({ json: { scenario: { ...scenario, scenario_id: 'network-2' }, result: { ...networkResult, run_id: 'run-2' } } }) }
+    if (path === '/api/network/runs/run-1/reassign') {
+      rerun = true
+      return route.fulfill({
+        status: 202,
+        json: { run_id: 'run-2', scenario_id: 'network-2', revision: 1, status: 'queued', status_url: '/api/network/run-requests/run-2', attempt_count: 0, error_code: null, error_message: null },
+      })
+    }
+    if (path === '/api/network/run-requests/run-2') return route.fulfill({ json: { run_id: 'run-2', scenario_id: 'network-2', revision: 1, status: 'succeeded', status_url: '/api/network/run-requests/run-2', attempt_count: 1, error_code: null, error_message: null } })
+    if (path === '/api/network/scenarios/network-2') return route.fulfill({ json: { ...scenario, scenario_id: 'network-2' } })
+    if (path === '/api/network/runs/run-2') return route.fulfill({ json: { ...networkResult, run_id: 'run-2', scenario_id: 'network-2' } })
     return route.fulfill({ status: 404, json: { detail: path } })
   })
   await page.goto(`${appUrl}/scenario?networkScenario=network-1&networkRun=run-1&depot=DPT_TEST&depotPlan=plan-1&routePlanScenario=named-1&date=${serviceDate}`)

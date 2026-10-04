@@ -147,3 +147,53 @@ def test_parent_assignment_overlay_is_preserved_without_new_releases():
         for row in rerun["assignment_overlay_rows"]
     }
     assert actual == expected
+
+
+def test_aggregate_demand_ignores_customer_assignment_overlay_without_release():
+    rows = _rows()
+    rows["demand_plan_daily"] = [
+        {
+            key: value
+            for key, value in row.items()
+            if key != "customer_id"
+        }
+        for row in rows["demand_plan_daily"]
+    ]
+    rows["network_customer_assignments_daily"] = [
+        {
+            "demand_plan_version_id": "D",
+            "capacity_plan_version_id": "P",
+            "service_date": DAY,
+            "customer_id": "C1",
+            "depot_id": "A",
+            "required_units": 5,
+            "assigned_units": 5,
+            "unmet_units": 0,
+            "source_depot_id": "A",
+        }
+    ]
+
+    result = solve_fixed_capacity_network(
+        rows,
+        demand_plan_version_id="D",
+        capacity_plan_version_id="P",
+        horizon_start=DAY,
+        horizon_end=DAY,
+        region_id="ALL",
+        release_requests=[],
+    )
+
+    assert sum(row["assigned_units"] for row in result["allocation_rows"]) == 10
+    assert "assignment_overlay_rows" not in result
+
+
+def test_aggregate_demand_rejects_explicit_customer_release():
+    rows = _rows()
+    for row in rows["demand_plan_daily"]:
+        row.pop("customer_id")
+
+    try:
+        _solve(rows)
+        raise AssertionError("aggregate demand must not enter customer reassignment")
+    except ValueError as exc:
+        assert str(exc) == "Customer release requests require customer-level demand rows."
