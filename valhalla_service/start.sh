@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+python bootstrap.py
+
+exec uvicorn app:app --host 0.0.0.0 --port "${DATABRICKS_APP_PORT:-8000}"

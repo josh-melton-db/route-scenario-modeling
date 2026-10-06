@@ -6,13 +6,13 @@ resources:
         - name: catalog
           default: ${var.catalog}
         - name: schema
-          default: ${var.schema}
+          default: ${resources.schemas.route_scenario_modeling_schema.name}
         - name: raw_volume
-          default: ${var.raw_volume}
+          default: ${resources.volumes.raw.name}
         - name: run_date
           default: "2026-07-02"
         - name: solver_model_name
-          default: ${var.solver_model_name}
+          default: ${var.catalog}.${resources.schemas.route_scenario_modeling_schema.name}.route_solver
         - name: solver_model_alias
           default: ${var.solver_model_alias}
         - name: route_solver_endpoint_name

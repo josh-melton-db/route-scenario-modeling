@@ -138,10 +138,13 @@ class DepotPlanService:
         for service_date in dates:
             targets = daily_targets[service_date]
             job_id = f"default-{service_date}"
+            default_status = (
+                "queued" if service_date == horizon_start else "not_requested"
+            )
             record["days"][service_date] = {
                 "service_date": service_date,
                 "assigned_cases": int(targets["assigned_cases"]),
-                "default_status": "queued",
+                "default_status": default_status,
                 "default_result_id": None,
                 "results": {},
                 "selected_result_ids": {},
@@ -152,7 +155,7 @@ class DepotPlanService:
                     job_id: {
                         "job_id": job_id,
                         "route_scenario_id": DEFAULT_SCENARIO_ID,
-                        "status": "queued",
+                        "status": default_status,
                         "request": None,
                     }
                 },
@@ -168,6 +171,44 @@ class DepotPlanService:
             created = existing
         self._queue_pending_record(created, priority_date=priority_date_text)
         return self.get_plan(str(created["plan_set_id"]))
+
+    def solve_day(
+        self, plan_set_id: str, service_date: str | date
+    ) -> DayDetail:
+        """Idempotently request the default solve for one horizon day."""
+        service_date_text = _date_text(service_date)
+        job_id = f"default-{service_date_text}"
+        should_submit = False
+
+        def request_default(day: dict[str, object]) -> None:
+            nonlocal should_submit
+            current = str(day.get("default_status", "not_requested"))
+            if current in PENDING_STATUSES | FINISHED_STATUSES:
+                return
+            job = day.setdefault("jobs", {}).setdefault(
+                job_id,
+                {
+                    "job_id": job_id,
+                    "route_scenario_id": DEFAULT_SCENARIO_ID,
+                    "request": None,
+                },
+            )
+            job.update(status="queued", error=None, retryable=False, retry_at=None)
+            day["default_status"] = "queued"
+            day["error"] = None
+            should_submit = True
+
+        self._mutate_day(plan_set_id, service_date_text, request_default)
+        if should_submit:
+            self._submit_job(
+                plan_set_id,
+                service_date_text,
+                DEFAULT_SCENARIO_ID,
+                job_id,
+                None,
+                priority=0,
+            )
+        return self.get_day(plan_set_id, service_date_text)
 
     def get_plan(
         self, plan_set_id: str, route_scenario_id: str = DEFAULT_SCENARIO_ID
@@ -484,6 +525,7 @@ class DepotPlanService:
                     request,
                     cost_parameters,
                 )
+                flow_rows.extend(network_rows.pop("__daily_override_flow_rows", []))
             solved = self.solver(
                 network_rows=network_rows,
                 flow_rows=flow_rows,
@@ -627,6 +669,9 @@ def _plan_set_payload(record: Mapping[str, object], scenario_id: str) -> dict[st
         "queued_days": sum(day["status"] == "queued" for day in day_payloads),
         "running_days": sum(day["status"] == "running" for day in day_payloads),
         "failed_days": sum(day["status"] == "failed" for day in day_payloads),
+        "not_requested_days": sum(
+            day["status"] == "not_requested" for day in day_payloads
+        ),
     }
     selected_results = [
         _selected_result(day, scenario_id)
@@ -660,7 +705,7 @@ def _day_summary_payload(
         "service_date": day["service_date"],
         "status": status,
         "default_status": day["default_status"],
-        "assigned_cases": day["assigned_cases"],
+        "assigned_cases": result["assigned_cases"] if result else day["assigned_cases"],
         "routed_cases": result["routed_cases"] if result else None,
         "unserved_cases": result["unserved_cases"] if result else None,
         "total_cost": result["kpis"]["cost_breakdown"]["total_cost"] if result else None,
@@ -675,6 +720,8 @@ def _day_detail_payload(
     record: Mapping[str, object], day: Mapping[str, object], scenario_id: str
 ) -> dict[str, object]:
     default_result = _result_by_id(day, day.get("default_result_id"))
+    latest_job_id = day.get("latest_override_job_ids", {}).get(scenario_id)
+    latest_job = day.get("jobs", {}).get(latest_job_id, {})
     return {
         "plan_set_id": record["plan_set_id"],
         "service_date": day["service_date"],
@@ -683,6 +730,7 @@ def _day_detail_payload(
         "override_status": None
         if scenario_id == DEFAULT_SCENARIO_ID
         else day["override_statuses"].get(scenario_id),
+        "override_request": deepcopy(latest_job.get("request")),
         "default_result": default_result,
         "selected_result": _selected_result(day, scenario_id),
         "error": _selected_error(day, scenario_id),
@@ -730,6 +778,7 @@ def _day_result(
         "service_date": service_date,
         "status": status,
         "routes": deepcopy(solved["routes"]),
+        "depot": deepcopy(solved.get("depot")),
         "kpis": deepcopy(solved["kpis"]),
         "assigned_cases": int(solved["assigned_cases"]),
         "routed_cases": int(solved["routed_cases"]),
@@ -828,7 +877,18 @@ def _apply_override(
         table_name: [dict(row) for row in rows]
         for table_name, rows in network_rows.items()
     }
+    changes = request.get("changes") or []
+    if not isinstance(changes, list):
+        raise ValueError("changes must be a list.")
+    facility_changes = [
+        change for change in changes
+        if isinstance(change, Mapping) and change.get("kind") == "facility_move"
+    ]
+    if len(facility_changes) > 1:
+        raise ValueError("A daily override supports at most one facility_move.")
     new_location = request.get("new_depot_location")
+    if facility_changes:
+        new_location = facility_changes[0].get("new_depot_location")
     if new_location is not None:
         location = _request_payload(new_location)
         facilities = adjusted_rows.get("dim_facilities", [])
@@ -840,7 +900,120 @@ def _apply_override(
             raise ValueError(f"Unknown depot_id {depot_id!r} for location override.")
         depot["lat"] = float(location["lat"])
         depot["lng"] = float(location["lng"])
+    for change in changes:
+        if not isinstance(change, Mapping):
+            raise ValueError("Each daily override change must be an object.")
+        kind = str(change.get("kind", ""))
+        if kind == "add_deliveries":
+            _apply_added_deliveries(
+                adjusted_rows, depot_id, service_date, change.get("deliveries")
+            )
+        elif kind == "time_window_change":
+            _apply_time_window_change(adjusted_rows, change)
+        elif kind != "facility_move":
+            raise ValueError(f"Unsupported daily override change kind: {kind!r}.")
     return adjusted_fleet, adjusted_rows, params
+
+
+def _apply_added_deliveries(
+    rows: dict[str, list[dict[str, object]]],
+    depot_id: str,
+    service_date: str,
+    deliveries: object,
+) -> None:
+    if not isinstance(deliveries, list) or not deliveries:
+        raise ValueError("add_deliveries requires a nonempty deliveries list.")
+    facilities = rows.get("dim_facilities", [])
+    depot = next(
+        (row for row in facilities if str(row.get("facility_id")) == depot_id), None
+    )
+    if depot is None:
+        raise ValueError(f"Unknown depot_id {depot_id!r} for added deliveries.")
+    customers = rows.setdefault("dim_network_customers", [])
+    lanes = rows.setdefault("dim_network_lanes", [])
+    flow_rows = rows.setdefault("__daily_override_flow_rows", [])
+    existing_customer_ids = {str(row.get("customer_id")) for row in customers}
+    existing_lane_ids = {str(row.get("lane_id")) for row in lanes}
+    for index, raw in enumerate(deliveries, start=1):
+        if not isinstance(raw, Mapping):
+            raise ValueError("Each added delivery must be an object.")
+        requested_day = raw.get("delivery_day")
+        if requested_day not in (None, "", service_date):
+            raise ValueError(
+                "Daily add_deliveries cannot move work to another date; "
+                "delivery_day must be omitted or match the endpoint service_date."
+            )
+        seed = json.dumps(dict(raw), sort_keys=True, default=str)
+        customer_id = str(raw.get("customer_id") or (
+            "DAILY-" + hashlib.sha256(
+                f"{depot_id}|{service_date}|{index}|{seed}".encode()
+            ).hexdigest()[:12].upper()
+        ))
+        if customer_id in existing_customer_ids:
+            raise ValueError(f"Added delivery customer_id {customer_id!r} already exists.")
+        lane_id = f"LNE-DAILY-{depot_id}-{customer_id}"
+        if lane_id in existing_lane_ids:
+            raise ValueError(f"Added delivery lane {lane_id!r} already exists.")
+        cases = int(raw.get("demand_cases") or 0)
+        if cases < 1:
+            raise ValueError("Added delivery demand_cases must be at least 1.")
+        customer = {
+            "customer_id": customer_id,
+            "customer_name": str(raw.get("customer_name") or customer_id),
+            "customer_tier": "standard",
+            "region_id": depot.get("region_id"),
+            "distribution_center_id": depot.get("parent_facility_id"),
+            "depot_id": depot_id,
+            "market_id": str(raw.get("market_id") or f"DAILY-{depot_id}"),
+            "lat": float(raw["lat"]), "lng": float(raw["lng"]),
+            "receiving_window_start": str(raw.get("receiving_window_start") or "08:00"),
+            "receiving_window_end": str(raw.get("receiving_window_end") or "16:00"),
+            "service_minutes": int(raw.get("service_minutes") or 30),
+        }
+        customers.append(customer)
+        lanes.append({
+            "lane_id": lane_id, "lane_name": f"{depot_id} to {customer_id}",
+            "lane_type": "DELIVERY", "origin_endpoint_id": depot_id,
+            "origin_endpoint_type": "facility", "destination_endpoint_id": customer_id,
+            "destination_endpoint_type": "customer", "mode": "ground",
+            "distance_miles": 0.0, "transit_minutes": 0, "active": True,
+        })
+        flow_rows.append({
+            "service_date": service_date, "lane_id": lane_id,
+            "lane_type": "DELIVERY", "assigned_units": cases,
+        })
+        existing_customer_ids.add(customer_id)
+        existing_lane_ids.add(lane_id)
+
+
+def _apply_time_window_change(
+    rows: dict[str, list[dict[str, object]]],
+    change: Mapping[str, object],
+) -> None:
+    customer_id = str(change.get("customer_id") or "").strip()
+    if not customer_id:
+        raise ValueError("time_window_change requires customer_id.")
+    start_text = change.get("receiving_window_start")
+    end_text = change.get("receiving_window_end")
+    if not isinstance(start_text, str) or _TIME_PATTERN.fullmatch(start_text) is None:
+        raise ValueError("receiving_window_start must use 24-hour HH:MM format.")
+    if not isinstance(end_text, str) or _TIME_PATTERN.fullmatch(end_text) is None:
+        raise ValueError("receiving_window_end must use 24-hour HH:MM format.")
+    if start_text >= end_text:
+        raise ValueError(
+            "time_window_change receiving_window_end must be after its start."
+        )
+    customers = rows.get("dim_network_customers", [])
+    target = next(
+        (row for row in customers if str(row.get("customer_id")) == customer_id),
+        None,
+    )
+    if target is None:
+        raise ValueError(
+            f"time_window_change target customer {customer_id!r} not found in dated snapshot."
+        )
+    target["receiving_window_start"] = start_text
+    target["receiving_window_end"] = end_text
 
 
 def _default_fleet_provider(
@@ -987,6 +1160,7 @@ def _fleet_source_is_unpinned(resource_source: str) -> bool:
 
 
 _GENERATED_CUSTOMER_ID = re.compile(r"^NET-CUST-[A-Z]+-\d{4}$")
+_TIME_PATTERN = re.compile(r"^(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)$")
 _CUSTOMER_CONSTRAINT_FIXTURE_VERSION = "generated_customer_route_constraints.v1"
 _CUSTOMER_CONSTRAINT_KEYS = (
     "receiving_window_start",

@@ -55,6 +55,21 @@ def test_rejects_unsupported_points(tmp_path, point):
         resolve_coverage("DALLAS", [point], manifest_path=manifest(tmp_path, [entry()]))
 
 
+def test_regional_lookup_returns_none_only_for_uncovered_depot_or_bounds(tmp_path):
+    path = manifest(tmp_path, [entry()])
+    assert resolve_coverage("CHICAGO", [], manifest_path=path, allow_uncovered=True) is None
+    assert resolve_coverage(
+        "DALLAS", [{"lat": 41, "lon": -96}],
+        manifest_path=path, allow_uncovered=True,
+    ) is None
+
+
+def test_regional_lookup_still_rejects_unvalidated_matching_coverage(tmp_path):
+    path = manifest(tmp_path, [entry(status="candidate", smoke_test={"result": "not_run"})])
+    with pytest.raises(RoutingCoverageError, match="not validated"):
+        resolve_coverage("DALLAS", [], manifest_path=path, allow_uncovered=True)
+
+
 def test_rejects_ambiguous_mapping(tmp_path):
     other = entry(coverage_id="texas-v2", artifact_version="v2")
     with pytest.raises(RoutingCoverageError, match="ambiguous.*DALLAS"):

@@ -112,6 +112,12 @@ class DepotPlanRepository:
         return self.get(str(row["plan_set_id"])) if row is not None else None
 
     def create(self, record: DepotPlanRecord) -> DepotPlanRecord:
+        from .demo_state_gate import demo_state_gate
+
+        with demo_state_gate.admission():
+            return self._create(record)
+
+    def _create(self, record: DepotPlanRecord) -> DepotPlanRecord:
         plan_set_id, parent_run_id, depot_id = self._identity(record)
         detached = deepcopy(record)
         if not self._uses_lakebase:
@@ -343,6 +349,40 @@ class DepotPlanRepository:
             """
         )
         return [self.get(str(row["plan_set_id"])) for row in rows]
+
+    def clear_all(self) -> int:
+        """Delete all plan state only when no queued/running plan can write back."""
+        if not self._uses_lakebase:
+            with self._lock:
+                if any(_has_pending(record) for record in self._records.values()):
+                    raise HTTPException(status_code=409, detail="Wait for active depot plans before resetting the demo.")
+                count = len(self._records)
+                self._records.clear()
+                self._parent_index.clear()
+                return count
+        with lakebase_store.postgres.transaction() as connection:
+            active = lakebase_store.postgres.query_one(
+                f"SELECT COUNT(*) AS count FROM {self._jobs_table()} "
+                "WHERE status IN ('queued','running')",
+                connection=connection,
+            )
+            if int((active or {}).get("count", 0)):
+                raise HTTPException(status_code=409, detail="Wait for active depot plans before resetting the demo.")
+            count = lakebase_store.postgres.query_one(
+                f"SELECT COUNT(*) AS count FROM {self._table()}", connection=connection
+            )
+            lakebase_store.postgres.execute(f"DELETE FROM {self._table()}", connection=connection)
+        return int((count or {}).get("count", 0))
+
+    def has_active(self) -> bool:
+        if not self._uses_lakebase:
+            with self._lock:
+                return any(_has_pending(record) for record in self._records.values())
+        row = lakebase_store.postgres.query_one(
+            f"SELECT 1 AS active FROM {self._jobs_table()} "
+            "WHERE status IN ('queued','running') LIMIT 1"
+        )
+        return row is not None
 
     def list_results(
         self,

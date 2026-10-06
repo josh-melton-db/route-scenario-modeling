@@ -22,9 +22,11 @@ sync:
     - /tailwind.config.ts
 
 variables:
+  depot_routes_schedule_pause_status:
+    description: Set UNPAUSED to prepare today's routes daily at 5 AM Indianapolis time
+    default: PAUSED
   catalog:
-    description: Unity Catalog catalog
-    default: demos
+    description: Unity Catalog catalog (required)
   schema:
     description: Unity Catalog schema
     default: route_scenario_modeling
@@ -40,21 +42,12 @@ variables:
   route_scenario_modeling_job_name:
     description: Job that runs baseline reconstruction, scenarios, solver, comparison, and validation
     default: route-scenario-modeling-plan
-  solver_model_name:
-    description: Unity Catalog registered MLflow PyFunc model for the OR-Tools route solver
-    default: demos.route_scenario_modeling.route_solver
   solver_model_alias:
     description: Alias used by the solve task when loading the route solver model
     default: champion
   route_solver_endpoint_name:
     description: Databricks Model Serving endpoint used for interactive route solves
     default: route-solver
-  routing_coverage_manifest:
-    description: Coverage manifest path in the app deployment; the default candidate blocks strict road solves until validated coverage is configured
-    default: routing_coverage_samples/texas-candidates.v1.json
-  valhalla_app_name:
-    description: Databricks App providing the directed road travel matrix
-    default: valhalla-api-poc
   lakebase_project_id:
     description: Lakebase Autoscaling project for interactive scenario state
     default: route-scenario-modeling-lakebase
@@ -74,8 +67,7 @@ variables:
     description: PostgreSQL database name used by the Lakebase application resource
     default: route_scenario_modeling
   lakebase_database_owner_role_id:
-    description: Existing Lakebase role that owns the dedicated application database
-    default: josh-melton
+    description: Existing Lakebase role ID that will own the dedicated application database (required)
   lakebase_endpoint_id:
     description: Read-write Lakebase endpoint used for OAuth database credentials
     default: primary
@@ -88,20 +80,15 @@ targets:
     default: true
     mode: development
     workspace:
-      profile: DEFAULT
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     variables:
       app_name: route-scenario-modeling-dev
       warehouse_name: route-scenario-modeling-rt-dev
       route_scenario_modeling_job_name: route-scenario-modeling-plan-dev
-      route_solver_endpoint_name: route-solver-dev
-      routing_coverage_manifest: routing_coverage/texas-dev.v1.json
-      valhalla_app_name: valhalla-texas-dev
 
   prod:
     mode: production
     workspace:
-      profile: DEFAULT
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
 
 resources:
@@ -126,7 +113,7 @@ resources:
   volumes:
     raw:
       catalog_name: ${var.catalog}
-      schema_name: ${var.schema}
+      schema_name: ${resources.schemas.route_scenario_modeling_schema.name}
       name: ${var.raw_volume}
       volume_type: MANAGED
 
@@ -143,114 +130,27 @@ resources:
         env:
           - name: DATA_BACKEND
             value: lakebase
+          - name: DATABRICKS_CATALOG
+            value: ${var.catalog}
+          - name: DATABRICKS_SCHEMA
+            value: ${resources.schemas.route_scenario_modeling_schema.name}
           - name: DATABRICKS_SQL_WAREHOUSE_ID
             value_from: sql_warehouse
           - name: LAKEBASE_APP_SCHEMA
             value: ${var.lakebase_app_schema}
           - name: LAKEBASE_ENDPOINT
             value_from: lakebase
-          - name: DATABRICKS_ROUTE_SOLVER_ENDPOINT
-            value: ${var.route_solver_endpoint_name}
           - name: ROUTE_EXECUTION_MODE
-            value: strict_serving_road
-          - name: ROUTING_COVERAGE_MANIFEST
-            value: ${var.routing_coverage_manifest}
-          - name: VALHALLA_APP_URL
-            value_from: valhalla
-          - name: VALHALLA_COSTING
-            value: truck
+            value: approximate_development
           - name: VALHALLA_ALLOW_HAVERSINE_FALLBACK
-            value: "true"
+            value: "false"
       resources:
         - name: lakebase
           postgres:
             branch: ${resources.postgres_branches.route_scenario_modeling_dev.id}
             database: ${resources.postgres_databases.route_scenario_modeling_app_database.id}
             permission: CAN_CONNECT_AND_CREATE
-        - name: route_solver
-          serving_endpoint:
-            name: ${var.route_solver_endpoint_name}
-            permission: CAN_QUERY
-        - name: valhalla
-          app:
-            name: ${var.valhalla_app_name}
-            permission: CAN_USE
         - name: sql_warehouse
           sql_warehouse:
             id: ${resources.sql_warehouses.sql_warehouse.id}
             permission: CAN_USE
-        - name: dim_depots_augmented
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.dim_depots_augmented
-            permission: SELECT
-        - name: dim_customers_augmented
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.dim_customers_augmented
-            permission: SELECT
-        - name: dim_fleet_assets
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.dim_fleet_assets
-            permission: SELECT
-        - name: fact_delivery_orders
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.fact_delivery_orders
-            permission: SELECT
-        - name: baseline_route_daily_summary
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.baseline_route_daily_summary
-            permission: SELECT
-        - name: scenario_kpis
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.scenario_kpis
-            permission: SELECT
-        - name: app_scenario_results
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.app_scenario_results
-            permission: SELECT
-        - name: scenario_definitions
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.scenario_definitions
-            permission: MODIFY
-        - name: scenario_parameters
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.scenario_parameters
-            permission: MODIFY
-        - name: scenario_customer_overrides
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.scenario_customer_overrides
-            permission: MODIFY
-        - name: scenario_fleet_overrides
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.scenario_fleet_overrides
-            permission: MODIFY
-        - name: scenario_depot_overrides
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.scenario_depot_overrides
-            permission: MODIFY
-        - name: scenario_frequency_overrides
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.scenario_frequency_overrides
-            permission: MODIFY
-        - name: scenario_cost_overrides
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.scenario_cost_overrides
-            permission: MODIFY
-        - name: cost_parameters
-          uc_securable:
-            securable_type: TABLE
-            securable_full_name: ${var.catalog}.${var.schema}.cost_parameters
-            permission: SELECT

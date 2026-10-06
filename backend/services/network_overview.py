@@ -29,7 +29,7 @@ from ..models import (
     NetworkPlanVersionOption,
     NetworkRegionOption,
 )
-from .sql import SqlService, sql_literal
+from .sql import AnalyticsDataMissingError, SqlService, sql_literal
 from .network_assignment_projection import projected_demand_rows
 
 NetworkRows = dict[str, list[dict[str, Any]]]
@@ -131,10 +131,14 @@ class NetworkOverviewService:
         *,
         context: NetworkOverviewContext,
         scenario_id: str = "baseline",
+        facility_capacity_retained_pct: Mapping[str, float] | None = None,
+        facility_supply_retained_pct: Mapping[str, float] | None = None,
     ) -> NetworkOverview:
         return self._build_overview(
             rows,
             context=context.model_copy(update={"scenario_id": scenario_id}),
+            facility_capacity_retained_pct=facility_capacity_retained_pct,
+            facility_supply_retained_pct=facility_supply_retained_pct,
         )
 
     def _load_option_rows(self) -> NetworkRows:
@@ -236,7 +240,21 @@ class NetworkOverviewService:
             "lane_capacity_daily": f"SELECT * FROM {table('lane_capacity_daily')}{capacity_filter}",
             "baseline_network_flow_daily": f"SELECT * FROM {table('baseline_network_flow_daily')}{flow_filter}",
         }
-        return self._run_sql_queries(sql, statements)
+        result = self._run_sql_queries(sql, statements)
+        try:
+            result["facility_supply_daily"] = sql.query(
+                f"SELECT * FROM {table('facility_supply_daily')}{capacity_filter}"
+            )
+            result["facility_supply_provenance"] = [{"source": "canonical_daily_supply"}]
+        except AnalyticsDataMissingError as exc:
+            if exc.error_type != "TABLE_OR_VIEW_NOT_FOUND":
+                raise
+            result["facility_supply_daily"] = []
+            result["facility_supply_provenance"] = [{
+                "source": "legacy_handling_capacity_fallback",
+                "reason": "facility_supply_daily_table_missing",
+            }]
+        return result
 
     def get_options(self) -> NetworkOptions:
         now = time.monotonic()
@@ -417,6 +435,8 @@ class NetworkOverviewService:
         rows: NetworkRows,
         *,
         context: NetworkOverviewContext,
+        facility_capacity_retained_pct: Mapping[str, float] | None = None,
+        facility_supply_retained_pct: Mapping[str, float] | None = None,
     ) -> NetworkOverview:
         facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
         markets = {str(row["market_id"]): row for row in rows["dim_markets"]}
@@ -454,12 +474,57 @@ class NetworkOverviewService:
             total_demand += units
 
         facility_capacity: defaultdict[str, int] = defaultdict(int)
+        normal_facility_capacity: defaultdict[str, int] = defaultdict(int)
         for row in rows["facility_capacity_daily"]:
             if (
                 str(row["capacity_plan_version_id"]) == context.capacity_plan_version_id
                 and in_horizon(row)
             ):
                 facility_capacity[str(row["facility_id"])] += int(row["capacity_units"])
+                normal_facility_capacity[str(row["facility_id"])] += int(
+                    row.get("normal_capacity_units", row["capacity_units"])
+                )
+
+        supply_rows = rows.get("facility_supply_daily", [])
+        has_canonical_supply = bool(supply_rows)
+        facility_supply: defaultdict[str, int] = defaultdict(int)
+        normal_facility_supply: defaultdict[str, int] = defaultdict(int)
+        facility_supply_sources: defaultdict[str, set[str]] = defaultdict(set)
+        for row in supply_rows:
+            if (
+                str(row["capacity_plan_version_id"]) == context.capacity_plan_version_id
+                and in_horizon(row)
+            ):
+                facility_supply[str(row["facility_id"])] += int(row["supply_units"])
+                normal_facility_supply[str(row["facility_id"])] += int(
+                    row.get("normal_supply_units", row["supply_units"])
+                )
+                facility_supply_sources[str(row["facility_id"])].add(
+                    str(row.get("supply_source", "canonical_daily_supply"))
+                )
+        provenance_rows = rows.get("facility_supply_provenance", [])
+        supply_source = str(provenance_rows[0].get("source")) if provenance_rows else (
+            "canonical_daily_supply"
+            if has_canonical_supply
+            else "legacy_handling_capacity_fallback"
+        )
+        if supply_source not in {
+            "canonical_daily_supply", "legacy_handling_capacity_fallback"
+        }:
+            supply_source = "legacy_handling_capacity_fallback"
+        handling_pct = facility_capacity_retained_pct or {}
+        supply_pct = facility_supply_retained_pct or {}
+        transfer_rows = rows.get("network_transfer_movements", [])
+        if not transfer_rows:
+            metadata_rows = rows.get("baseline_revision_metadata", [])
+            transfer_rows = metadata_rows[0].get("transfer_movements", []) if metadata_rows else []
+        arrived_supply: defaultdict[str, int] = defaultdict(int)
+        for movement in transfer_rows:
+            arrival_date = str(movement.get("arrival_date", ""))[:10]
+            if context.horizon_start <= arrival_date <= context.horizon_end:
+                arrived_supply[str(movement["destination_dc_id"])] += int(
+                    movement.get("assigned_units", 0)
+                )
 
         lane_capacity: defaultdict[str, int] = defaultdict(int)
         for row in rows["lane_capacity_daily"]:
@@ -675,7 +740,21 @@ class NetworkOverviewService:
                 if weighted_units
                 else 99.2
             )
+            normal_capacity = normal_facility_capacity[facility_id]
             capacity = facility_capacity[facility_id]
+            is_dc = facility["facility_type"] == "distribution_center"
+            normal_supply = (
+                normal_facility_supply[facility_id]
+                if has_canonical_supply
+                else normal_capacity
+            ) if is_dc else None
+            supply = (
+                facility_supply[facility_id] if is_dc and has_canonical_supply
+                else capacity if is_dc else None
+            )
+            usable_supply = (
+                supply + arrived_supply[facility_id] if supply is not None else None
+            )
             facility_aggregates.append(
                 NetworkFacilityAggregate(
                     facility_id=facility_id,
@@ -692,6 +771,38 @@ class NetworkOverviewService:
                     assigned_units=assigned,
                     capacity_units=capacity,
                     utilization_pct=_percent(assigned, capacity),
+                    handling_capacity_units=normal_capacity,
+                    handling_available_units=max(0, capacity - assigned),
+                    handling_utilization_pct=_percent(assigned, capacity),
+                    handling_retained_pct=(
+                        float(handling_pct[facility_id]) if facility_id in handling_pct
+                        else _percent(capacity, normal_capacity) if normal_capacity > 0 else None
+                    ),
+                    supply_units=supply,
+                    normal_supply_units=normal_supply,
+                    supply_available_units=(
+                        max(0, usable_supply - outbound)
+                        if usable_supply is not None else None
+                    ),
+                    supply_utilization_pct=(
+                        _percent(outbound, usable_supply)
+                        if usable_supply is not None else None
+                    ),
+                    supply_retained_pct=(
+                        float(supply_pct[facility_id]) if is_dc and facility_id in supply_pct
+                        else _percent(supply, normal_supply)
+                        if is_dc and supply is not None and normal_supply is not None and normal_supply > 0
+                        else None
+                    ),
+                    supply_source=(
+                        "legacy_handling_capacity_fallback"
+                        if is_dc and (
+                            "legacy_handling_capacity_fallback"
+                            in facility_supply_sources[facility_id]
+                            or not facility_supply_sources[facility_id]
+                        )
+                        else cast(Any, supply_source) if is_dc else None
+                    ),
                     total_cost=_round_money(cost),
                     cost_per_unit=_round_money(cost / assigned if assigned else 0),
                     on_time_pct=round(on_time, 1),
@@ -718,7 +829,13 @@ class NetworkOverviewService:
             utilization_numerator = sum(demand_by_depot[depot_id] for depot_id in depot_ids)
             utilization_denominator = sum(facility_capacity[depot_id] for depot_id in depot_ids)
         else:
-            kpi_lanes = lane_aggregates
+            # Replenishment is an intermediate stock movement, not additional
+            # served depot demand. Keep its lane and freight cost on the map.
+            kpi_lanes = [
+                row for row in lane_aggregates
+                if row.lane_type != "LINEHAUL"
+                or facilities.get(row.destination_endpoint_id, {}).get("facility_type") == "depot"
+            ]
             cost_lanes = lane_aggregates
             utilization_numerator = sum(row.assigned_units for row in lane_aggregates)
             utilization_denominator = sum(row.capacity_units for row in lane_aggregates)

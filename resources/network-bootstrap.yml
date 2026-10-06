@@ -9,7 +9,18 @@ resources:
             notebook_path: ../notebooks/00_bootstrap_network_data.py
             base_parameters:
               catalog: ${var.catalog}
-              schema: ${var.schema}
+              schema: ${resources.schemas.route_scenario_modeling_schema.name}
+              repair_reachability: "false"
+              valhalla_url: ""
+              coverage_id: ""
+              artifact_version: ""
+              coverage_manifest: ""
+              coverage_depot_ids: ""
+              repair_validation_path: ""
+              max_adjustment_miles: "5.0"
+              max_snap_distance_miles: "0.25"
       permissions:
         - level: CAN_VIEW
           group_name: users
+        - level: CAN_MANAGE_RUN
+          service_principal_name: ${resources.apps.route_scenario_modeling_app.service_principal_client_id}

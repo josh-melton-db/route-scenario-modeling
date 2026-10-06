@@ -358,6 +358,9 @@ def _extract_unassigned(
 def _drop_reason(problem: SolverProblem, node_index: int) -> str:
     if problem.demands[node_index] > max(problem.vehicle_capacities):
         return "capacity_infeasible"
+    earliest_arrival = problem.route_start_minutes + problem.duration_matrix[0][node_index]
+    if problem.hard_windows[node_index] and earliest_arrival > problem.window_ends[node_index]:
+        return "time_window_infeasible"
     single_stop_minutes = (
         problem.duration_matrix[0][node_index]
         + problem.service_minutes[node_index]

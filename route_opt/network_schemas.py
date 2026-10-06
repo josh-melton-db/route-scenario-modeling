@@ -78,6 +78,11 @@ class NetworkCustomer(NetworkModel):
     road_original_lng: float | None = Field(default=None, ge=-180, le=180)
     road_adjustment_attempt: int | None = Field(default=None, ge=0)
     road_adjustment_miles: float | None = Field(default=None, ge=0)
+    road_candidate_lat: float | None = Field(default=None, ge=-90, le=90)
+    road_candidate_lng: float | None = Field(default=None, ge=-180, le=180)
+    road_access_lat: float | None = Field(default=None, ge=-90, le=90)
+    road_access_lng: float | None = Field(default=None, ge=-180, le=180)
+    road_snap_distance_miles: float | None = Field(default=None, ge=0)
     road_reachability_status: Literal["validated", "unresolved"] | None = None
     road_reachability_costing: str | None = None
     road_coverage_id: str | None = None
@@ -160,6 +165,13 @@ class FacilityCapacityDaily(NetworkModel):
     capacity_units: int = Field(ge=0)
 
 
+class FacilitySupplyDaily(NetworkModel):
+    capacity_plan_version_id: str
+    service_date: date
+    facility_id: str
+    supply_units: int = Field(ge=0)
+
+
 class LaneCapacityDaily(NetworkModel):
     capacity_plan_version_id: str
     service_date: date
@@ -187,6 +199,7 @@ NETWORK_TABLE_MODELS: dict[str, type[NetworkModel]] = {
     "demand_plan_daily": DemandPlanDaily,
     "capacity_plan_versions": ExternalPlanVersion,
     "facility_capacity_daily": FacilityCapacityDaily,
+    "facility_supply_daily": FacilitySupplyDaily,
     "lane_capacity_daily": LaneCapacityDaily,
     "baseline_network_flow_daily": BaselineNetworkFlowDaily,
 }

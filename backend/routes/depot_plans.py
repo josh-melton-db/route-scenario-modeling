@@ -144,6 +144,19 @@ def create_depot_route_scenario(
 
 
 @router.post(
+    "/depot-plans/{plan_set_id}/days/{service_date}/solve",
+    response_model=DayDetail,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def solve_depot_plan_day(
+    plan_set_id: str,
+    service_date: date,
+    service: Any = Depends(get_depot_plan_service),
+) -> DayDetail:
+    return _service_call(service.solve_day, plan_set_id, _date_text(service_date))
+
+
+@router.post(
     "/depot-plans/{plan_set_id}/days/{service_date}/optimize",
     response_model=DayDetail,
     status_code=status.HTTP_202_ACCEPTED,

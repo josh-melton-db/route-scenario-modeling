@@ -64,9 +64,9 @@ def get_route_solver_endpoint(*, required: bool = False) -> str:
     configured = os.getenv("DATABRICKS_ROUTE_SOLVER_ENDPOINT", "").strip()
     if required and not configured:
         raise RuntimeError(
-            "DATABRICKS_ROUTE_SOLVER_ENDPOINT is required for strict route execution."
+            "DATABRICKS_ROUTE_SOLVER_ENDPOINT is required for serving route execution."
         )
-    return configured or "route-solver-dev"
+    return configured
 
 
 def get_route_execution_mode() -> str:
@@ -82,21 +82,18 @@ def get_route_execution_mode() -> str:
     configured = aliases.get(configured, configured)
     allowed = {
         "strict_serving_road",
+        "serving_regional",
         "local_road",
         "approximate_development",
     }
     if configured:
         if configured not in allowed:
             raise RuntimeError(
-                "ROUTE_EXECUTION_MODE must be strict_serving_road, local_road, "
-                "or approximate_development."
+                "ROUTE_EXECUTION_MODE must be strict_serving_road, serving_regional, "
+                "local_road, or approximate_development."
             )
         return configured
-    return (
-        "approximate_development"
-        if get_data_backend() == "stub"
-        else "strict_serving_road"
-    )
+    return "approximate_development"
 
 
 def get_routing_coverage_manifest() -> str | None:
@@ -119,6 +116,13 @@ def get_valhalla_app_url() -> str | None:
 
 def get_valhalla_costing() -> str:
     return os.getenv("VALHALLA_COSTING", "truck").strip() or "truck"
+
+
+def get_valhalla_max_snap_distance_miles() -> float:
+    value = float(os.getenv("VALHALLA_MAX_SNAP_DISTANCE_MILES", "0.25"))
+    if value < 0:
+        raise RuntimeError("VALHALLA_MAX_SNAP_DISTANCE_MILES must be nonnegative.")
+    return value
 
 
 def allow_haversine_fallback() -> bool:

@@ -1,26 +1,36 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, ArrowRight, CalendarDays, FileCheck2, Loader2, Pencil, Plus, Search, ShieldCheck, X } from 'lucide-react'
 import ErrorState from '@/components/ErrorState'
-import { useCarriers, useCreateRateContract, useRateContracts } from '@/api/queries'
+import { useCarriers, useCreateRateContract, useRateContracts, useNetworkOptions } from '@/api/queries'
 import type { RateContractCreateRequest, RateContractStatus } from '@/api/types'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { localRateContractsForDepot } from '@/lib/rateContractScope'
+import { useRouteContext } from '@/state/useRouteContext'
 
 export default function RatesPage() {
   const navigate = useNavigate()
-  const serviceDate = new Date().toISOString().slice(0, 10)
+  const [params] = useSearchParams()
+  const facility = useRouteContext((state) => state.facility)
+  const depotId = params.get('depot') || facility.facilityId
+  const serviceDate = params.get('date') || new Date().toISOString().slice(0, 10)
+  const options = useNetworkOptions()
+  const selectedFacility = options.data?.facilities.find((row) => row.facility_id === depotId)
+  const regionId = selectedFacility?.region_id
+  const facilityName = selectedFacility?.facility_name ?? facility.facilityName
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<'all' | RateContractStatus>('all')
   const contracts = useRateContracts(serviceDate)
   const carriers = useCarriers()
   const createContract = useCreateRateContract()
   const [showCreate, setShowCreate] = useState(false)
+  const scopedContracts = useMemo(() => localRateContractsForDepot(contracts.data ?? [], depotId, regionId), [contracts.data, depotId, regionId])
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
-    return (contracts.data ?? []).filter((contract) => {
+    return scopedContracts.filter((contract) => {
       const matchesStatus = status === 'all' || contract.status === status
       const matchesSearch =
         !term ||
@@ -29,38 +39,36 @@ export default function RatesPage() {
         contract.contract_id.toLowerCase().includes(term)
       return matchesStatus && matchesSearch
     })
-  }, [contracts.data, search, status])
+  }, [scopedContracts, search, status])
 
-  if (contracts.error) {
-    return <ErrorState title="Could not load Rates & Contracts" error={contracts.error} />
+  if (contracts.error || options.error) {
+    return <ErrorState title="Could not load Rates & Contracts" error={contracts.error ?? options.error!} />
   }
 
-  const published = contracts.data?.filter((row) => row.status === 'published') ?? []
+  const published = scopedContracts.filter((row) => row.status === 'published')
   const covered = published.filter((row) => row.coverage_status === 'covered')
-  const unavailable = contracts.data?.filter((row) => row.coverage_status !== 'covered') ?? []
-  const totalCommitted = published.reduce((sum, row) => sum + row.committed_quantity, 0)
-  const totalUtilized = published.reduce((sum, row) => sum + row.current_utilization, 0)
-  const freshness = contracts.data?.[0]?.freshness_at
+  const unavailable = scopedContracts.filter((row) => row.coverage_status !== 'covered')
+  const freshness = scopedContracts[0]?.freshness_at
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-      {contracts.isLoading ? (
+      {contracts.isLoading || options.isLoading ? (
         <RatesSkeleton />
       ) : (
         <>
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <SummaryCard icon={FileCheck2} label="Published contracts" value={formatNumber(published.length)} detail={`Effective ${formatDate(serviceDate)}`} />
-            <SummaryCard icon={ShieldCheck} label="Covered contracts" value={formatNumber(covered.length)} detail={`${unavailable.length} need attention`} />
-            <SummaryCard icon={CalendarDays} label="Committed capacity" value={`${formatNumber(totalUtilized)} / ${formatNumber(totalCommitted)}`} detail="Stops · current month" />
+            <SummaryCard icon={ShieldCheck} label="Lane-covered contracts" value={formatNumber(covered.length)} detail={`${unavailable.length} need attention`} />
+            <SummaryCard icon={CalendarDays} label="Committed capacity" value={`${formatNumber(published.length)} contracts`} detail="Terms shown per contract" />
             <SummaryCard icon={AlertTriangle} label="Unavailable" value={formatNumber(unavailable.length)} detail="Expired, future, or uncovered" tone={unavailable.length ? 'warning' : 'default'} />
           </section>
 
           <section className="overflow-hidden rounded-lg border border-border bg-card">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
               <div>
-                <h2 className="text-sm font-semibold">Contract rate book</h2>
+                <h2 className="text-sm font-semibold">{facilityName} · local rate book</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Source: Lakebase rate book{freshness ? ` · refreshed ${new Date(freshness).toLocaleString()}` : ''}
+                  Effective {formatDate(serviceDate)}{freshness ? ` · refreshed ${new Date(freshness).toLocaleString()}` : ''}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -121,7 +129,8 @@ export default function RatesPage() {
                         <td className="px-4 py-3 text-xs tabular-nums">{formatRange(contract.version.effective_start, contract.version.effective_end)}</td>
                         <td className="px-4 py-3 text-xs">{contract.lane_count} lanes · {contract.accessorial_count} accessorials · {contract.volume_tier_count} tiers</td>
                         <td className="px-4 py-3">
-                          <div className="font-medium tabular-nums">{formatNumber(contract.current_utilization)} / {formatNumber(contract.committed_quantity)} stops</div>
+                          <div className="font-medium tabular-nums">{formatNumber(contract.current_utilization)} / {formatNumber(contract.committed_quantity)} {contract.commitment_unit}</div>
+                          <div className="mt-0.5 text-[11px] text-muted-foreground">{contract.commitment_period}</div>
                           <div className="mt-1 h-1.5 w-28 overflow-hidden rounded-full bg-secondary">
                             <div className="h-full bg-primary" style={{ width: `${Math.min(100, contract.committed_quantity ? contract.current_utilization / contract.committed_quantity * 100 : 0)}%` }} />
                           </div>

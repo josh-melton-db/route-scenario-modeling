@@ -16,6 +16,7 @@ import type {
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format'
 import { laneSoWhat } from '@/lib/laneSoWhat'
 import { cn } from '@/lib/utils'
+import ShortageWorkflowLink from './ShortageWorkflowLink'
 
 interface NetworkDetailDrawerProps {
   facility: NetworkFacilityAggregate | null
@@ -27,6 +28,8 @@ interface NetworkDetailDrawerProps {
   dcAnalysisHref: string | null
   onClose: () => void
   onSelectFacility: (facilityId: string) => void
+  shortageScenarioId?: string | null
+  shortageRunId?: string | null
 }
 
 export default function NetworkDetailDrawer({
@@ -38,6 +41,8 @@ export default function NetworkDetailDrawer({
   dcAnalysisHref,
   onClose,
   onSelectFacility,
+  shortageScenarioId,
+  shortageRunId,
 }: NetworkDetailDrawerProps) {
   if (!facility && !lane) return null
 
@@ -88,6 +93,14 @@ export default function NetworkDetailDrawer({
         </div>
 
         <div className="space-y-2 border-t border-border p-4">
+          {facility && facility.demand_units > facility.assigned_units && shortageScenarioId ? (
+            <ShortageWorkflowLink
+              scenarioId={shortageScenarioId}
+              runId={shortageRunId}
+              depotId={facility.facility_type === 'depot' ? facility.facility_id : undefined}
+              className="w-full justify-center"
+            />
+          ) : null}
           {facility?.facility_type === 'depot' && depotAnalysisHref ? (
             <Link
               to={depotAnalysisHref}

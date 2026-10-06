@@ -25,6 +25,7 @@ import type {
 const terminalStatuses = new Set(['succeeded', 'infeasible', 'failed'])
 
 export const queryKeys = {
+  readiness: ['readiness'] as const,
   networkOptions: ['network-options'] as const,
   networkOverview: (params: NetworkOverviewParams) =>
     ['network-overview', params] as const,
@@ -72,6 +73,15 @@ export const queryKeys = {
     page: number,
     pageSize: number,
   ) => ['editor-rows', sessionId, entityType, page, pageSize] as const,
+}
+
+export function useReadiness() {
+  return useQuery({
+    queryKey: queryKeys.readiness,
+    queryFn: api.readiness,
+    refetchInterval: (query) => Object.values(query.state.data?.checks ?? {})
+      .some((check) => check.warmup?.state === 'warming') ? 1500 : 15_000,
+  })
 }
 
 export function useNetworkOptions() {
@@ -543,6 +553,17 @@ export function useCreateDepotPlanScenario(planSetId: string) {
   return useMutation({
     mutationFn: (scenarioName: string) => api.createDepotPlanScenario(planSetId, scenarioName),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['depot-plan', planSetId] }),
+  })
+}
+
+export function useSolveDepotPlanDay(planSetId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (serviceDate: string) => api.solveDepotPlanDay(planSetId, serviceDate),
+    onSuccess: (_data, serviceDate) => {
+      void queryClient.invalidateQueries({ queryKey: ['depot-plan', planSetId] })
+      void queryClient.invalidateQueries({ queryKey: ['depot-plan-day', planSetId, serviceDate] })
+    },
   })
 }
 

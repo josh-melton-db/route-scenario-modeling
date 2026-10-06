@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import backend.services.depot_route_execution as execution_module
 from backend.services.depot_route_execution import (
     DatedRouteExecutor,
     RouteExecutionError,
@@ -336,6 +337,145 @@ def test_strict_coverage_failure_never_downgrades_to_local(monkeypatch):
             fleet=fleet, scenario_id="S", cost_parameters=CostParameters(),
         )
     assert called is False
+
+
+def test_serving_regional_uses_serving_with_explicit_approximation_outside_coverage(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_ROUTE_SOLVER_ENDPOINT", "dated-route-solver")
+    monkeypatch.setenv("VALHALLA_ALLOW_HAVERSINE_FALLBACK", "true")
+    rows, flows, fleet = _inputs()
+    observed = {}
+
+    def endpoint(**kwargs):
+        observed.update(kwargs)
+        return {
+            "routes": [], "route_stops": [],
+            "unassigned_stops": [{"customer_id": "C1", "reason": "capacity_infeasible"}],
+            "diagnostics": [],
+        }
+
+    result = DatedRouteExecutor(
+        mode="serving_regional",
+        coverage_resolver=lambda *args, **kwargs: None,
+        endpoint_invoker=endpoint,
+    )(
+        network_rows=rows, flow_rows=flows, depot_id=DEPOT, service_date=DATE,
+        fleet=fleet, scenario_id="S", cost_parameters=CostParameters(),
+    )
+
+    assert observed["travel_matrix"][1]["matrix_source"] == "haversine_circuity"
+    assert result["execution"] == {
+        **result["execution"],
+        "mode": "serving_regional",
+        "solver": "model_serving",
+        "solver_endpoint": "dated-route-solver",
+        "matrix_source": "haversine_circuity",
+        "matrix_requested": False,
+        "matrix_cache": "disabled",
+        "coverage_id": None,
+        "artifact_version": None,
+        "costing": "haversine_circuity",
+        "approximate": True,
+        "approximation_reason": "outside_validated_coverage",
+    }
+
+
+def test_serving_regional_rejects_uncovered_solve_when_approximation_disabled(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_ROUTE_SOLVER_ENDPOINT", "dated-route-solver")
+    monkeypatch.setenv("VALHALLA_ALLOW_HAVERSINE_FALLBACK", "false")
+    rows, flows, fleet = _inputs()
+    executor = DatedRouteExecutor(
+        mode="serving_regional",
+        coverage_resolver=lambda *args, **kwargs: None,
+        endpoint_invoker=lambda **kwargs: pytest.fail("solver must not run"),
+    )
+    with pytest.raises(RouteExecutionError, match="VALHALLA_ALLOW_HAVERSINE_FALLBACK=true"):
+        executor(
+            network_rows=rows, flow_rows=flows, depot_id=DEPOT, service_date=DATE,
+            fleet=fleet, scenario_id="S", cost_parameters=CostParameters(),
+        )
+
+
+def test_serving_regional_covered_valhalla_failure_is_not_approximated(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_ROUTE_SOLVER_ENDPOINT", "dated-route-solver")
+    rows, flows, fleet = _inputs()
+
+    class MatrixClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def build_travel_matrix(self, **kwargs):
+            raise RuntimeError("valhalla unavailable")
+
+    executor = DatedRouteExecutor(
+        mode="serving_regional",
+        coverage_resolver=lambda *args, **kwargs: {
+            "coverage_id": "texas-failure", "artifact_version": "v-failure",
+            "endpoint_url": "https://road-failure.example", "costing": "truck",
+            "max_points": 10, "bounds": {},
+        },
+        matrix_client_factory=MatrixClient,
+        endpoint_invoker=lambda **kwargs: pytest.fail("solver must not run"),
+    )
+    with pytest.raises(RuntimeError, match="valhalla unavailable"):
+        executor(
+            network_rows=rows, flow_rows=flows, depot_id=DEPOT, service_date=DATE,
+            fleet=fleet, scenario_id="S", cost_parameters=CostParameters(),
+        )
+
+
+def test_serving_regional_partitioned_depot_plan_invokes_endpoint_for_every_partition(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_ROUTE_SOLVER_ENDPOINT", "dated-route-solver")
+    monkeypatch.setenv("VALHALLA_ALLOW_HAVERSINE_FALLBACK", "true")
+    monkeypatch.setattr(execution_module, "MAX_SOLVER_POINTS", 3)
+    rows, flows, fleet = _inputs()
+    for index in range(2, 5):
+        customer_id = f"C{index}"
+        lane_id = f"L{index}"
+        rows["dim_network_customers"].append({
+            **rows["dim_network_customers"][0],
+            "customer_id": customer_id,
+            "customer_name": customer_id,
+            "lat": 30.0 + index / 100,
+            "lng": -97.0 - index / 100,
+        })
+        rows["dim_network_lanes"].append({
+            "lane_id": lane_id, "lane_type": "DELIVERY",
+            "origin_endpoint_id": DEPOT, "destination_endpoint_id": customer_id,
+        })
+        flows.append({
+            "service_date": DATE, "lane_id": lane_id,
+            "lane_type": "DELIVERY", "assigned_units": 1,
+        })
+
+    payloads = []
+
+    def endpoint(**kwargs):
+        payloads.append(kwargs)
+        return {
+            "routes": [], "route_stops": [],
+            "unassigned_stops": [
+                {"customer_id": stop["customer_id"], "reason": "capacity_infeasible"}
+                for stop in kwargs["planning_stops"]
+            ],
+            "diagnostics": [],
+        }
+
+    result = DatedRouteExecutor(
+        mode="serving_regional",
+        coverage_resolver=lambda *args, **kwargs: None,
+        endpoint_invoker=endpoint,
+    )(
+        network_rows=rows, flow_rows=flows, depot_id=DEPOT, service_date=DATE,
+        fleet=fleet, scenario_id="partitioned", cost_parameters=CostParameters(),
+    )
+
+    assert len(payloads) == 2
+    assert [len(payload["planning_customers"]) for payload in payloads] == [2, 2]
+    assert all(payload["travel_matrix"] for payload in payloads)
+    assert all(payload["cost_parameters"]["cost_per_mile"] == 3.0 for payload in payloads)
+    assert result["execution"]["solver"] == "partitioned_model_serving"
+    assert result["execution"]["approximate"] is True
+    assert result["unserved_cases"] == result["assigned_cases"] == 13
 
 
 def test_no_work_skips_coverage_and_matrix():

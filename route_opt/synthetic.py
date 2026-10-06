@@ -14,6 +14,7 @@ from .network_synthetic import (
     generate_national_network_dataset,
     generate_network_dataset,
 )
+from .pricing import CANONICAL_REVENUE_PER_CASE
 from .schemas import DAYS, stable_id
 
 GENERATED_RUN_ID = "seeded-route-scenario-modeling-v0"
@@ -245,7 +246,11 @@ def generate_all(
         "fact_delivery_orders": orders,
         "cost_parameters": [CostParameters().as_row(GENERATED_RUN_ID)],
         "revenue_parameters": [
-            {"product_family": "cartons", "revenue_per_case": 6.25, "active": True}
+            {
+                "product_family": "cartons",
+                "revenue_per_case": CANONICAL_REVENUE_PER_CASE,
+                "active": True,
+            }
         ],
     }
     if network_scope == "national":

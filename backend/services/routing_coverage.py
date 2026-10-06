@@ -105,7 +105,8 @@ def resolve_coverage(
     *,
     manifest_path: str | os.PathLike[str] | None = None,
     strict: bool = True,
-) -> dict[str, Any]:
+    allow_uncovered: bool = False,
+) -> dict[str, Any] | None:
     """Resolve one depot and ordered point list to configured Valhalla coverage."""
     selected_path = manifest_path or os.environ.get("ROUTING_COVERAGE_MANIFEST")
     if not selected_path:
@@ -127,6 +128,8 @@ def resolve_coverage(
 
     matches = mappings.get(depot_id, [])
     if not matches:
+        if allow_uncovered:
+            return None
         raise RoutingCoverageError(
             f"No routing coverage is configured for depot {depot_id!r}; add it to a validated coverage manifest."
         )
@@ -167,6 +170,8 @@ def resolve_coverage(
         if not math.isfinite(lat) or not math.isfinite(lon):
             raise RoutingCoverageError(f"Routing point {index} lat/lon must be finite.")
         if not (bounds["south"] <= lat <= bounds["north"] and bounds["west"] <= lon <= bounds["east"]):
+            if allow_uncovered:
+                return None
             raise RoutingCoverageError(
                 f"Routing point {index} ({lat}, {lon}) is outside coverage {coverage['coverage_id']!r} bounds."
             )

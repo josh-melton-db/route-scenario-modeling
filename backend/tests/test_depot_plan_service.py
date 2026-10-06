@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from threading import RLock
+from types import SimpleNamespace
 
 import pytest
 
+from backend.depot_plan_models import (
+    DailyPlanChange,
+    OverrideRequest,
+)
 from backend.models import Kpis, Route
 from backend.services.depot_plan_jobs import DepotPlanJobManager
 from backend.services.depot_plans import (
@@ -20,6 +25,7 @@ from backend.services.depot_plans import (
 )
 from route_opt.cost import CostParameters
 from route_opt.depot_planning import solve_depot_plan
+from backend.services.depot_route_preparation import prepare_depot_routes
 
 
 DATE_ONE = "2026-10-01"
@@ -168,6 +174,7 @@ def _service():
         solve_inputs.append(
             {
                 "network_rows": deepcopy(kwargs["network_rows"]),
+                "flow_rows": deepcopy(kwargs["flow_rows"]),
                 "fleet": deepcopy(kwargs["fleet"]),
                 "cost_parameters": kwargs["cost_parameters"],
             }
@@ -184,7 +191,57 @@ def _service():
     return service, repository, jobs, solve_calls, solve_inputs
 
 
-def test_plan_creation_is_idempotent_prioritized_and_rolls_up_partial_results() -> None:
+def test_route_preparation_reuses_saved_first_day_on_repeated_visits(monkeypatch) -> None:
+    service, repository, jobs, solve_calls, _ = _service()
+    snapshot = _snapshot()
+    baseline = SimpleNamespace(get_plan_run=lambda: SimpleNamespace(
+        scenario=SimpleNamespace(horizon_start=DATE_ONE, horizon_end=DATE_TWO),
+        result=SimpleNamespace(run_id="RUN-1"), network_rows=snapshot["network_rows"],
+    ))
+    def drain(**kwargs):
+        while jobs.run_next():
+            pass
+        return True
+    monkeypatch.setattr(jobs, "wait_for_idle", drain)
+    prepared = prepare_depot_routes(baseline=baseline, plans=service)
+    repeated = prepare_depot_routes(baseline=baseline, plans=service)
+    assert prepared["ready"] == 1
+    assert repeated["depots"][0]["result_id"] == prepared["depots"][0]["result_id"]
+    assert len(solve_calls) == 1
+    assert len(repository.records) == 1
+    plan_id = prepared["depots"][0]["plan_set_id"]
+    assert service.get_day(plan_id, DATE_TWO).default_status == "not_requested"
+
+    # Reopening from a new service instance still reuses the saved record.
+    reopened = DepotPlanService(repository=repository, snapshot_provider=service.snapshot_provider,
+        fleet_provider=service.fleet_provider, solver=service.solver, job_manager=jobs)
+    assert reopened.get_or_create_plan("RUN-1", DEPOT_ID).plan_set_id == plan_id
+    reopened.solve_day(plan_id, DATE_ONE)
+    assert not jobs.run_next()
+    assert len(solve_calls) == 1
+
+
+def test_route_preparation_requests_date_without_changing_parent_horizon(monkeypatch) -> None:
+    service, _, jobs, solve_calls, _ = _service()
+    baseline = SimpleNamespace(get_plan_run=lambda: SimpleNamespace(
+        scenario=SimpleNamespace(horizon_start=DATE_ONE, horizon_end=DATE_TWO),
+        result=SimpleNamespace(run_id="RUN-1"), network_rows=_snapshot()["network_rows"],
+    ))
+    def drain(**kwargs):
+        while jobs.run_next():
+            pass
+        return True
+    monkeypatch.setattr(jobs, "wait_for_idle", drain)
+    report = prepare_depot_routes(baseline=baseline, plans=service, service_date=DATE_TWO)
+    assert report["service_date"] == DATE_TWO
+    plan = service.get_plan(report["depots"][0]["plan_set_id"])
+    assert (plan.horizon_start, plan.horizon_end) == (DATE_ONE, DATE_TWO)
+    assert {day for day, _ in solve_calls} == {DATE_ONE, DATE_TWO}
+    with pytest.raises(ValueError, match="outside"):
+        prepare_depot_routes(baseline=baseline, plans=service, service_date="2026-11-01")
+
+
+def test_plan_creation_only_queues_first_day_and_later_days_solve_on_demand() -> None:
     service, repository, jobs, solve_calls, solve_inputs = _service()
     created = _payload(service.get_or_create_plan("RUN-1", DEPOT_ID, DATE_TWO))
     repeated = _payload(service.get_or_create_plan("RUN-1", DEPOT_ID, DATE_TWO))
@@ -193,20 +250,24 @@ def test_plan_creation_is_idempotent_prioritized_and_rolls_up_partial_results() 
     assert created["coverage"] == {
         "total_days": 2,
         "solved_days": 0,
-        "queued_days": 2,
+        "queued_days": 1,
         "running_days": 0,
         "failed_days": 0,
+        "not_requested_days": 1,
     }
     assert created["is_partial"] is True
     assert len(repository.records) == 1
 
     assert jobs.run_next()
     partial = _payload(service.get_plan(created["plan_set_id"]))
-    assert solve_calls[0][0] == DATE_TWO
+    assert solve_calls[0][0] == DATE_ONE
     assert partial["coverage"]["solved_days"] == 1
     assert partial["is_partial"] is True
-    assert partial["kpis"]["total_cases"] == 0
+    assert partial["kpis"]["total_cases"] == 100
 
+    requested = _payload(service.solve_day(created["plan_set_id"], DATE_TWO))
+    assert requested["default_status"] == "queued"
+    assert _payload(service.solve_day(created["plan_set_id"], DATE_TWO))["default_status"] == "queued"
     assert jobs.run_next()
     complete = _payload(service.get_plan(created["plan_set_id"]))
     assert complete["coverage"]["solved_days"] == 2
@@ -233,6 +294,7 @@ def test_named_override_retains_history_updates_on_completion_and_resets() -> No
     )
     default_result_id = pending["default_result"]["result_id"]
     assert pending["override_status"] == "queued"
+    assert pending["override_request"]["driver_delta"] == -1
     assert pending["selected_result"]["result_id"] == default_result_id
 
     assert jobs.run_next()
@@ -250,6 +312,7 @@ def test_named_override_retains_history_updates_on_completion_and_resets() -> No
             plan["plan_set_id"], scenario["route_scenario_id"], DATE_ONE
         )
     )
+    assert reset["override_request"] is None
     assert reset["selected_result"]["result_id"] == default_result_id
     assert len(repository.get(plan["plan_set_id"])["days"][DATE_ONE]["results"]) == 2
 
@@ -267,11 +330,13 @@ def test_recovery_requeues_persisted_running_work_without_duplicate_active_job()
         job_manager=recovery_jobs,
     )
 
-    assert recovered.recover_pending_plans() == 2
+    assert recovered.recover_pending_plans() == 1
     assert recovered.recover_pending_plans() == 0
     while recovery_jobs.run_next():
         pass
-    assert len(solve_calls) == 2
+    assert len(solve_calls) == 1
+    recovered.solve_day(plan["plan_set_id"], DATE_TWO)
+    assert recovery_jobs.run_next()
     assert _payload(recovered.get_plan(plan["plan_set_id"]))["is_partial"] is False
 
 
@@ -302,7 +367,63 @@ def test_operational_override_changes_only_local_solver_inputs() -> None:
     assert vehicle["available_dates"] == [DATE_ONE]
     depot = override_input["network_rows"]["dim_facilities"][0]
     assert (depot["lat"], depot["lng"]) == (39.8, -86.1)
+    detail = _payload(service.get_day(plan["plan_set_id"], DATE_ONE, scenario["route_scenario_id"]))
+    assert detail["selected_result"]["depot"]["location"] == {"lat": 39.8, "lng": -86.1}
+    assert detail["override_request"]["new_depot_location"] == {"lat": 39.8, "lng": -86.1}
     assert _snapshot()["network_rows"]["dim_facilities"][0]["lat"] == 39.75
+
+
+def test_daily_added_deliveries_are_persisted_and_materialized_for_exact_date() -> None:
+    service, repository, jobs, _, solve_inputs = _service()
+    plan = _payload(service.get_or_create_plan("RUN-DAILY-ADD", DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan["plan_set_id"], "Added stop"))
+    service.optimize_day(
+        plan["plan_set_id"], DATE_TWO,
+        {
+            "route_scenario_id": scenario["route_scenario_id"],
+            "changes": [{
+                "kind": "add_deliveries",
+                "deliveries": [{
+                    "customer_id": "DAILY-C1", "customer_name": "Daily Customer",
+                    "lat": 39.81, "lng": -86.08, "demand_cases": 25,
+                    "service_minutes": 20, "receiving_window_start": "09:00",
+                    "receiving_window_end": "15:00", "delivery_day": DATE_TWO,
+                }],
+            }],
+        },
+    )
+    stored_job = next(
+        job for job in repository.get(plan["plan_set_id"])["days"][DATE_TWO]["jobs"].values()
+        if job["route_scenario_id"] == scenario["route_scenario_id"]
+    )
+    assert stored_job["request"]["changes"][0]["deliveries"][0]["customer_id"] == "DAILY-C1"
+    assert jobs.run_next()
+    inputs = solve_inputs[-1]
+    assert any(row["customer_id"] == "DAILY-C1" for row in inputs["network_rows"]["dim_network_customers"])
+    assert any(row["lane_id"].endswith("DAILY-C1") for row in inputs["flow_rows"])
+
+
+def test_daily_added_delivery_rejects_cross_date_move() -> None:
+    service, _, jobs, _, _ = _service()
+    plan = _payload(service.get_or_create_plan("RUN-DAILY-DATE", DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan["plan_set_id"], "Wrong day"))
+    service.optimize_day(
+        plan["plan_set_id"], DATE_ONE,
+        {"route_scenario_id": scenario["route_scenario_id"], "changes": [{
+            "kind": "add_deliveries", "deliveries": [{
+                "customer_name": "Wrong Date", "lat": 39.8, "lng": -86.0,
+                "demand_cases": 10, "delivery_day": DATE_TWO,
+            }],
+        }]},
+    )
+    assert jobs.run_next()
+    day = service.get_day(plan["plan_set_id"], DATE_ONE, scenario["route_scenario_id"])
+    assert day.override_status == "failed"
+    assert "cannot move work to another date" in str(day.error)
 
 
 def test_route_cost_parameters_are_pinned_by_depot_and_date() -> None:
@@ -499,7 +620,8 @@ def test_strict_empty_horizon_needs_no_fleet_cost_matrix_or_endpoint(monkeypatch
     while jobs.run_next():
         pass
     completed = service.get_plan(plan.plan_set_id)
-    assert completed.coverage.solved_days == 2
+    assert completed.coverage.solved_days == 1
+    assert completed.coverage.not_requested_days == 1
     assert completed.resource_source == "not_required_no_work"
     day = service.get_day(plan.plan_set_id, DATE_ONE)
     assert day.selected_result.assigned_cases == 0
@@ -561,5 +683,292 @@ def test_default_provider_loads_exact_depot_resources_once_and_freezes_them(monk
     while jobs.run_next():
         pass
     assert calls == 1
-    assert observed_costs == [4.6, 4.6]
+    assert observed_costs == [4.6]
     assert repository.get(plan["plan_set_id"])["fleet"][0]["capacity_cases"] == 150
+
+
+# ---------------------------------------------------------------------------
+# time_window_change – edit existing delivery receiving windows
+# ---------------------------------------------------------------------------
+
+
+def test_time_window_change_updates_receiving_window_in_solver_inputs() -> None:
+    """A time_window_change override updates the customer's receiving window
+    in the solver inputs without altering demand or flow rows."""
+    service, repository, jobs, _, solve_inputs = _service()
+    plan = _payload(service.get_or_create_plan("RUN-TW-1", DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan["plan_set_id"], "Window edit"))
+
+    service.optimize_day(
+        plan["plan_set_id"], DATE_ONE,
+        {
+            "route_scenario_id": scenario["route_scenario_id"],
+            "changes": [{
+                "kind": "time_window_change",
+                "customer_id": "CUST_A",
+                "receiving_window_start": "06:00",
+                "receiving_window_end": "18:00",
+            }],
+        },
+    )
+    assert jobs.run_next()
+
+    inputs = solve_inputs[-1]
+    customer = next(
+        row for row in inputs["network_rows"]["dim_network_customers"]
+        if row["customer_id"] == "CUST_A"
+    )
+    assert customer["receiving_window_start"] == "06:00"
+    assert customer["receiving_window_end"] == "18:00"
+
+    # Demand / flow rows must be unchanged.
+    assert len(inputs["flow_rows"]) == 1
+    assert inputs["flow_rows"][0]["assigned_units"] == 100
+    assert inputs["flow_rows"][0]["lane_id"] == "LNE_DELIVERY_A"
+
+
+def test_time_window_change_preserves_demand_and_shipment_counts() -> None:
+    """The override must not add, remove, or alter flow rows or customers."""
+    service, _, jobs, _, solve_inputs = _service()
+    plan = _payload(service.get_or_create_plan("RUN-TW-2", DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan["plan_set_id"], "Demand-safe"))
+
+    service.optimize_day(
+        plan["plan_set_id"], DATE_ONE,
+        {
+            "route_scenario_id": scenario["route_scenario_id"],
+            "changes": [{
+                "kind": "time_window_change",
+                "customer_id": "CUST_A",
+                "receiving_window_start": "09:00",
+                "receiving_window_end": "17:00",
+            }],
+        },
+    )
+    assert jobs.run_next()
+
+    inputs = solve_inputs[-1]
+    customers = inputs["network_rows"]["dim_network_customers"]
+    assert len(customers) == 1  # no new customers added
+    assert customers[0]["customer_id"] == "CUST_A"
+    assert customers[0]["service_minutes"] == 15  # unchanged
+    assert len(inputs["flow_rows"]) == 1  # no new flow rows
+
+
+def test_time_window_change_persists_in_override_request() -> None:
+    """The time_window_change is stored naturally in the job's request payload."""
+    service, repository, jobs, _, _ = _service()
+    plan = _payload(service.get_or_create_plan("RUN-TW-3", DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan["plan_set_id"], "Persisted"))
+
+    service.optimize_day(
+        plan["plan_set_id"], DATE_ONE,
+        {
+            "route_scenario_id": scenario["route_scenario_id"],
+            "changes": [{
+                "kind": "time_window_change",
+                "customer_id": "CUST_A",
+                "receiving_window_start": "05:00",
+                "receiving_window_end": "20:00",
+            }],
+        },
+    )
+    stored_job = next(
+        job
+        for job in repository.get(plan["plan_set_id"])["days"][DATE_ONE]["jobs"].values()
+        if job["route_scenario_id"] == scenario["route_scenario_id"]
+    )
+    change = stored_job["request"]["changes"][0]
+    assert change["kind"] == "time_window_change"
+    assert change["customer_id"] == "CUST_A"
+    assert change["receiving_window_start"] == "05:00"
+    assert change["receiving_window_end"] == "20:00"
+
+
+def test_time_window_change_rejects_unknown_customer() -> None:
+    """An override referencing a customer not in the dated snapshot must fail."""
+    service, _, jobs, _, _ = _service()
+    plan = _payload(service.get_or_create_plan("RUN-TW-4", DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan["plan_set_id"], "Bad target"))
+
+    service.optimize_day(
+        plan["plan_set_id"], DATE_ONE,
+        {
+            "route_scenario_id": scenario["route_scenario_id"],
+            "changes": [{
+                "kind": "time_window_change",
+                "customer_id": "CUST_NONEXISTENT",
+                "receiving_window_start": "08:00",
+                "receiving_window_end": "16:00",
+            }],
+        },
+    )
+    assert jobs.run_next()
+    day = service.get_day(plan["plan_set_id"], DATE_ONE, scenario["route_scenario_id"])
+    assert day.override_status == "failed"
+    assert "not found in dated snapshot" in str(day.error)
+
+
+def test_time_window_change_rejects_inverted_window_at_apply() -> None:
+    """Inverted windows (end <= start) must be rejected even when bypassing the model."""
+    service, _, jobs, _, _ = _service()
+    plan = _payload(service.get_or_create_plan("RUN-TW-5", DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan["plan_set_id"], "Inverted"))
+
+    service.optimize_day(
+        plan["plan_set_id"], DATE_ONE,
+        {
+            "route_scenario_id": scenario["route_scenario_id"],
+            "changes": [{
+                "kind": "time_window_change",
+                "customer_id": "CUST_A",
+                "receiving_window_start": "16:00",
+                "receiving_window_end": "08:00",
+            }],
+        },
+    )
+    assert jobs.run_next()
+    day = service.get_day(plan["plan_set_id"], DATE_ONE, scenario["route_scenario_id"])
+    assert day.override_status == "failed"
+    assert "must be after its start" in str(day.error)
+
+
+def test_time_window_change_rejects_invalid_time_format_at_apply() -> None:
+    """Malformed HH:MM values must be rejected at apply time (defense-in-depth)."""
+    service, _, jobs, _, _ = _service()
+    plan = _payload(service.get_or_create_plan("RUN-TW-6", DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan["plan_set_id"], "Bad format"))
+
+    service.optimize_day(
+        plan["plan_set_id"], DATE_ONE,
+        {
+            "route_scenario_id": scenario["route_scenario_id"],
+            "changes": [{
+                "kind": "time_window_change",
+                "customer_id": "CUST_A",
+                "receiving_window_start": "25:00",
+                "receiving_window_end": "26:00",
+            }],
+        },
+    )
+    assert jobs.run_next()
+    day = service.get_day(plan["plan_set_id"], DATE_ONE, scenario["route_scenario_id"])
+    assert day.override_status == "failed"
+    assert "HH:MM" in str(day.error)
+
+
+def test_daily_plan_change_model_validates_time_window_change() -> None:
+    """Pydantic model-level validation for the time_window_change kind."""
+    # Valid change
+    change = DailyPlanChange(
+        kind="time_window_change",
+        customer_id="CUST_A",
+        receiving_window_start="06:00",
+        receiving_window_end="18:00",
+    )
+    assert change.customer_id == "CUST_A"
+
+    # Missing customer_id
+    with pytest.raises(ValueError, match="requires customer_id"):
+        DailyPlanChange(
+            kind="time_window_change",
+            receiving_window_start="08:00",
+            receiving_window_end="16:00",
+        )
+
+    # Missing start/end
+    with pytest.raises(ValueError, match="requires receiving_window_start"):
+        DailyPlanChange(
+            kind="time_window_change",
+            customer_id="CUST_A",
+        )
+
+    # Inverted window
+    with pytest.raises(ValueError, match="must be after its start"):
+        DailyPlanChange(
+            kind="time_window_change",
+            customer_id="CUST_A",
+            receiving_window_start="16:00",
+            receiving_window_end="08:00",
+        )
+
+    # Invalid HH:MM format
+    with pytest.raises(ValueError, match="HH:MM"):
+        DailyPlanChange(
+            kind="time_window_change",
+            customer_id="CUST_A",
+            receiving_window_start="8:00",
+            receiving_window_end="16:00",
+        )
+
+    # Blank customer_id
+    with pytest.raises(ValueError, match="requires customer_id"):
+        DailyPlanChange(
+            kind="time_window_change",
+            customer_id="   ",
+            receiving_window_start="08:00",
+            receiving_window_end="16:00",
+        )
+
+
+def test_time_window_change_can_combine_with_other_changes() -> None:
+    """A time_window_change can coexist with add_deliveries in the same override."""
+    service, _, jobs, _, solve_inputs = _service()
+    plan = _payload(service.get_or_create_plan("RUN-TW-7", DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan["plan_set_id"], "Combined"))
+
+    service.optimize_day(
+        plan["plan_set_id"], DATE_ONE,
+        {
+            "route_scenario_id": scenario["route_scenario_id"],
+            "changes": [
+                {
+                    "kind": "time_window_change",
+                    "customer_id": "CUST_A",
+                    "receiving_window_start": "06:00",
+                    "receiving_window_end": "14:00",
+                },
+                {
+                    "kind": "add_deliveries",
+                    "deliveries": [{
+                        "customer_id": "DAILY-X",
+                        "customer_name": "Extra",
+                        "lat": 39.82,
+                        "lng": -86.05,
+                        "demand_cases": 10,
+                        "service_minutes": 10,
+                        "receiving_window_start": "09:00",
+                        "receiving_window_end": "15:00",
+                        "delivery_day": DATE_ONE,
+                    }],
+                },
+            ],
+        },
+    )
+    assert jobs.run_next()
+
+    inputs = solve_inputs[-1]
+    existing = next(
+        row for row in inputs["network_rows"]["dim_network_customers"]
+        if row["customer_id"] == "CUST_A"
+    )
+    assert existing["receiving_window_start"] == "06:00"
+    assert existing["receiving_window_end"] == "14:00"
+    assert any(
+        row["customer_id"] == "DAILY-X"
+        for row in inputs["network_rows"]["dim_network_customers"]
+    )

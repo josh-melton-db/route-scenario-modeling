@@ -14,6 +14,7 @@ import RouteSidebar from '@/components/RouteSidebar'
 import ScenarioCombobox from '@/components/ScenarioCombobox'
 import TransportationAllocation from '@/components/TransportationAllocation'
 import DepotPlanWorkspace from '@/components/DepotPlanWorkspace'
+import ShortageWorkflowLink from '@/components/ShortageWorkflowLink'
 import {
   useBaselineKpis,
   useBaselineNetwork,
@@ -94,6 +95,11 @@ function LegacyBaselinePage() {
 
   const loading =
     depots.isLoading || days.isLoading || network.isLoading || kpis.isLoading
+  const parentContext = readParentRouteContext(searchParams)
+  const visibleResult = comparisonResult.data ?? primaryResult.data
+  const unservedCases = (visibleResult?.transportation_allocation ?? [])
+    .filter((row) => row.fulfillment_method === 'unserved')
+    .reduce((total, row) => total + row.cases, 0)
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
@@ -138,6 +144,19 @@ function LegacyBaselinePage() {
           }}
         />
       </div>
+
+      {unservedCases > 0 && parentContext.networkScenario && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/35 bg-destructive/5 px-3 py-2">
+          <p className="text-xs text-muted-foreground">This analysis shows {unservedCases} unserved cases. Reallocation opens only against a matching network shortage.</p>
+          <ShortageWorkflowLink
+            scenarioId={parentContext.networkScenario}
+            runId={parentContext.networkRun}
+            depotId={depotId}
+            serviceDate={searchParams.get('date')}
+            className="shrink-0"
+          />
+        </div>
+      )}
 
       {loading || !network.data || !kpis.data || primaryResult.isLoading || comparisonResult.isLoading ? (
         <div className="flex h-96 items-center justify-center text-muted-foreground">

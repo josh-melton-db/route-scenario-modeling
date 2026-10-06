@@ -1,0 +1,26 @@
+{
+  "name": "dev-enhanced",
+  "preset": "enhanced",
+  "variables": {
+    "catalog": "supplychain",
+    "lakebase_database_owner_role_id": "dbrx-apps-7bf07fff-a994-41fb-91b0-1c33ab04ac25",
+    "route_solver_endpoint_name": "route-solver-dev"
+  },
+  "routing": {
+    "mode": "serving_regional",
+    "solver_endpoint": "route-solver-dev",
+    "valhalla": {
+      "strategy": "reuse",
+      "app": "valhalla-service",
+      "region": "texas",
+      "volume": "demos.route_scenario_modeling.valhalla_assets",
+      "coverage_manifest": "routing_coverage/texas-service.v1.json",
+      "coverage_id": "texas-delivery",
+      "smoke_points": ["32.7767,-96.7970", "29.7604,-95.3698"],
+      "validate_on_deploy": false
+    },
+    "costing": "truck",
+    "max_snap_distance_miles": 0.25,
+    "allow_haversine_fallback": true
+  }
+}

@@ -31,6 +31,10 @@ def test_health_and_metadata_endpoints() -> None:
         "MIDWEST_EXPRESS",
         "CAN_NORTHLINK",
         "MX_TRANSPORTES",
+        "TOLA_FREIGHT",
+        "EASTERN_FREIGHT",
+        "SOUTHERN_FREIGHT",
+        "WESTERN_FREIGHT",
     }
 
     operating = client.get("/api/meta/operating-parameters")
@@ -252,7 +256,7 @@ def test_network_scenario_lifecycle() -> None:
 
     validated = client.post(f"/api/network/scenarios/{scenario_id}/validate").json()
     assert validated["validation"]["valid"] is True
-    assert any(
+    assert not any(
         issue["code"] == "planning_rate_fallback"
         for issue in validated["validation"]["issues"]
     )
@@ -266,19 +270,23 @@ def test_network_scenario_lifecycle() -> None:
     assert result["kpi_deltas"]["assigned_units"] > 0
     assert result["affected_depot_ids"]
     sources = {row["rate_source"] for row in result["charge_details"]}
-    assert sources == {"governed_contract", "planning_fallback"}
+    assert sources == {"governed_contract"}
     governed = [
         row for row in result["charge_details"] if row["rate_source"] == "governed_contract"
     ]
     # Each governed region prices from its own published rate book.
     assert {row["contract_id"] for row in governed} == {
         "GL_STANDARD_2026",
+        "NE_STANDARD_2026",
+        "SE_STANDARD_2026",
+        "WEST_STANDARD_2026",
+        "TOLA_STANDARD_2026",
         "CAN_STANDARD_2026",
         "MX_STANDARD_2026",
     }
     assert all(row["charge_lines"] for row in governed)
     exception_types = {row["exception_type"] for row in result["exceptions"]}
-    assert exception_types == {"unmet_demand", "missing_rate"}
+    assert exception_types == {"unmet_demand"}
     assert result["overview"]["kpis"]["assigned_units"] == (
         result["baseline_overview"]["kpis"]["assigned_units"]
         + result["kpi_deltas"]["assigned_units"]

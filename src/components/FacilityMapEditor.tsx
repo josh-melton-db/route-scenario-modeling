@@ -6,6 +6,7 @@ interface FacilityMapEditorProps {
   depot: Depot
   baselineRoutes?: Route[]
   location: LatLng
+  showServiceWindowOption?: boolean
   preserveServiceWindows: boolean
   onLocationChange: (location: LatLng) => void
   onPreserveServiceWindowsChange: (preserve: boolean) => void
@@ -15,6 +16,7 @@ export default function FacilityMapEditor({
   depot,
   baselineRoutes = [],
   location,
+  showServiceWindowOption = true,
   preserveServiceWindows,
   onLocationChange,
   onPreserveServiceWindowsChange,
@@ -88,7 +90,7 @@ export default function FacilityMapEditor({
             </label>
           </div>
 
-          <label className="flex items-start gap-2 text-sm">
+          {showServiceWindowOption && <label className="flex items-start gap-2 text-sm">
             <input
               type="checkbox"
               checked={preserveServiceWindows}
@@ -103,7 +105,7 @@ export default function FacilityMapEditor({
                 Keep existing receiving windows when routes are recalculated.
               </span>
             </span>
-          </label>
+          </label>}
 
           <button
             type="button"

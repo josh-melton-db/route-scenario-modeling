@@ -81,9 +81,8 @@ test('shows strict road provenance and an actionable failure without an approxim
   })
   const href = `${appUrl}/analyze?networkRun=run-1&depot=DPT_NORTH&date=2026-09-01`
   await page.goto(href)
-  await expect(page.getByLabel('Route execution provenance')).toContainText('Strict road routing + Model Serving')
-  await expect(page.getByLabel('Route execution provenance')).toContainText('artifact: tx-v1')
-  await expect(page.getByLabel('Route execution provenance')).toContainText('snapshot:dim_fleet_assets')
+  await expect(page.getByLabel('Route execution provenance')).toHaveCount(0)
+  await expect(page.getByText('2026-09-01 routes')).toBeVisible()
   fail = true
   await page.reload()
   await expect(page.getByRole('alert')).toContainText('configure a broader extract')
@@ -161,10 +160,10 @@ test('renders the 28-day pinned horizon and completes then resets a non-Tuesday 
 
   const parent = encodeURIComponent('/network/scenarios/network-1/flow?run=run-28')
   await page.goto(`${appUrl}/analyze?networkScenario=network-1&networkRun=run-28&depot=DPT_NORTH&date=2026-09-03&networkReturn=${parent}`)
-  await expect(page.getByLabel('Depot plan dates').getByRole('button')).toHaveCount(28)
-  await expect(page.getByText('2/28 solved')).toBeVisible()
-  await expect(page.getByText(/Horizon totals include only 2 solved dates/)).toBeVisible()
-  await expect(page.getByText(/Thu, Sep 3/)).toBeVisible()
+  await page.getByLabel('Depot plan date', { exact: true }).getByRole('button').click()
+  await expect(page.getByRole('listbox', { name: 'Depot plan dates' }).getByRole('option')).toHaveCount(28)
+  await page.getByLabel('Depot plan date', { exact: true }).getByRole('button').first().click()
+  await expect(page.getByText(/Horizon totals include/)).toHaveCount(0)
   await expect(page).toHaveURL(/depotPlan=plan-28/)
 
   await page.getByRole('link', { name: 'Scenarios' }).click()
@@ -174,15 +173,21 @@ test('renders the 28-day pinned horizon and completes then resets a non-Tuesday 
   await page.getByRole('button', { name: 'Create' }).click()
   await expect(page).toHaveURL(/routePlanScenario=named-1/)
 
+  await expect(page.getByText('2026-09-03 routes')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Add deliveries', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Move facility', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Drivers & route limits', exact: true }).click()
   await page.getByLabel('Driver delta').fill('-1')
   await page.getByLabel('Allow overtime').check()
-  await page.getByRole('button', { name: 'Optimize selected day' }).click()
-  await expect(page.getByText(/Override: queued/)).toBeVisible()
-  await expect(page.getByText(/Override: completed/)).toBeVisible({ timeout: 8_000 })
-  await expect(page.getByText(/unserved 5/)).toBeVisible()
+  await page.getByRole('button', { name: 'Run scenario', exact: true }).click()
+  await expect(page).toHaveURL(/analyze\?/ )
+  await expect(page.getByText('Selected override (infeasible)', { exact: true })).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByText(/Unserved: 5 cases/)).toBeVisible()
+  await page.getByRole('link', { name: 'Scenarios' }).click()
+  await expect(page.getByLabel('Driver delta')).toHaveValue('-1')
 
   await page.getByRole('button', { name: 'Reset selected day to default' }).click()
-  await expect(page.getByText(/Override: completed/)).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Reset selected day to default' })).toBeDisabled()
   await page.getByRole('link', { name: 'Network' }).click()
   await expect(page).toHaveURL(`${appUrl}/network/scenarios/network-1/flow?run=run-28`)
   expect(legacyRequests).toEqual([])
@@ -192,6 +197,83 @@ test('uses the parent horizon length instead of assuming 28 dates', async ({ pag
   await page.route('**/api/network/runs/run-10/depots/DPT_NORTH/plans**', (route) => route.fulfill({ json: planSet(10) }))
   await page.route('**/api/depot-plans/plan-10**', (route) => route.fulfill({ json: planSet(10) }))
   await page.goto(`${appUrl}/analyze?networkRun=run-10&depot=DPT_NORTH&date=2026-09-04`)
-  await expect(page.getByLabel('Depot plan dates').getByRole('button')).toHaveCount(10)
-  await expect(page.getByText('2/10 solved')).toBeVisible()
+  await page.getByLabel('Depot plan date', { exact: true }).getByRole('button').click()
+  await expect(page.getByRole('listbox', { name: 'Depot plan dates' }).getByRole('option')).toHaveCount(10)
+})
+
+test('restores a stale depot link into an editable scenario without silently running it', async ({ page }) => {
+  let scenarioCreated = false
+  let optimizeCalls = 0
+  await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.startsWith('/api/depot-plans/stale-plan')) return route.fulfill({ status: 404, json: { detail: 'Depot plan not found.' } })
+    if (path === '/api/network/runs/run-1/depots/DPT_NORTH/plans') return route.fulfill({ json: planSet(1) })
+    if (path === '/api/depot-plans/plan-1/scenarios') {
+      scenarioCreated = true
+      return route.fulfill({ json: { route_scenario_id: 'named-1', scenario_name: 'Operational plan', is_default: false } })
+    }
+    if (path === '/api/depot-plans/plan-1') return route.fulfill({ json: planSet(1, 'named-1') })
+    if (path.endsWith('/optimize')) {
+      optimizeCalls++
+      return route.fulfill({ json: {} })
+    }
+    if (path === '/api/depot-plans/plan-1/days/2026-09-01') return route.fulfill({ json: {
+      plan_set_id: 'plan-1', service_date: '2026-09-01', route_scenario_id: 'named-1',
+      default_status: 'completed', override_status: null,
+      default_result: result('2026-09-01', 'saved-default'), selected_result: result('2026-09-01', 'saved-default'),
+    } })
+    return route.fulfill({ status: 404, json: { detail: path } })
+  })
+  await page.goto(`${appUrl}/analyze?networkRun=run-1&depot=DPT_NORTH&date=2026-09-01&depotPlan=stale-plan&routePlanScenario=stale-scenario`)
+  await expect(page.getByRole('heading', { name: 'This depot plan is no longer available' })).toBeVisible()
+  await page.getByRole('button', { name: 'Restore depot workspace' }).click()
+  await expect(page).toHaveURL(/scenario\?.*depotPlan=plan-1.*routePlanScenario=named-1/)
+  await expect(page.getByRole('heading', { name: 'Scenario changes' })).toBeVisible()
+  expect(scenarioCreated).toBe(true)
+  expect(optimizeCalls).toBe(0)
+})
+
+test('dated scenario selects a delivery before editing its window', async ({ page }) => {
+  let submitted: Record<string, unknown> | null = null
+  const baseline = {
+    ...result('2026-09-01', 'default-day'),
+    routes: [{ route_id: 'route-1', route_name: 'Route 1', path: [depot.location, { lat: 40.01, lng: -86.01 }],
+      driver_name: 'Driver 1', total_cases: 100, total_miles: 10, drive_minutes: 20, service_minutes: 10, overtime_minutes: 0,
+      stops: [{
+        stop_id: 'stop-1', customer_id: 'customer-1', customer_name: 'Corner Store',
+        location: { lat: 40.01, lng: -86.01 }, sequence: 1, demand_cases: 100, arrival_time: '09:00',
+        time_window_start: '08:00', time_window_end: '16:00',
+      }] }],
+  }
+  await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/depot-plans/plan-28') return route.fulfill({ json: planSet(28, 'named-1') })
+    if (path.endsWith('/optimize')) {
+      submitted = route.request().postDataJSON()
+      return route.fulfill({ json: {} })
+    }
+    if (path.startsWith('/api/depot-plans/plan-28/days/')) return route.fulfill({ json: {
+      plan_set_id: 'plan-28', service_date: '2026-09-01', route_scenario_id: 'named-1',
+      default_status: 'completed', override_status: null,
+      default_result: baseline, selected_result: baseline, error: null,
+    } })
+    return route.fulfill({ status: 404, json: { detail: path } })
+  })
+  await page.goto(`${appUrl}/scenario?networkRun=run-28&depot=DPT_NORTH&depotPlan=plan-28&routePlanScenario=named-1&date=2026-09-01`)
+  await expect(page.getByRole('heading', { name: 'Scenario changes' })).toBeVisible()
+  await expect(page.getByText('2026-09-01 routes')).toHaveCount(0)
+  await expect(page.getByText('Revenue', { exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Delivery time window', exact: true }).click()
+  await expect(page.getByLabel('Delivery time window map')).toBeVisible()
+  await expect(page.getByLabel('Delivery 1 opens')).toHaveCount(0)
+  await page.getByLabel('Customer name', { exact: true }).selectOption({ label: 'Corner Store' })
+  await page.getByLabel('Delivery 1 opens').fill('09:00')
+  await page.getByLabel('Delivery 1 closes').fill('13:00')
+  await page.getByRole('button', { name: 'Run scenario', exact: true }).click()
+  await expect.poll(() => submitted).toMatchObject({
+    route_scenario_id: 'named-1',
+    changes: [{ kind: 'time_window_change', customer_id: 'customer-1', receiving_window_start: '09:00', receiving_window_end: '13:00' }],
+  })
+  await expect(page).toHaveURL(/analyze\?/)
+  await expect(page.getByText('2026-09-01 routes')).toBeVisible()
 })

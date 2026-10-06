@@ -16,7 +16,7 @@ import NetworkFlowMap from '@/components/NetworkFlowMap'
 import NetworkInsightRail from '@/components/NetworkInsightRail'
 import NetworkKpiStrip from '@/components/NetworkKpiStrip'
 import NetworkBaselineActions from '@/components/NetworkBaselineActions'
-import { buildDepotAnalysisHref } from '@/lib/networkLinks'
+import { buildDepotAnalysisHref, buildRouteWorkspaceHref } from '@/lib/networkLinks'
 
 const queryNames: Record<keyof NetworkOverviewParams, string> = {
   demand_plan_version_id: 'demandPlan',
@@ -126,8 +126,12 @@ export default function NetworkPage() {
       )
     : null
   const dcAnalysisHref =
-    selectedFacility?.facility_type === 'distribution_center'
-      ? `/dc/${encodeURIComponent(selectedFacility.facility_id)}`
+    selectedFacility?.facility_type === 'distribution_center' && baselinePlan.data?.run_id
+      ? buildRouteWorkspaceHref(`/dc/${encodeURIComponent(selectedFacility.facility_id)}`, {
+          networkScenario: baselinePlan.data.scenario_id,
+          networkRun: baselinePlan.data.run_id,
+          networkReturn,
+        })
       : null
 
   const facilities = overview.data.facilities
@@ -207,6 +211,8 @@ export default function NetworkPage() {
           setSearchParams(next, { replace: true })
         }}
         onSelectFacility={(facilityId) => selectEntity('facility', facilityId)}
+        shortageScenarioId={baselinePlan.data?.scenario_id}
+        shortageRunId={baselinePlan.data?.run_id}
       />
     </div>
   )
@@ -228,7 +234,7 @@ function contextFromUrl(
     region_id: searchParams.get('region') ?? options.default_region_id,
     lane_type: options.lane_types.includes(laneType as NetworkOverviewParams['lane_type'])
       ? (laneType as NetworkOverviewParams['lane_type'])
-      : options.default_lane_type,
+      : options.lane_types.includes('ALL') ? 'ALL' : options.default_lane_type,
     metric: options.metrics.some((row) => row.metric_id === metric)
       ? (metric as NetworkOverviewParams['metric'])
       : options.default_metric,

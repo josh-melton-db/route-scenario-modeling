@@ -4,7 +4,8 @@ import { Building2, ExternalLink, Loader2 } from 'lucide-react'
 import EmptyState from '@/components/EmptyState'
 import ErrorState from '@/components/ErrorState'
 import KpiCard from '@/components/KpiCard'
-import { useNetworkOptions, useNetworkOverview } from '@/api/queries'
+import ShortageWorkflowLink from '@/components/ShortageWorkflowLink'
+import { useNetworkOptions, useNetworkOverview, useNetworkScenarioResult } from '@/api/queries'
 import type { NetworkOverviewParams } from '@/api/types'
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format'
 import { buildRouteWorkspaceHref, readParentRouteContext } from '@/lib/networkLinks'
@@ -31,7 +32,15 @@ export default function DcPage() {
         : null,
     [options.data],
   )
-  const overview = useNetworkOverview(context)
+  const baselineOverview = useNetworkOverview(parentContext.networkRun ? null : context)
+  const pinned = useNetworkScenarioResult(
+    parentContext.networkScenario || parentContext.networkRun || '',
+    Boolean(parentContext.networkRun),
+    parentContext.networkRun,
+  )
+  const overview = parentContext.networkRun
+    ? { data: pinned.data?.overview, error: pinned.error, isLoading: pinned.isLoading }
+    : baselineOverview
   const dc = useMemo(
     () =>
       overview.data?.facilities.find(
@@ -77,7 +86,9 @@ export default function DcPage() {
     )
   }
 
-  const serviceDate = firstTuesday(overview.data.context.horizon_start, overview.data.context.horizon_end)
+  const serviceDate = parentContext.date || (parentContext.networkRun
+    ? overview.data.context.horizon_start
+    : firstTuesday(overview.data.context.horizon_start, overview.data.context.horizon_end))
   const dcUnmet = Math.max(0, dc.demand_units - dc.assigned_units)
   const connectedLanes = overview.data.lanes
     .filter(
@@ -114,6 +125,12 @@ export default function DcPage() {
         <KpiCard label="Modeled cost" value={formatCurrency(dc.total_cost)} />
         <KpiCard label="On-time outlook" value={formatPercent(dc.on_time_pct)} />
       </div>
+      {dcUnmet > 0 && parentContext.networkScenario && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/35 bg-destructive/5 px-3 py-2">
+          <p className="text-xs text-muted-foreground">This DC total spans the planning horizon. Review dated depot shortages before reallocating supply.</p>
+          <ShortageWorkflowLink scenarioId={parentContext.networkScenario} runId={parentContext.networkRun} className="shrink-0" />
+        </div>
+      )}
 
       <section className="rounded-lg border border-border bg-card p-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -156,6 +173,7 @@ export default function DcPage() {
                 <th className="px-4 py-2 text-right font-medium">Unmet</th>
                 <th className="px-4 py-2 text-right font-medium">Utilization</th>
                 <th className="px-4 py-2 text-right font-medium">Cost</th>
+                <th className="px-4 py-2 text-right font-medium">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
@@ -194,12 +212,21 @@ export default function DcPage() {
                     <td className="px-4 py-2.5 text-right tabular-nums">
                       {formatCurrency(depot.total_cost)}
                     </td>
+                    <td className="px-4 py-2.5 text-right">
+                      {unmet > 0 && parentContext.networkScenario ? (
+                        <ShortageWorkflowLink
+                          scenarioId={parentContext.networkScenario}
+                          runId={parentContext.networkRun}
+                          depotId={depot.facility_id}
+                        />
+                      ) : null}
+                    </td>
                   </tr>
                 )
               })}
               {!depots.length && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
+                  <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
                     No depots are parented to this distribution center.
                   </td>
                 </tr>

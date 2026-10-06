@@ -315,6 +315,41 @@ class NetworkRunJobRepository:
         self.finish(run_id, "cancelled", error_code="cancelled", error_message="Cancelled by user.")
         return self.get(run_id)
 
+    def clear_all(self) -> int:
+        """Clear terminal run requests; reject reset while a worker owns work."""
+        if not self._uses_lakebase:
+            with self._lock:
+                active = [row for row in self._rows.values() if row.status in {"queued", "running", "completion_pending"}]
+                if active:
+                    raise HTTPException(status_code=409, detail="Wait for active network runs before resetting the demo.")
+                count = len(self._rows)
+                self._rows.clear()
+                self._by_key.clear()
+                return count
+        with lakebase_store.postgres.transaction() as connection:
+            active = lakebase_store.postgres.query_one(
+                f"SELECT COUNT(*) AS count FROM {self._table()} "
+                "WHERE status IN ('queued','running','completion_pending')",
+                connection=connection,
+            )
+            if int((active or {}).get("count", 0)):
+                raise HTTPException(status_code=409, detail="Wait for active network runs before resetting the demo.")
+            count = lakebase_store.postgres.query_one(
+                f"SELECT COUNT(*) AS count FROM {self._table()}", connection=connection
+            )
+            lakebase_store.postgres.execute(f"DELETE FROM {self._table()}", connection=connection)
+        return int((count or {}).get("count", 0))
+
+    def has_active(self) -> bool:
+        if not self._uses_lakebase:
+            with self._lock:
+                return any(row.status in {"queued", "running", "completion_pending"} for row in self._rows.values())
+        row = lakebase_store.postgres.query_one(
+            f"SELECT 1 AS active FROM {self._table()} "
+            "WHERE status IN ('queued','running','completion_pending') LIMIT 1"
+        )
+        return row is not None
+
 
 class NetworkRunManager:
     def __init__(self, repository: NetworkRunJobRepository | None = None) -> None:
@@ -336,13 +371,16 @@ class NetworkRunManager:
         parent_run_id: str | None = None,
         demand_change_ids: list[str] | None = None,
     ) -> NetworkRunRecord:
-        record, created = self.repository.create(
-            scenario, max_queued=self.max_queued, max_attempts=self.max_attempts,
-            idempotency_key=idempotency_key,
-            run_kind=run_kind,
-            parent_run_id=parent_run_id,
-            demand_change_ids=demand_change_ids,
-        )
+        from .demo_state_gate import demo_state_gate
+
+        with demo_state_gate.admission():
+            record, created = self.repository.create(
+                scenario, max_queued=self.max_queued, max_attempts=self.max_attempts,
+                idempotency_key=idempotency_key,
+                run_kind=run_kind,
+                parent_run_id=parent_run_id,
+                demand_change_ids=demand_change_ids,
+            )
         if created:
             self._executor.submit(self._execute, record.run_id)
         return record

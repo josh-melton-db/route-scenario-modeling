@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -185,6 +185,11 @@ class RateContractSummary(StrictModel):
     committed_quantity: float
     capacity_quantity: float
     current_utilization: float
+    commitment_period: VolumePeriod
+    commitment_unit: Literal["stops", "routes", "cases", "miles"]
+    lane_types: list[str] = Field(default_factory=list)
+    applicable_depot_ids: list[str] = Field(default_factory=list)
+    applicable_region_ids: list[str] = Field(default_factory=list)
     coverage_status: Literal["covered", "partial", "unavailable"]
     freshness_at: str
 
@@ -806,6 +811,16 @@ class NetworkFacilityAggregate(StrictModel):
     assigned_units: int = Field(ge=0)
     capacity_units: int = Field(ge=0)
     utilization_pct: float = Field(ge=0)
+    handling_capacity_units: int | None = Field(default=None, ge=0)
+    handling_available_units: int | None = Field(default=None, ge=0)
+    handling_utilization_pct: float | None = Field(default=None, ge=0)
+    handling_retained_pct: float | None = Field(default=None, ge=0, le=200)
+    supply_units: int | None = Field(default=None, ge=0)
+    normal_supply_units: int | None = Field(default=None, ge=0)
+    supply_available_units: int | None = Field(default=None, ge=0)
+    supply_utilization_pct: float | None = Field(default=None, ge=0)
+    supply_retained_pct: float | None = Field(default=None, ge=0, le=200)
+    supply_source: Literal["canonical_daily_supply", "legacy_handling_capacity_fallback"] | None = None
     total_cost: float = Field(ge=0)
     cost_per_unit: float = Field(ge=0)
     on_time_pct: float = Field(ge=0, le=100)
@@ -905,6 +920,24 @@ class NetworkReleaseOverlay(StrictModel):
     cases: int = Field(gt=0)
 
 
+class NetworkDcTransferRequest(StrictModel):
+    transfer_id: str = Field(min_length=1)
+    origin_dc_id: str = Field(min_length=1)
+    destination_dc_id: str = Field(min_length=1)
+    departure_date: str
+    capacity_units: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_transfer(self) -> "NetworkDcTransferRequest":
+        if self.origin_dc_id == self.destination_dc_id:
+            raise ValueError("Transfer origin and destination must differ.")
+        try:
+            date.fromisoformat(self.departure_date)
+        except ValueError as exc:
+            raise ValueError("Transfer departure date must use YYYY-MM-DD.") from exc
+        return self
+
+
 class NetworkScenarioAssumptions(StrictModel):
     disabled_facility_ids: list[str] = Field(default_factory=list)
     disabled_lane_ids: list[str] = Field(default_factory=list)
@@ -914,6 +947,25 @@ class NetworkScenarioAssumptions(StrictModel):
     source_baseline_revision_id: str | None = None
     parent_run_id: str | None = None
     release_overlays: list[NetworkReleaseOverlay] = Field(default_factory=list)
+    facility_capacity_retained_pct: dict[str, float] = Field(default_factory=dict)
+    facility_supply_retained_pct: dict[str, float] = Field(default_factory=dict)
+    dc_transfer_requests: list[NetworkDcTransferRequest] = Field(default_factory=list)
+
+    @field_validator("facility_capacity_retained_pct", "facility_supply_retained_pct")
+    @classmethod
+    def validate_retained_capacity(
+        cls, value: dict[str, float]
+    ) -> dict[str, float]:
+        invalid = sorted(
+            facility_id
+            for facility_id, retained_pct in value.items()
+            if not facility_id or not 0 <= retained_pct <= 200
+        )
+        if invalid:
+            raise ValueError(
+                "Facility retained percentages must be between 0 and 200."
+            )
+        return value
 
 
 class NetworkScenarioValidationIssue(StrictModel):
@@ -998,6 +1050,7 @@ class NetworkScenarioException(StrictModel):
     demand_units: int | None = None
     assigned_units: int | None = None
     unmet_units: int | None = None
+    shortage_cause: Literal["supply", "handling", "lane", "unknown"] | None = None
 
 
 class NetworkFlowChargeDetail(StrictModel):
@@ -1116,7 +1169,29 @@ class NetworkScenarioResult(StrictModel):
     scenario_rate_coverage: NetworkRateCoverage = Field(default_factory=NetworkRateCoverage)
     pricing_context: NetworkPricingContext = Field(default_factory=NetworkPricingContext)
     diagnostics: NetworkRunDiagnostics | None = None
+    exception_evidence_status: Literal["available", "unavailable"] = "unavailable"
+    exception_evidence_message: str | None = None
     exceptions: list[NetworkScenarioException] = Field(default_factory=list)
+    transfer_movements: list["NetworkTransferMovement"] = Field(default_factory=list)
+
+
+class NetworkTransferMovement(StrictModel):
+    transfer_id: str
+    lane_id: str
+    origin_dc_id: str
+    destination_dc_id: str
+    departure_date: str
+    arrival_date: str
+    mode: Literal["AIR"] = "AIR"
+    capacity_units: int = Field(gt=0)
+    assigned_units: int = Field(ge=0)
+    distance_miles: float = Field(ge=0)
+    transit_minutes: int = Field(gt=0)
+    freight_cost: float = Field(default=0, ge=0)
+    tariff_cost: float = Field(default=0, ge=0)
+    total_cost: float = Field(default=0, ge=0)
+    tariff_rule_ids: list[str] = Field(default_factory=list)
+    provenance: dict[str, Any] = Field(default_factory=dict)
 
 
 class NetworkScenarioRunResponse(StrictModel):

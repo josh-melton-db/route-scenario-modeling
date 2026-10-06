@@ -142,6 +142,25 @@ export interface NetworkFacilityAggregate {
   demand_units: number
   assigned_units: number
   capacity_units: number
+  /** Effective local DC supply after the configured retained percentage. */
+  supply_units?: number | null
+  /** Normal daily DC stock before retention. Only this field is presented as normal stock. */
+  normal_supply_units?: number | null
+  /** Human-readable provenance for supply_units, when the backend can provide it. */
+  supply_source?: string | null
+  /** Solved retained share of available supply. Null for depots or unavailable data. */
+  supply_retained_pct?: number | null
+  /** Retained share of normal handling throughput. Missing means unknown for legacy runs. */
+  handling_retained_pct?: number | null
+  /** Normal daily handling capacity before the retained percentage is applied. */
+  handling_capacity_units?: number | null
+  /** Handling available to this solve after applying the retained percentage. */
+  handling_available_units?: number | null
+  handling_utilization_pct?: number | null
+  /** Solver-reported available supply; accounting may include transfer arrivals. */
+  supply_available_units?: number | null
+  /** Deprecated for presentation until transfer-arrival accounting is explicit. */
+  supply_utilization_pct?: number | null
   utilization_pct: number
   total_cost: number
   cost_per_unit: number
@@ -177,6 +196,8 @@ export interface NetworkLaneAggregate {
   contract_id: string | null
   contract_version_id: string | null
   included_in_network_cost: boolean
+  eligibility_source?: string | null
+  synthetic_provenance?: Record<string, unknown> | null
 }
 
 export interface NetworkInsight {
@@ -233,6 +254,14 @@ export interface NetworkTariffRule {
   amount_per_case: number
 }
 
+export interface NetworkDcTransferRequest {
+  transfer_id: string
+  origin_dc_id: string
+  destination_dc_id: string
+  departure_date: string
+  capacity_units: number
+}
+
 export interface NetworkScenarioAssumptions {
   disabled_facility_ids: string[]
   disabled_lane_ids: string[]
@@ -240,6 +269,12 @@ export interface NetworkScenarioAssumptions {
   unmet_penalty_per_case: number
   /** Optional while older saved scenarios are migrated by the API. */
   tariffs?: NetworkTariffRule[]
+  /** Retained share of normal daily capacity. Omitted facilities retain 100%. */
+  facility_capacity_retained_pct?: Record<string, number>
+  /** Retained share of normal available supply. DC-only; omitted DCs retain 100%. */
+  facility_supply_retained_pct?: Record<string, number>
+  /** Express AIR capacity made available to the time-expanded solver. */
+  dc_transfer_requests?: NetworkDcTransferRequest[]
 }
 
 export interface NetworkScenarioValidationIssue {
@@ -261,6 +296,7 @@ export interface NetworkScenario {
   scenario_id: string
   scenario_name: string
   baseline_scenario_id: string
+  source_baseline_revision_id?: string | null
   demand_plan_version_id: string
   capacity_plan_version_id: string
   horizon_start: string
@@ -278,12 +314,13 @@ export interface NetworkScenario {
 export interface NetworkScenarioCreateRequest {
   scenario_name: string
   baseline_scenario_id?: string
+  source_baseline_revision_id?: string | null
   demand_plan_version_id: string
   capacity_plan_version_id: string
   horizon_start: string
   horizon_end: string
   region_id?: string
-  assumptions?: NetworkScenarioAssumptions
+  assumptions?: Partial<NetworkScenarioAssumptions>
 }
 
 export interface NetworkScenarioUpdateRequest {
@@ -313,6 +350,8 @@ export interface NetworkScenarioException {
   demand_units?: number | null
   assigned_units?: number | null
   unmet_units?: number | null
+  /** Optional backend diagnosis used to suggest, never enforce, a resolution path. */
+  shortage_cause?: string | null
 }
 
 export interface NetworkFlowChargeDetail {
@@ -331,6 +370,25 @@ export interface NetworkFlowChargeDetail {
   charge_lines: RateChargeLine[]
 }
 
+export interface NetworkTransferMovement {
+  transfer_id: string
+  lane_id: string
+  origin_dc_id: string
+  destination_dc_id: string
+  departure_date: string
+  arrival_date: string
+  mode: 'AIR'
+  capacity_units: number
+  assigned_units: number
+  distance_miles: number
+  transit_minutes: number
+  freight_cost: number
+  tariff_cost: number
+  total_cost: number
+  tariff_rule_ids: string[]
+  provenance: Record<string, unknown>
+}
+
 export interface NetworkScenarioResult {
   run_id?: string
   scenario_id: string
@@ -342,6 +400,7 @@ export interface NetworkScenarioResult {
   affected_depot_ids: string[]
   charge_details?: NetworkFlowChargeDetail[]
   exceptions: NetworkScenarioException[]
+  transfer_movements?: NetworkTransferMovement[]
   tariff_total_cost?: number
   baseline_tariff_exposure?: number
   cross_border_assigned_units?: number
@@ -367,6 +426,8 @@ export interface NetworkScenarioResult {
     rate_book_snapshot_ids: string[]
     objective_cost_basis: string
   }
+  exception_evidence_status?: 'available' | 'unavailable'
+  exception_evidence_message?: string | null
 }
 
 export interface NetworkChargeAuditPage {
@@ -406,8 +467,39 @@ export interface NetworkBaselineState {
   active_run_id: string | null
   active_plan_run_id?: string
   active_plan_scenario_id?: string
+  default_demand_plan_version_id?: string
+  default_capacity_plan_version_id?: string
   accepted_at: string | null
   route_coverage?: NetworkBaselineRouteCoverage
+}
+
+export interface SolverWarmupStatus {
+  state: 'not_started' | 'warming' | 'ready' | 'failed' | 'skipped'
+  configured: boolean
+  endpoint: string | null
+  started_at: string | null
+  completed_at: string | null
+  error: string | null
+}
+
+export interface DemoResetResponse {
+  reset: {
+    state: 'not_started' | 'resetting' | 'seeding_lakebase' | 'bootstrapping' | 'reset_complete' | 'failed'
+    started_at: string | null
+    completed_at: string | null
+    error: string | null
+    bootstrap_run_id: number | null
+    lakebase_seeded?: boolean
+    lakebase_reference_counts?: Record<string, number>
+  }
+  baseline?: NetworkBaselineState
+  cleared?: {
+    network_scenarios: number
+    network_runs: number
+    demand_changes: number
+    depot_plans: number
+  }
+  solver_warmup: SolverWarmupStatus
 }
 
 export interface NetworkBaselineRouteCoverage {
@@ -564,6 +656,11 @@ export interface RateContractSummary {
   committed_quantity: number
   capacity_quantity: number
   current_utilization: number
+  commitment_period: VolumePeriod
+  commitment_unit: 'stops' | 'routes' | 'cases' | 'miles'
+  lane_types: string[]
+  applicable_depot_ids: string[]
+  applicable_region_ids: string[]
   coverage_status: 'covered' | 'partial' | 'unavailable'
   freshness_at: string
 }
@@ -812,7 +909,7 @@ export interface Kpis {
   cost_breakdown: CostBreakdown
 }
 
-export type DepotPlanStatus = 'queued' | 'running' | 'completed' | 'infeasible' | 'failed'
+export type DepotPlanStatus = 'not_requested' | 'queued' | 'running' | 'completed' | 'infeasible' | 'failed'
 
 export interface DepotPlanRouteScenario {
   route_scenario_id: string
@@ -823,6 +920,7 @@ export interface DepotPlanRouteScenario {
 export interface DepotPlanCoverage {
   total_days: number
   solved_days: number
+  not_requested_days: number
   queued_days: number
   running_days: number
   failed_days: number
@@ -842,6 +940,7 @@ export interface DepotPlanDaySummary {
 }
 
 export interface DepotPlanDayResult {
+  depot?: Depot | null
   result_id: string
   service_date: string
   status: DepotPlanStatus
@@ -885,6 +984,7 @@ export interface DepotPlanSet {
 }
 
 export interface DepotPlanDayDetail {
+  override_request?: DepotPlanOverrideRequest | null
   plan_set_id: string
   service_date: string
   route_scenario_id: string
@@ -895,6 +995,11 @@ export interface DepotPlanDayDetail {
   error: string | null
 }
 
+export type DepotPlanDailyChange =
+  | { kind: 'time_window_change'; customer_id: string; receiving_window_start: string; receiving_window_end: string }
+  | { kind: 'add_deliveries'; deliveries: DeliveryDraft[] }
+  | { kind: 'facility_move'; new_depot_location: LatLng; preserve_service_windows: boolean }
+
 export interface DepotPlanOverrideRequest {
   route_scenario_id: string
   driver_delta?: number
@@ -902,6 +1007,7 @@ export interface DepotPlanOverrideRequest {
   max_route_minutes?: number
   max_stops_per_route?: number
   new_depot_location?: LatLng
+  changes?: DepotPlanDailyChange[]
 }
 
 export interface KpiDeltas {
@@ -1308,4 +1414,30 @@ export interface EditorPreviewResponse {
 export interface EditorCommitResponse {
   session: EditorSession
   baseline_snapshot_count: number
+}
+
+export interface ReadinessCheck {
+  ready: boolean
+  ping_available?: boolean
+  skipped?: boolean
+  configured?: boolean
+  backend?: string
+  mode?: string
+  endpoint?: string | null
+  warmup?: SolverWarmupStatus
+  matrix_policy?: string
+  message?: string | null
+  migration?: { state: string; version: string; error?: string | null }
+  validated?: Array<Record<string, unknown>>
+  supported_depot_ids?: string[]
+  deployment_class?: string
+  production_recommendation?: string
+  network_max_workers?: number
+  network_max_queued?: number
+  depot_workers?: number
+}
+
+export interface ReadinessSnapshot {
+  status: 'ready' | 'not_ready'
+  checks: Record<string, ReadinessCheck>
 }

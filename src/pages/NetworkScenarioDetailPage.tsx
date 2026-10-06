@@ -24,6 +24,7 @@ import NetworkTariffChangeCard, {
 import NetworkBaselineActions from '@/components/NetworkBaselineActions'
 import NetworkPricingNote, { hasComparablePricing } from '@/components/NetworkPricingNote'
 import {
+  useCreateNetworkScenario,
   useDeleteNetworkScenario,
   useNetworkOptions,
   useNetworkOverview,
@@ -36,6 +37,7 @@ import {
 } from '@/api/queries'
 import type {
   NetworkFlowChargeDetail,
+  NetworkDcTransferRequest,
   NetworkLaneAggregate,
   NetworkScenario,
   NetworkScenarioAssumptions,
@@ -48,6 +50,14 @@ import {
   buildRouteWorkspaceHref,
 } from '@/lib/networkLinks'
 import { cn } from '@/lib/utils'
+import { ApiError } from '@/api/client'
+import { rememberNetworkScenario, networkScenarioRecovery, networkScenarioParameters } from '@/state/networkScenarioRecovery'
+import {
+  laneNameFor,
+  signedCurrency,
+  signedNumber,
+  uniqueLaneEndpoints,
+} from '@/lib/networkScenarioPresentation'
 
 const SOLVED_STATUSES = new Set(['solved', 'depot_plans_running', 'reconciliation_required', 'reconciled', 'published'])
 
@@ -71,6 +81,7 @@ export default function NetworkScenarioDetailPage() {
     hasResult || Boolean(pinnedRunId),
     pinnedRunId,
   )
+  const createScenario = useCreateNetworkScenario()
   const updateScenario = useUpdateNetworkScenario(scenarioId)
   const validateScenario = useValidateNetworkScenario(scenarioId)
   const runScenario = useRunNetworkScenario(scenarioId)
@@ -83,6 +94,14 @@ export default function NetworkScenarioDetailPage() {
   const [optimisticName, setOptimisticName] = useState<string | null>(null)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const nameInputRef = useRef<HTMLInputElement>(null)
+  const immutableBaseline = scenarioId.startsWith('baseline-plan-scenario.')
+
+  useEffect(() => {
+    if (!scenario.data || immutableBaseline) return
+    rememberNetworkScenario(scenario.data,
+      draft?.scenarioId === scenarioId ? draft.assumptions : scenario.data.assumptions,
+      optimisticName ?? scenario.data.scenario_name)
+  }, [scenario.data, draft, scenarioId, immutableBaseline, optimisticName])
 
   const context = scenario.data
     ? {
@@ -117,7 +136,7 @@ export default function NetworkScenarioDetailPage() {
   }, [optimisticName, scenario.data?.scenario_name])
 
   useEffect(() => {
-    if (!draft?.dirty || draft.scenarioId !== scenarioId) return
+    if (!draft?.dirty || draft.scenarioId !== scenarioId || scenario.error) return
     const timer = window.setTimeout(() => {
       setSaveState('saving')
       void updateScenario
@@ -135,7 +154,7 @@ export default function NetworkScenarioDetailPage() {
         })
     }, 700)
     return () => window.clearTimeout(timer)
-  }, [draft, scenarioId, updateScenario])
+  }, [draft, scenarioId, updateScenario, scenario.error])
 
   useEffect(() => {
     if (saveState !== 'saved') return
@@ -147,6 +166,30 @@ export default function NetworkScenarioDetailPage() {
     return <Navigate to={`${basePath}/scenario`} replace />
   }
   if (scenario.error) {
+    if (scenario.error instanceof ApiError && scenario.error.status === 404) {
+      const recovery = scenario.data && !immutableBaseline
+        ? networkScenarioParameters(scenario.data, draft?.scenarioId === scenarioId ? draft.assumptions : scenario.data.assumptions, optimisticName ?? scenario.data.scenario_name)
+        : networkScenarioRecovery(scenarioId)
+      return <div className="mx-auto flex max-w-xl flex-col gap-3 p-8" role="alert">
+        <h2 className="font-semibold">This network scenario is no longer available</h2>
+        <p className="text-sm text-muted-foreground">The local demo may have restarted or the scenario may have been removed.
+          {recovery ? ' A browser copy of its parameters is available. Restore an editable scenario, review it, and run it again.' : ' Return to the network to create a new scenario.'}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {recovery && <button type="button" disabled={createScenario.isPending} onClick={async () => {
+            setActionError(null)
+            try {
+              const created = await createScenario.mutateAsync(recovery)
+              navigate(`/network/scenarios/${encodeURIComponent(created.scenario_id)}/scenario`, { replace: true })
+            } catch (err) {
+              setActionError(String(err))
+            }
+          }} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">{createScenario.isPending ? 'Restoring…' : 'Restore scenario parameters'}</button>}
+          <button type="button" onClick={() => navigate('/network')} className="rounded-md border border-border px-3 py-2 text-sm">Back to network</button>
+        </div>
+        {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      </div>
+    }
     return <ErrorState title="Could not load network scenario" error={scenario.error} />
   }
   if (options.error) {
@@ -165,6 +208,14 @@ export default function NetworkScenarioDetailPage() {
 
   const hasPendingDraft = draft?.scenarioId === scenarioId && draft.dirty
   const planApplied = hasResult && !hasPendingDraft
+  const wrongScenarioResult = result.data && result.data.scenario_id !== scenario.data.scenario_id
+  const staleResult = result.data && (
+    result.data.scenario_id !== scenario.data.scenario_id ||
+    (!pinnedRunId && result.data.revision !== scenario.data.revision)
+  )
+  const pinnedHistoryResult = Boolean(
+    pinnedRunId && result.data && !wrongScenarioResult && result.data.revision !== scenario.data.revision,
+  )
 
   async function run() {
     setActionError(null)
@@ -245,6 +296,27 @@ export default function NetworkScenarioDetailPage() {
     }
   }
 
+  async function createEditableCopy() {
+    if (!scenario.data) return
+    setActionError(null)
+    try {
+      const created = await createScenario.mutateAsync({
+        scenario_name: `${scenario.data.scenario_name} — editable copy`,
+        baseline_scenario_id: scenario.data.baseline_scenario_id,
+        source_baseline_revision_id: scenario.data.source_baseline_revision_id,
+        demand_plan_version_id: scenario.data.demand_plan_version_id,
+        capacity_plan_version_id: scenario.data.capacity_plan_version_id,
+        horizon_start: scenario.data.horizon_start,
+        horizon_end: scenario.data.horizon_end,
+        region_id: scenario.data.region_id,
+        assumptions: scenario.data.assumptions,
+      })
+      navigate(`/network/scenarios/${encodeURIComponent(created.scenario_id)}/scenario?rename=1`)
+    } catch (err) {
+      setActionError(String(err))
+    }
+  }
+
   const displayName = optimisticName ?? scenario.data.scenario_name
 
   return (
@@ -305,15 +377,15 @@ export default function NetworkScenarioDetailPage() {
                   <h1 className="truncate text-2xl font-semibold tracking-tight">
                     {displayName}
                   </h1>
-                  <button
+                  {!immutableBaseline && <button
                     type="button"
                     aria-label="Rename network plan"
                     onClick={startEditingName}
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
                   >
                     <Pencil className="h-4 w-4" />
-                  </button>
-                  <button
+                  </button>}
+                  {!immutableBaseline && <button
                     type="button"
                     aria-label="Delete network plan"
                     onClick={() => void handleDelete()}
@@ -325,7 +397,7 @@ export default function NetworkScenarioDetailPage() {
                     ) : (
                       <Trash2 className="h-4 w-4" />
                     )}
-                  </button>
+                  </button>}
                 </div>
               )}
               <StatusPill scenario={scenario.data} />
@@ -337,6 +409,17 @@ export default function NetworkScenarioDetailPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            {immutableBaseline && (
+              <button
+                type="button"
+                onClick={() => void createEditableCopy()}
+                disabled={createScenario.isPending}
+                className="inline-flex h-10 items-center gap-2 rounded-md border border-border px-4 text-sm font-semibold disabled:opacity-50"
+              >
+                {createScenario.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                Create editable copy
+              </button>
+            )}
             {saveState === 'saving' && (
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -349,7 +432,7 @@ export default function NetworkScenarioDetailPage() {
                 Saved
               </span>
             )}
-            {planApplied ? (
+            {immutableBaseline ? null : planApplied ? (
               <button
                 type="button"
                 onClick={() => navigate(`${basePath}/flow`)}
@@ -384,7 +467,31 @@ export default function NetworkScenarioDetailPage() {
         </div>
       )}
 
-      {tab === 'scenario' && (
+      {immutableBaseline && tab === 'scenario' && (
+        <div className="rounded-md border border-primary/35 bg-primary/5 p-4 text-sm">
+          <div className="font-semibold">Published baseline is an immutable reference</div>
+          <p className="mt-1 text-muted-foreground">
+            Create an editable copy to change supply, capacity, lanes, or tariffs. This baseline and its solved run remain available for reset and historical comparison.
+          </p>
+        </div>
+      )}
+
+      {tab !== 'scenario' && staleResult && (
+        <div role="status" className="rounded-md border border-warning/40 bg-warning/5 p-3 text-sm">
+          <div className="font-semibold text-warning">This result is stale for the selected scenario</div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Run {result.data?.run_id ?? 'unknown'} solved revision {result.data?.revision ?? 'unknown'}, while the selected scenario is revision {scenario.data.revision}. The map is hidden until this scenario is solved again.
+          </p>
+          <button type="button" onClick={() => navigate(`${basePath}/scenario`)} className="mt-2 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium">Review and solve selected scenario</button>
+        </div>
+      )}
+      {tab !== 'scenario' && pinnedHistoryResult && (
+        <div role="status" className="rounded-md border border-primary/35 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+          Viewing pinned historical run <span className="font-medium text-foreground">{result.data?.run_id}</span> from revision {result.data?.revision}. Current selected scenario revision: {scenario.data.revision}.
+        </div>
+      )}
+
+      {tab === 'scenario' && !immutableBaseline && (
         <ScenarioTab
           scenario={scenario.data}
           draft={draft?.scenarioId === scenarioId && draft.dirty ? draft : null}
@@ -394,25 +501,26 @@ export default function NetworkScenarioDetailPage() {
           lanes={linehaulOverview.data?.lanes ?? []}
         />
       )}
-      {tab === 'flow' && (
+      {tab === 'flow' && !staleResult && (
         <FlowTab
           result={result}
           scenario={scenario.data}
           onBackToScenario={() => navigate(`${basePath}/scenario`)}
         />
       )}
-      {tab === 'lanes' && (
+      {tab === 'lanes' && !staleResult && (
         <LaneChangesTab
           result={result}
           onBackToScenario={() => navigate(`${basePath}/scenario`)}
         />
       )}
-      {tab === 'charges' && (
+      {tab === 'charges' && !staleResult && (
         <RateAuditTab result={result} onBackToScenario={() => navigate(`${basePath}/scenario`)} />
       )}
-      {tab === 'exceptions' && (
+      {tab === 'exceptions' && !staleResult && (
         <ExceptionsTab
           result={result}
+          scenario={scenario.data}
           facilities={options.data.facilities}
           onBackToScenario={() => navigate(`${basePath}/scenario`)}
         />
@@ -443,44 +551,6 @@ function StatusPill({ scenario }: { scenario: NetworkScenario }) {
   )
 }
 
-function RegionToggle({
-  regionName,
-  facilityIds,
-  disabledIds,
-  onToggle,
-}: {
-  regionName: string
-  facilityIds: string[]
-  disabledIds: Set<string>
-  onToggle: (disable: boolean) => void
-}) {
-  const ref = useRef<HTMLInputElement>(null)
-  const disabledCount = facilityIds.filter((id) => disabledIds.has(id)).length
-  const allDisabled = facilityIds.length > 0 && disabledCount === facilityIds.length
-  const partiallyDisabled = disabledCount > 0 && !allDisabled
-
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = partiallyDisabled
-  }, [partiallyDisabled])
-
-  return (
-    <label className="flex cursor-pointer items-center gap-2 border-b border-border/60 bg-muted/40 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-      <input
-        ref={ref}
-        type="checkbox"
-        checked={allDisabled}
-        aria-label={`Disable every facility in ${regionName}`}
-        onChange={() => onToggle(!allDisabled)}
-        className="h-3.5 w-3.5"
-      />
-      <span className="flex-1">{regionName}</span>
-      <span className="font-normal normal-case tracking-normal">
-        {disabledCount}/{facilityIds.length}
-      </span>
-    </label>
-  )
-}
-
 function regionName(regions: { region_id: string; region_name: string }[], regionId: string) {
   if (regionId === 'ALL') return 'All regions'
   return regions.find((row) => row.region_id === regionId)?.region_name ?? regionId
@@ -506,6 +576,9 @@ function ScenarioTab({
   const assumptions = draft?.assumptions ?? scenario.assumptions
 
   const disabledIds = new Set(assumptions.disabled_facility_ids)
+  const retainedHandlingCapacity = assumptions.facility_capacity_retained_pct ?? {}
+  const retainedSupply = assumptions.facility_supply_retained_pct ?? {}
+  const transferRequests = assumptions.dc_transfer_requests ?? []
   const disabledLaneIds = new Set(assumptions.disabled_lane_ids)
   const adjustedLaneIds = new Set(Object.keys(assumptions.lane_cost_adjustments_pct))
   const changedLaneIds = new Set([...disabledLaneIds, ...adjustedLaneIds])
@@ -514,17 +587,19 @@ function ScenarioTab({
   const [addLaneMode, setAddLaneMode] = useState<'disable' | 'adjust'>('disable')
   const [addAdjustPct, setAddAdjustPct] = useState('10')
   const [openConstraints, setOpenConstraints] = useState<
-    Record<string, { facilities?: boolean; lanes?: boolean }>
+    Record<string, { facilities?: boolean; lanes?: boolean; transfers?: boolean }>
   >({})
   const opened = openConstraints[scenario.scenario_id] ?? {}
-  const hasFacilityConstraints = disabledIds.size > 0
+  const hasFacilityConstraints = disabledIds.size > 0 || Object.keys(retainedHandlingCapacity).length > 0 || Object.keys(retainedSupply).length > 0
+  const hasTransfers = transferRequests.length > 0
   const hasLaneConstraints = changedLaneIds.size > 0
   const tariffs = assumptions.tariffs ?? []
   const hasTariffConstraints = tariffs.length > 0
   const showFacilityPicker = opened.facilities || hasFacilityConstraints
   const showLanePicker = opened.lanes || hasLaneConstraints
+  const showTransfers = opened.transfers || hasTransfers
   const hasAnyConstraint =
-    hasFacilityConstraints || hasLaneConstraints || hasTariffConstraints || showFacilityPicker || showLanePicker
+    hasFacilityConstraints || hasLaneConstraints || hasTariffConstraints || hasTransfers || showFacilityPicker || showLanePicker || showTransfers
   const availableLanes = lanes.filter((lane) => !changedLaneIds.has(lane.lane_id))
   const originOptions = uniqueLaneEndpoints(
     availableLanes.filter(
@@ -553,20 +628,27 @@ function ScenarioTab({
     onDraftChange({ scenarioId: scenario.scenario_id, assumptions: next, dirty: true })
   }
 
-  function toggleFacility(facilityId: string) {
-    toggleFacilities([facilityId], !disabledIds.has(facilityId))
+  function setRetainedCapacity(facilityId: string, value: number) {
+    const pct = Math.max(0, Math.min(200, value))
+    const next = { ...retainedHandlingCapacity }
+    if (pct === 100) delete next[facilityId]
+    else next[facilityId] = pct
+    touchAssumptions({
+      ...assumptions,
+      disabled_facility_ids: assumptions.disabled_facility_ids.filter((id) => id !== facilityId),
+      facility_capacity_retained_pct: next,
+    })
   }
 
-  function toggleFacilities(facilityIds: string[], disable: boolean) {
-    const next = new Set(assumptions.disabled_facility_ids)
-    for (const facilityId of facilityIds) {
-      if (disable) next.add(facilityId)
-      else next.delete(facilityId)
-    }
-    touchAssumptions({ ...assumptions, disabled_facility_ids: [...next].sort() })
+  function setRetainedSupply(facilityId: string, value: number) {
+    const pct = Math.max(0, Math.min(200, value))
+    const next = { ...retainedSupply }
+    if (pct === 100) delete next[facilityId]
+    else next[facilityId] = pct
+    touchAssumptions({ ...assumptions, facility_supply_retained_pct: next })
   }
 
-  function openConstraint(kind: 'facilities' | 'lanes') {
+  function openConstraint(kind: 'facilities' | 'lanes' | 'transfers') {
     setOpenConstraints((current) => ({
       ...current,
       [scenario.scenario_id]: {
@@ -576,7 +658,7 @@ function ScenarioTab({
     }))
   }
 
-  function closeConstraint(kind: 'facilities' | 'lanes') {
+  function closeConstraint(kind: 'facilities' | 'lanes' | 'transfers') {
     setOpenConstraints((current) => ({
       ...current,
       [scenario.scenario_id]: {
@@ -598,9 +680,36 @@ function ScenarioTab({
 
   function clearFacilityConstraints() {
     if (hasFacilityConstraints) {
-      touchAssumptions({ ...assumptions, disabled_facility_ids: [] })
+      touchAssumptions({
+        ...assumptions,
+        disabled_facility_ids: [],
+        facility_capacity_retained_pct: {},
+        facility_supply_retained_pct: {},
+      })
     }
     closeConstraint('facilities')
+  }
+
+  function addTransferRequest() {
+    const dcs = facilities.filter((row) => row.facility_type === 'distribution_center')
+    if (dcs.length < 2) return
+    const request: NetworkDcTransferRequest = {
+      transfer_id: globalThis.crypto?.randomUUID?.() ?? `transfer-${Date.now()}`,
+      origin_dc_id: dcs[0].facility_id,
+      destination_dc_id: dcs[1].facility_id,
+      departure_date: scenario.horizon_start,
+      capacity_units: 1,
+    }
+    touchAssumptions({ ...assumptions, dc_transfer_requests: [...transferRequests, request] })
+  }
+
+  function updateTransfer(transferId: string, changes: Partial<NetworkDcTransferRequest>) {
+    touchAssumptions({
+      ...assumptions,
+      dc_transfer_requests: transferRequests.map((row) =>
+        row.transfer_id === transferId ? { ...row, ...changes } : row,
+      ),
+    })
   }
 
   function clearLaneConstraints() {
@@ -705,7 +814,7 @@ function ScenarioTab({
                 className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"
               >
                 <Plus className="h-3.5 w-3.5" />
-                Facility availability
+                Facility supply & handling
               </button>
             )}
             {!showLanePicker && (
@@ -718,11 +827,21 @@ function ScenarioTab({
                 Lane rule
               </button>
             )}
+            {!showTransfers && (
+              <button
+                type="button"
+                onClick={() => openConstraint('transfers')}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Express AIR transfer
+              </button>
+            )}
           </div>
 
           {!hasAnyConstraint && (
             <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
-              No network changes yet. Add a tariff, restrict facility availability, or layer a lane rule.
+              No network changes yet. Add a tariff, reduce facility throughput, or layer a lane rule.
             </p>
           )}
 
@@ -730,8 +849,8 @@ function ScenarioTab({
           <div className="flex flex-col gap-2 rounded-md border border-border/70 p-3">
             <div className="flex items-start justify-between gap-2">
               <div className="flex flex-col gap-1">
-                <span className="text-sm font-semibold">Facility availability</span>
-                <span className="text-xs text-muted-foreground">Disable DCs or depots while retaining published capacity for comparison.</span>
+                <span className="text-sm font-semibold">Facility supply and handling</span>
+                <span className="text-xs text-muted-foreground">Available supply applies only to DC inventory. Handling capacity limits all cases processed by a facility. Both accept 0–200%.</span>
               </div>
               <button
                 type="button"
@@ -743,6 +862,9 @@ function ScenarioTab({
               </button>
             </div>
             <div className="max-h-64 overflow-auto rounded-md border border-border">
+              <div className="sticky top-0 z-10 grid grid-cols-[minmax(0,1fr)_200px_200px] gap-2 border-b border-border bg-muted px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <span>Facility</span><span>Available supply (%)</span><span>Handling capacity (%)</span>
+              </div>
               {regions
                 .filter((region) => region.region_id !== 'ALL')
                 .map((region) => {
@@ -751,33 +873,29 @@ function ScenarioTab({
                   )
                   return (
                   <div key={region.region_id}>
-                    <RegionToggle
-                      regionName={region.region_name}
-                      facilityIds={regionFacilities.map((row) => row.facility_id)}
-                      disabledIds={disabledIds}
-                      onToggle={(disable) =>
-                        toggleFacilities(
-                          regionFacilities.map((row) => row.facility_id),
-                          disable,
-                        )
-                      }
-                    />
+                    <div className="border-b border-border/60 bg-muted/40 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {region.region_name}
+                    </div>
                     {regionFacilities
                       .map((facility) => (
                         <label
                           key={facility.facility_id}
-                          className="flex cursor-pointer items-center gap-2 border-b border-border/40 px-3 py-1.5 text-sm last:border-0"
+                          className="grid grid-cols-[minmax(0,1fr)_110px_90px_110px_90px] items-center gap-2 border-b border-border/40 px-3 py-2 text-sm last:border-0"
                         >
+                          <span className="min-w-0 truncate">{facility.facility_name}<span className="block text-[10px] text-muted-foreground">{facility.facility_type === 'distribution_center' ? 'Distribution center' : 'Depot'}</span></span>
                           <input
-                            type="checkbox"
-                            checked={disabledIds.has(facility.facility_id)}
-                            onChange={() => toggleFacility(facility.facility_id)}
-                            className="h-4 w-4"
+                            type="range"
+                            min={0}
+                            max={200}
+                            step={1}
+                            disabled={facility.facility_type !== 'distribution_center'}
+                            value={retainedSupply[facility.facility_id] ?? 100}
+                            onChange={(event) => setRetainedSupply(facility.facility_id, Number(event.target.value))}
+                            aria-label={`${facility.facility_name} available supply percent`}
                           />
-                          <span className="flex-1">{facility.facility_name}</span>
-                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                            {facility.facility_type === 'distribution_center' ? 'DC' : 'Depot'}
-                          </span>
+                          <input type="number" min={0} max={200} disabled={facility.facility_type !== 'distribution_center'} value={facility.facility_type === 'distribution_center' ? retainedSupply[facility.facility_id] ?? 100 : ''} placeholder="N/A" onChange={(event) => setRetainedSupply(facility.facility_id, Number(event.target.value))} aria-label={`${facility.facility_name} available supply percent exact value`} className="h-8 rounded-md border border-border bg-background px-2 text-right text-xs tabular-nums disabled:bg-muted/30" />
+                          <input type="range" min={0} max={200} step={1} value={disabledIds.has(facility.facility_id) ? 0 : retainedHandlingCapacity[facility.facility_id] ?? 100} onChange={(event) => setRetainedCapacity(facility.facility_id, Number(event.target.value))} aria-label={`${facility.facility_name} handling capacity percent`} />
+                          <input type="number" min={0} max={200} value={disabledIds.has(facility.facility_id) ? 0 : retainedHandlingCapacity[facility.facility_id] ?? 100} onChange={(event) => setRetainedCapacity(facility.facility_id, Number(event.target.value))} aria-label={`${facility.facility_name} handling capacity percent exact value`} className="h-8 rounded-md border border-border bg-background px-2 text-right text-xs tabular-nums" />
                         </label>
                       ))}
                   </div>
@@ -785,6 +903,60 @@ function ScenarioTab({
                 })}
             </div>
           </div>
+          )}
+
+          {showTransfers && (
+            <div className="flex flex-col gap-3 rounded-md border border-border/70 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <span className="text-sm font-semibold">Express AIR transfers</span>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Capacity departs the origin DC on the selected date. Arrival, cost, and served shortage are determined only by the solved plan.
+                  </p>
+                </div>
+                <button type="button" onClick={addTransferRequest} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs">
+                  <Plus className="h-3.5 w-3.5" /> Add transfer
+                </button>
+              </div>
+              {transferRequests.length === 0 ? (
+                <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+                  No transfer requested. Add one to let the solver evaluate conserved supply and arrival timing.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {transferRequests.map((request) => {
+                    const dcs = facilities.filter((row) => row.facility_type === 'distribution_center')
+                    return (
+                      <div key={request.transfer_id} className="grid gap-2 rounded-md border border-border bg-background/40 p-3 md:grid-cols-[1fr_1fr_150px_120px_auto]">
+                        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                          Origin DC
+                          <select value={request.origin_dc_id} onChange={(event) => updateTransfer(request.transfer_id, { origin_dc_id: event.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground">
+                            {dcs.filter((dc) => dc.facility_id !== request.destination_dc_id).map((dc) => <option key={dc.facility_id} value={dc.facility_id}>{dc.facility_name}</option>)}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                          Destination DC
+                          <select value={request.destination_dc_id} onChange={(event) => updateTransfer(request.transfer_id, { destination_dc_id: event.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground">
+                            {dcs.filter((dc) => dc.facility_id !== request.origin_dc_id).map((dc) => <option key={dc.facility_id} value={dc.facility_id}>{dc.facility_name}</option>)}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                          Departure date
+                          <input type="date" min={scenario.horizon_start} max={scenario.horizon_end} value={request.departure_date} onChange={(event) => updateTransfer(request.transfer_id, { departure_date: event.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground" />
+                        </label>
+                        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                          Capacity units
+                          <input type="number" min={1} step={1} value={request.capacity_units} onChange={(event) => updateTransfer(request.transfer_id, { capacity_units: Math.max(1, Math.floor(Number(event.target.value) || 1)) })} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground" />
+                        </label>
+                        <button type="button" aria-label="Remove express AIR transfer" onClick={() => touchAssumptions({ ...assumptions, dc_transfer_requests: transferRequests.filter((row) => row.transfer_id !== request.transfer_id) })} className="self-end rounded-md p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           )}
 
           {showLanePicker && (
@@ -975,32 +1147,10 @@ function ScenarioTab({
               Validation runs automatically before the plan is solved.
             </p>
           )}
-          <p className="text-xs text-muted-foreground">
-            Run fixed-capacity plan from the header. The app saves pending edits,
-            validates the scenario, then solves.
-          </p>
         </section>
       </div>
     </div>
   )
-}
-
-function uniqueLaneEndpoints(
-  lanes: NetworkLaneAggregate[],
-  idKey: 'origin_endpoint_id' | 'destination_endpoint_id',
-  nameKey: 'origin_endpoint_name' | 'destination_endpoint_name',
-) {
-  const endpoints = new Map<string, { id: string; name: string }>()
-  for (const lane of lanes) {
-    endpoints.set(lane[idKey], { id: lane[idKey], name: lane[nameKey] })
-  }
-  return [...endpoints.values()].sort((left, right) =>
-    left.name.localeCompare(right.name),
-  )
-}
-
-function laneNameFor(lanes: NetworkLaneAggregate[], laneId: string) {
-  return lanes.find((lane) => lane.lane_id === laneId)?.lane_name ?? laneId
 }
 
 function OverrideRow({
@@ -1174,13 +1324,8 @@ function FlowTab({
         ))}
       </div>
       <NetworkPricingNote result={result.data} />
-      {deltas.assigned_units === 0 && overview.kpis.unmet_units === 0 && (
-        <p className="text-xs text-muted-foreground">
-          All {formatNumber(overview.kpis.demand_units)} cases of demand are assigned in both
-          plans. Assigned volume is unchanged; freight and tariffs can still change as
-          sourcing changes. Compare the linehaul cost, tariff, and cross-border lines.
-        </p>
-      )}
+
+
       <div className="grid overflow-hidden rounded-lg border border-border bg-card sm:grid-cols-2 lg:grid-cols-5">
         <CompactMetric label="Tariff paid" value={tariffTotal == null ? '—' : formatCurrency(tariffTotal)} />
         <CompactMetric label="Tariff if baseline unchanged" value={baselineTariffExposure == null ? '—' : formatCurrency(baselineTariffExposure)} />
@@ -1262,15 +1407,6 @@ function FlowTab({
               scenario={formatPercent(overview.kpis.on_time_pct)}
             />
           </ul>
-          {(baselineTariffExposure ?? 0) > 0 && (
-            <p className="mt-3 text-xs text-muted-foreground">
-              Unchanged baseline tariff exposure: {formatCurrency(baselineTariffExposure ?? 0)} under the scenario's tariff rules. This is a counterfactual; baseline cost includes only its existing tariffs.
-            </p>
-          )}
-          <p className="mt-4 text-xs text-muted-foreground">
-            The solver assigns fixed demand through fixed supplied capacity; any
-            remaining gap is reported as unmet demand, never absorbed.
-          </p>
         </div>
       </div>
       <NetworkDetailDrawer
@@ -1307,6 +1443,8 @@ function FlowTab({
           setSelectedFacilityId(null)
         }}
         onSelectFacility={openFacility}
+        shortageScenarioId={scenario.scenario_id}
+        shortageRunId={pinnedRunId}
       />
     </div>
   )
@@ -1340,14 +1478,6 @@ function CompareRow({
       </span>
     </li>
   )
-}
-
-function signedNumber(value: number) {
-  return `${value >= 0 ? '+' : ''}${formatNumber(value)}`
-}
-
-function signedCurrency(value: number, maximumFractionDigits = 0) {
-  return `${value >= 0 ? '+' : ''}${formatCurrency(value, maximumFractionDigits)}`
 }
 
 /* ----------------------------- Lane changes tab ---------------------------- */
@@ -1696,14 +1826,33 @@ function ChargeRow({
 
 function ExceptionsTab({
   result,
+  scenario,
   facilities,
   onBackToScenario,
 }: {
   result: ResultQuery
-  facilities: { facility_id: string; facility_name: string }[]
+  scenario: NetworkScenario
+  facilities: { facility_id: string; facility_name: string; facility_type: string; parent_facility_id: string | null; region_id: string }[]
   onBackToScenario: () => void
 }) {
+  const [shortageParams] = useSearchParams()
   const [showAllMissingRates, setShowAllMissingRates] = useState(false)
+  const [reallocate, setReallocate] = useState<NetworkScenarioException | null>(null)
+  const openedScopedShortage = useRef(false)
+  const exceptions = result.data?.exceptions ?? []
+  const unmet = exceptions.filter((row) => row.exception_type === 'unmet_demand')
+  const requestedDepot = shortageParams.get('shortageDepot')
+  const requestedDate = shortageParams.get('shortageDate')
+
+  useEffect(() => {
+    if (openedScopedShortage.current || !requestedDepot || !requestedDate) return
+    const exact = unmet.find(
+      (row) => row.entity_id === requestedDepot && row.service_date === requestedDate,
+    )
+    if (!exact) return
+    openedScopedShortage.current = true
+    setReallocate(exact)
+  }, [requestedDate, requestedDepot, unmet])
 
   if (result.isLoading) {
     return (
@@ -1722,57 +1871,63 @@ function ExceptionsTab({
     )
   }
 
-  const exceptions = result.data.exceptions
-  const unmet = exceptions.filter((row) => row.exception_type === 'unmet_demand')
+  const scopedUnmet = unmet.filter(
+    (row) =>
+      (!requestedDepot || row.entity_id === requestedDepot) &&
+      (!requestedDate || row.service_date === requestedDate),
+  )
+  const visibleUnmet = requestedDepot || requestedDate ? scopedUnmet : unmet
   const missingRates = exceptions.filter((row) => row.exception_type === 'missing_rate')
-  const unmetByDepot = new Map<string, NetworkScenarioException>()
-  for (const row of unmet) {
-    const key = row.entity_id ?? 'unknown'
-    const existing = unmetByDepot.get(key)
-    if (existing) {
-      unmetByDepot.set(key, {
-        ...existing,
-        demand_units: (existing.demand_units ?? 0) + (row.demand_units ?? 0),
-        assigned_units: (existing.assigned_units ?? 0) + (row.assigned_units ?? 0),
-        unmet_units: (existing.unmet_units ?? 0) + (row.unmet_units ?? 0),
-      })
-    } else {
-      unmetByDepot.set(key, { ...row })
-    }
-  }
+  const evidenceUnavailable = result.data.exception_evidence_status === 'unavailable'
 
   return (
     <div className="flex flex-col gap-4">
-      {unmet.length === 0 && missingRates.length === 0 ? (
+      {evidenceUnavailable ? (
+        <EmptyState
+          title="Dated exceptions are unavailable"
+          description={result.data.exception_evidence_message ?? 'This solved plan does not contain dated shortage evidence for the selected horizon.'}
+          action={{ label: 'Go to Scenario tab', onClick: onBackToScenario }}
+        />
+      ) : unmet.length === 0 && missingRates.length === 0 ? (
         <EmptyState
           title="No exceptions"
           description="Every case was assigned within supplied capacity and governed rates."
         />
       ) : (
         <>
-          {unmet.length > 0 && (
+          {(requestedDepot || requestedDate) && visibleUnmet.length === 0 && (
+            <div className="rounded-md border border-warning/40 bg-warning/5 p-3 text-sm text-muted-foreground">
+              This run has no backend-reported network shortage matching the requested depot and date. No supply reallocation was created.
+            </div>
+          )}
+          {visibleUnmet.length > 0 && (
             <section className="overflow-hidden rounded-lg border border-destructive/40 bg-destructive/5">
               <div className="flex items-center gap-2 border-b border-destructive/30 px-4 py-2.5 text-sm font-semibold text-destructive">
                 <AlertTriangle className="h-4 w-4" />
-                Unmet demand by depot (horizon total)
+                Dated unmet demand by depot
               </div>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-2 font-medium">Depot</th>
+                    <th className="px-4 py-2 font-medium">Service date</th>
                     <th className="px-4 py-2 text-right font-medium">Demand</th>
                     <th className="px-4 py-2 text-right font-medium">Assigned</th>
                     <th className="px-4 py-2 text-right font-medium">Unmet</th>
+                    <th className="px-4 py-2 text-right font-medium">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/50 bg-card/60">
-                  {[...unmetByDepot.values()]
+                  {visibleUnmet
                     .sort((a, b) => (b.unmet_units ?? 0) - (a.unmet_units ?? 0))
                     .map((row) => (
-                      <tr key={row.exception_id + row.entity_id}>
+                      <tr key={row.exception_id}>
                         <td className="px-4 py-2.5">
                           {facilities.find((f) => f.facility_id === row.entity_id)
                             ?.facility_name ?? row.entity_id}
+                        </td>
+                        <td className="px-4 py-2.5 text-muted-foreground">
+                          {row.service_date ?? 'Not provided'}
                         </td>
                         <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">
                           {formatNumber(row.demand_units ?? 0)}
@@ -1782,6 +1937,17 @@ function ExceptionsTab({
                         </td>
                         <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-destructive">
                           {formatNumber(row.unmet_units ?? 0)}
+                        </td>
+                        <td className="px-4 py-2.5 text-right">
+                          <button
+                            type="button"
+                            disabled={!row.entity_id || !row.service_date || !facilities.find((facility) => facility.facility_id === row.entity_id)?.parent_facility_id}
+                            onClick={() => setReallocate(row)}
+                            className="rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                            title={!row.service_date ? 'A service date is required to reallocate supply.' : undefined}
+                          >
+                            Reallocate supply
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -1825,6 +1991,231 @@ function ExceptionsTab({
           )}
         </>
       )}
+      {reallocate && (
+        <ReallocateSupplyModal
+          shortage={reallocate}
+          scenario={scenario}
+          facilities={facilities}
+          lanes={result.data.overview.lanes}
+          facilityAggregates={result.data.overview.facilities}
+          onClose={() => setReallocate(null)}
+        />
+      )}
     </div>
   )
+}
+
+function ReallocateSupplyModal({
+  shortage,
+  scenario,
+  facilities,
+  lanes,
+  facilityAggregates,
+  onClose,
+}: {
+  shortage: NetworkScenarioException
+  scenario: NetworkScenario
+  facilities: { facility_id: string; facility_name: string; facility_type: string; parent_facility_id: string | null; region_id: string }[]
+  lanes: NetworkLaneAggregate[]
+  facilityAggregates: import('@/api/types').NetworkFacilityAggregate[]
+  onClose: () => void
+}) {
+  const navigate = useNavigate()
+  const destinationDepot = facilities.find((row) => row.facility_id === shortage.entity_id)
+  const destinationDcId = destinationDepot?.parent_facility_id ?? ''
+  const dcs = facilities.filter((row) => row.facility_type === 'distribution_center')
+  const donors = dcs.filter((row) => row.facility_id !== destinationDcId)
+  const rankedDonors = [...donors].sort((left, right) => {
+    const score = (donor: typeof left) => {
+      const aggregate = facilityAggregates.find((row) => row.facility_id === donor.facility_id)
+      const hasSupply = (aggregate?.supply_available_units ?? 0) > 0 ? 4 : 0
+      const hasInboundLane = lanes.some((lane) => lane.origin_endpoint_id === donor.facility_id && (lane.destination_endpoint_id === destinationDcId || lane.destination_endpoint_id === shortage.entity_id)) ? 2 : 0
+      const sameRegion = donor.region_id === destinationDepot?.region_id ? 1 : 0
+      return hasSupply + hasInboundLane + sameRegion
+    }
+    return score(right) - score(left) || left.facility_name.localeCompare(right.facility_name)
+  })
+  const [originDcId, setOriginDcId] = useState(rankedDonors[0]?.facility_id ?? '')
+  const [capacityUnits, setCapacityUnits] = useState(Math.max(1, Math.floor(shortage.unmet_units ?? 1)))
+  const [scenarioName, setScenarioName] = useState(scenario.scenario_name)
+  const [strategy, setStrategy] = useState<'replenish' | 'bypass'>(suggestedShortageStrategy(shortage.shortage_cause))
+  const [departureDate, setDepartureDate] = useState(() => suggestedDepartureDate(shortage.service_date, scenario.horizon_start))
+  const [solved, setSolved] = useState<Awaited<ReturnType<ReturnType<typeof useRunNetworkScenario>['mutateAsync']>> | null>(null)
+  const [submittedTransferId, setSubmittedTransferId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const update = useUpdateNetworkScenario(scenario.scenario_id)
+  const validate = useValidateNetworkScenario(scenario.scenario_id)
+  const run = useRunNetworkScenario(scenario.scenario_id)
+  const busy = update.isPending || validate.isPending || run.isPending
+  const destinationDc = dcs.find((row) => row.facility_id === destinationDcId)
+  const directAlternatives = lanes.filter((lane) =>
+    lane.mode.toUpperCase() !== 'AIR' &&
+    lane.lane_type === 'LINEHAUL' &&
+    !scenario.assumptions.disabled_lane_ids.includes(lane.lane_id) &&
+    (lane.destination_endpoint_id === shortage.entity_id || lane.destination_endpoint_id === destinationDcId) &&
+    lane.origin_endpoint_id !== destinationDcId
+  )
+  const solvedMovement = solved?.result.transfer_movements?.find(
+    (movement) => movement.transfer_id === submittedTransferId,
+  )
+
+  async function solveTransfer() {
+    if (!shortage.service_date || !departureDate || !originDcId || !destinationDcId) return
+    setError(null)
+    setSolved(null)
+    const transfer: NetworkDcTransferRequest = {
+      transfer_id: globalThis.crypto?.randomUUID?.() ?? `transfer-${Date.now()}`,
+      origin_dc_id: originDcId,
+      destination_dc_id: destinationDcId,
+      departure_date: departureDate,
+      capacity_units: capacityUnits,
+    }
+    try {
+      const updated = await update.mutateAsync({
+        expected_revision: scenario.revision,
+        scenario_name: scenarioName.trim() || scenario.scenario_name,
+        assumptions: {
+          ...scenario.assumptions,
+          dc_transfer_requests: [...(scenario.assumptions.dc_transfer_requests ?? []), transfer],
+        },
+      })
+      const validated = await validate.mutateAsync()
+      if (!validated.validation?.valid) {
+        throw new Error(validated.validation?.summary ?? 'The transfer request did not validate.')
+      }
+      const next = await run.mutateAsync(validated.revision || updated.revision)
+      setSubmittedTransferId(transfer.transfer_id)
+      setSolved(next)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The transfer scenario could not be solved.')
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm" onMouseDown={onClose}>
+      <section role="dialog" aria-modal="true" aria-labelledby="reallocate-title" className="w-full max-w-2xl rounded-lg border border-border bg-card shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="flex items-start justify-between border-b border-border p-4">
+          <div>
+            <h2 id="reallocate-title" className="font-semibold">Resolve shortage</h2>
+            <p className="mt-1 text-xs text-muted-foreground">Choose whether the constraint is missing stock or insufficient local handling.</p>
+          </div>
+          <button type="button" aria-label="Close reallocate supply" onClick={onClose} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="space-y-4 p-4">
+          <div className="grid gap-3 rounded-md border border-border bg-background/40 p-3 sm:grid-cols-3">
+            <ReallocationMetric label="Source depot" value={destinationDepot?.facility_name ?? shortage.entity_id ?? 'Unknown'} />
+            <ReallocationMetric label="Service date" value={shortage.service_date ?? 'Missing'} />
+            <ReallocationMetric label="Shortage" value={`${formatNumber(shortage.unmet_units ?? 0)} cases`} />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Shortage resolution strategy">
+            <button type="button" role="radio" aria-checked={strategy === 'replenish'} onClick={() => setStrategy('replenish')} className={cn('rounded-md border p-3 text-left', strategy === 'replenish' ? 'border-primary bg-primary/5' : 'border-border')}>
+              <span className="text-sm font-semibold">Replenish available supply via AIR</span>
+              <span className="mt-1 block text-xs text-muted-foreground">Move conserved stock between DCs. This does not increase destination handling capacity.</span>
+            </button>
+            <button type="button" role="radio" aria-checked={strategy === 'bypass'} onClick={() => setStrategy('bypass')} className={cn('rounded-md border p-3 text-left', strategy === 'bypass' ? 'border-primary bg-primary/5' : 'border-border')}>
+              <span className="text-sm font-semibold">Bypass constrained handling</span>
+              <span className="mt-1 block text-xs text-muted-foreground">Use an eligible direct linehaul or reassign demand through existing network and customer-release controls.</span>
+            </button>
+          </div>
+          {strategy === 'replenish' ? <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">Donor DC · verify supply
+              <select value={originDcId} onChange={(event) => setOriginDcId(event.target.value)} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground">
+                {donors.map((row) => <option key={row.facility_id} value={row.facility_id}>{row.facility_name}</option>)}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">Destination DC
+              <input readOnly value={destinationDc?.facility_name ?? destinationDcId} className="h-10 rounded-md border border-border bg-muted/40 px-3 text-sm text-foreground" />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">Transfer capacity
+              <input type="number" min={1} step={1} value={capacityUnits} onChange={(event) => setCapacityUnits(Math.max(1, Math.floor(Number(event.target.value) || 1)))} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground" />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">Departure date · before shortage
+              <input type="date" min={scenario.horizon_start} max={scenario.horizon_end} value={departureDate} onChange={(event) => setDepartureDate(event.target.value)} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground" />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">Scenario name
+              <input value={scenarioName} onChange={(event) => setScenarioName(event.target.value)} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground" />
+            </label>
+          </div>
+          {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
+          {solved && (
+            <div className="rounded-md border border-success/40 bg-success/5 p-3">
+              <div className="text-sm font-semibold">Solved comparison ready</div>
+              {solvedMovement ? (
+                <div className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+                  <ReallocationMetric label="Arrival" value={solvedMovement.arrival_date} />
+                  <ReallocationMetric label="AIR assigned" value={`${formatNumber(solvedMovement.assigned_units)} / ${formatNumber(solvedMovement.capacity_units)}`} />
+                  <ReallocationMetric label="Transit" value={`${formatNumber(solvedMovement.distance_miles, 1)} mi · ${formatNumber(solvedMovement.transit_minutes)} min`} />
+                  <ReallocationMetric label="Transfer cost" value={formatCurrency(solvedMovement.total_cost)} />
+                </div>
+              ) : (
+                <p className="mt-2 rounded-md border border-warning/40 bg-warning/5 p-2 text-xs text-muted-foreground">
+                  The solve returned no movement record for this transfer. No arrival or transfer benefit is claimed.
+                </p>
+              )}
+              <div className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+                <ReallocationMetric label="Unmet change" value={`${signedNumber(solved.result.kpi_deltas.unmet_units)} cases`} />
+                <ReallocationMetric label="Assigned change" value={`${signedNumber(solved.result.kpi_deltas.assigned_units)} cases`} />
+                <ReallocationMetric label="Cost change" value={signedCurrency(solved.result.kpi_deltas.total_cost)} />
+                <ReallocationMetric label="Run" value={solved.result.run_id ?? 'Completed'} />
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">These are solved network deltas. Inspect the flow and exception details before using this scenario operationally.</p>
+            </div>
+          )}
+          </> : (
+            <div className="space-y-3 rounded-md border border-border bg-background/40 p-3">
+              <div>
+                <div className="text-sm font-semibold">Eligible existing direct lanes</div>
+                <p className="mt-1 text-xs text-muted-foreground">These are permitted, active linehaul links in this solved network. The next solve decides assignment under published lane and customer-release contracts.</p>
+              </div>
+              {directAlternatives.length ? (
+                <ul className="space-y-1.5 text-xs">
+                  {directAlternatives.map((lane) => <li key={lane.lane_id} className="flex items-center justify-between gap-3 rounded border border-border px-2.5 py-2"><span>{lane.origin_endpoint_name} → {lane.destination_endpoint_name}</span><span className="text-muted-foreground">{formatNumber(lane.capacity_units)} capacity · {formatPercent(lane.utilization_pct)} used</span></li>)}
+                </ul>
+              ) : (
+                <p className="rounded-md border border-warning/40 bg-warning/5 p-2 text-xs text-muted-foreground">No eligible direct lane is present in this result. Review lane controls or open the depot workspace to release and reassign customer demand.</p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => navigate(`/network/scenarios/${encodeURIComponent(scenario.scenario_id)}/scenario`)} className="rounded-md border border-border px-3 py-2 text-xs font-medium">Review lane & handling controls</button>
+                {destinationDepot && buildDepotAnalysisHref(destinationDepot.facility_id, scenario.horizon_start, scenario.horizon_end, scenario.scenario_id, solved?.result.run_id) && (
+                  <button type="button" onClick={() => navigate(buildDepotAnalysisHref(destinationDepot.facility_id, scenario.horizon_start, scenario.horizon_end, scenario.scenario_id, solved?.result.run_id)!)} className="rounded-md border border-border px-3 py-2 text-xs font-medium">Open depot release workspace</button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-border p-4">
+          <button type="button" onClick={onClose} className="rounded-md border border-border px-3 py-2 text-sm">Cancel</button>
+          {strategy === 'bypass' ? null : solved ? (
+            <button type="button" onClick={() => navigate(`/network/scenarios/${encodeURIComponent(scenario.scenario_id)}/flow${solved.result.run_id ? `?run=${encodeURIComponent(solved.result.run_id)}` : ''}`)} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Compare solved plan</button>
+          ) : (
+            <button type="button" disabled={busy || !originDcId || !destinationDcId || !shortage.service_date || !departureDate} onClick={() => void solveTransfer()} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">
+              {busy && <Loader2 className="h-4 w-4 animate-spin" />}{busy ? 'Saving and solving…' : 'Save and solve'}
+            </button>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function ReallocationMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-background/40 p-2.5">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 break-words text-sm font-semibold tabular-nums">{value}</div>
+    </div>
+  )
+}
+
+function suggestedDepartureDate(serviceDate: string | null, horizonStart: string) {
+  if (!serviceDate || serviceDate <= horizonStart) return horizonStart
+  const date = new Date(`${serviceDate}T12:00:00`)
+  date.setDate(date.getDate() - 1)
+  const preceding = date.toISOString().slice(0, 10)
+  return preceding < horizonStart ? horizonStart : preceding
+}
+
+function suggestedShortageStrategy(shortageCause: string | null | undefined): 'replenish' | 'bypass' {
+  return shortageCause?.toLowerCase().includes('handling') ? 'bypass' : 'replenish'
 }

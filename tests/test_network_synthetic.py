@@ -33,6 +33,18 @@ def _network():
     )
 
 
+def test_customer_business_names_are_repeatable_and_preserve_planning_inputs() -> None:
+    first = generate_network_dataset(generate_depots(), seed=42, customers_per_depot=12)
+    repeated = generate_network_dataset(generate_depots(), seed=42, customers_per_depot=12)
+    customers = first["dim_network_customers"]
+    names = [row["customer_name"] for row in customers]
+    assert names == [row["customer_name"] for row in repeated["dim_network_customers"]]
+    assert len(set(names)) == len(names)
+    assert all("Customer " not in name for name in names)
+    assert first["demand_plan_daily"] == repeated["demand_plan_daily"]
+    assert first["baseline_network_flow_daily"] == repeated["baseline_network_flow_daily"]
+
+
 @pytest.fixture(scope="module")
 def national_network():
     return generate_national_network_dataset(generate_depots(), seed=42)
@@ -158,6 +170,69 @@ def test_repair_path_is_detached_bounded_and_preserves_land_water_guardrails() -
     assert not is_on_water(*inland)
 
 
+def test_repair_is_repeatable_from_recorded_original_coordinate() -> None:
+    facilities = [{"facility_id": "DPT", "lat": 32.85, "lng": -96.85}]
+    source = [{
+        "customer_id": "NET-CUST-1", "depot_id": "DPT",
+        "lat": 32.72, "lng": -96.91,
+        "road_original_lat": 32.70, "road_original_lng": -96.90,
+    }]
+    seen = []
+    def validator(_depot, point):
+        seen.append((round(float(point["lat"]), 6), round(float(point["lng"]), 6)))
+        return True
+    repaired = repair_generated_customer_reachability(
+        source, facilities, validator=validator,
+        provenance={"costing": "truck", "coverage_id": "tx", "artifact_version": "v1"},
+    )
+    assert seen[0] == (32.7, -96.9)
+    assert repaired[0]["road_original_lat"] == 32.7
+    assert repaired[0]["road_original_lng"] == -96.9
+
+
+def test_repair_scopes_validation_to_coverage_depots_and_preserves_other_rows() -> None:
+    facilities = [
+        {"facility_id": "DPT_TX", "lat": 32.8, "lng": -96.8},
+        {"facility_id": "DPT_MI", "lat": 42.3, "lng": -83.2},
+    ]
+    customers = [
+        {"customer_id": "NET-CUST-TX", "depot_id": "DPT_TX", "lat": 32.7, "lng": -96.9},
+        {"customer_id": "NET-CUST-MI", "depot_id": "DPT_MI", "lat": 42.4, "lng": -83.1,
+         "road_reachability_status": "unresolved"},
+    ]
+    calls = []
+    repaired = repair_generated_customer_reachability(
+        customers, facilities,
+        validator=lambda depot, point: calls.append(str(depot["facility_id"])) or True,
+        provenance={"costing": "truck", "coverage_id": "tx", "artifact_version": "v1"},
+        depot_ids={"DPT_TX"},
+    )
+    assert calls == ["DPT_TX"]
+    assert repaired[0]["road_reachability_status"] == "validated"
+    assert repaired[1] == customers[1]
+
+
+def test_generated_customer_records_original_candidate_and_road_access_provenance() -> None:
+    depot = {"lat": 32.85, "lng": -96.85}
+    lat, lng, metadata = _resolve_road_reachable_coordinate(
+        depot=depot, original_lat=32.7, original_lng=-96.9,
+        validator=lambda _depot, point: {
+            "reachable": True,
+            "road_access_lat": float(point["lat"]) + 0.0001,
+            "road_access_lng": float(point["lng"]) - 0.0001,
+            "road_snap_distance_miles": 0.01,
+        },
+        provenance={"costing": "truck", "coverage_id": "tx", "artifact_version": "v1"},
+    )
+    assert (lat, lng) == pytest.approx((32.7002, -96.9002))
+    assert metadata["road_original_lat"] == 32.7
+    assert metadata["road_candidate_lat"] == 32.7
+    assert metadata["road_candidate_lng"] == -96.9
+    assert metadata["road_access_lat"] == pytest.approx(32.7002)
+    assert metadata["road_access_lng"] == pytest.approx(-96.9002)
+    assert metadata["road_snap_distance_miles"] == 0.01
+
+
 def test_every_lane_endpoint_exists_and_schema_rejects_wrong_lane_grain() -> None:
     data = _network()
     assert validate_network_dataset(data) == []
@@ -206,6 +281,32 @@ def test_baseline_flow_respects_supplied_lane_and_facility_capacity() -> None:
         assert int(row["assigned_units"]) <= lane_capacity[key]
 
     assert validate_network_dataset(data) == []
+
+
+def test_daily_supply_is_dc_only_fresh_and_above_normal_handling() -> None:
+    data = _network()
+    facilities = {row["facility_id"]: row for row in data["dim_facilities"]}
+    dc_capacity = {
+        (row["capacity_plan_version_id"], row["service_date"], row["facility_id"]): int(
+            row["capacity_units"]
+        )
+        for row in data["facility_capacity_daily"]
+        if facilities[row["facility_id"]]["facility_type"] == "distribution_center"
+    }
+    supply = {
+        (row["capacity_plan_version_id"], row["service_date"], row["facility_id"]): int(
+            row["supply_units"]
+        )
+        for row in data["facility_supply_daily"]
+    }
+
+    assert set(supply) == set(dc_capacity)
+    assert all(supply[key] >= capacity for key, capacity in dc_capacity.items())
+    assert all(
+        facilities[facility_id]["facility_type"] == "distribution_center"
+        for _, _, facility_id in supply
+    )
+    assert len({service_date for _, service_date, _ in supply}) == 28
 
 
 def test_network_generation_is_deterministic_and_changes_with_seed() -> None:
@@ -344,6 +445,7 @@ print(json.dumps({
   'dates': sorted({r['service_date'] for r in d['demand_plan_daily']}),
   'route_dates': sorted({r['route_date'] for r in local['fact_delivery_orders']}),
   'rate_ranges': [[r.version.effective_start, r.version.effective_end] for r in rates],
+  'rate_versions': {r.contract_id: r.version.version_id for r in rates},
 }))
 """
     env = {**os.environ, "DEMO_DATE_ANCHOR": anchor, "PYTHONPATH": os.getcwd()}
@@ -358,6 +460,11 @@ print(json.dumps({
     assert dates[0] <= payload["route_dates"][0] <= dates[-1]
     assert payload["rate_ranges"]
     assert all(start <= dates[0] and end >= dates[-1] for start, end in payload["rate_ranges"])
+    assert len(payload["rate_versions"]) == 9
+    assert all(
+        anchor.replace("-", "") in version_id
+        for version_id in payload["rate_versions"].values()
+    )
 
 
 def test_process_anchor_does_not_slide_when_clock_changes() -> None:

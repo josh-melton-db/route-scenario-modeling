@@ -56,6 +56,9 @@ import type {
   ScenarioHistoryItem,
   ScenarioTypeSpec,
   ValidationResponse,
+  ReadinessSnapshot,
+  SolverWarmupStatus,
+  DemoResetResponse,
 } from './types'
 
 export interface ApiErrorPayload {
@@ -159,6 +162,17 @@ function qs(params: Record<string, string>): string {
 }
 
 export const api = {
+  pingCompute: (resource: 'sql-warehouse' | 'route-solver') => requestJSON<SolverWarmupStatus>(
+    `/api/compute/${resource}/ping`, { method: 'POST' },
+  ),
+  readiness: async () => {
+    const res = await fetch('/api/ready', { headers: { Accept: 'application/json' } })
+    const payload = (await res.json()) as ReadinessSnapshot
+    if (res.status !== 200 && res.status !== 503) {
+      throw new ApiError('The readiness check failed.', res.status, 'readiness_failed')
+    }
+    return payload
+  },
   networkBaseline: () => requestJSON<NetworkBaselineState>('/api/network/baseline'),
   networkBaselinePlanRun: (params: NetworkOverviewParams) => requestJSON<NetworkScenarioResult>(
     `/api/network/baseline/plan-run?${qs({ ...params })}`,
@@ -169,7 +183,22 @@ export const api = {
   acceptNetworkBaseline: (proposalId: string) => requestJSON<NetworkBaselineState>(
     `/api/network/baseline/proposals/${encodeURIComponent(proposalId)}/accept`, { method: 'POST' },
   ),
-  resetNetworkBaseline: () => requestJSON<NetworkBaselineState>('/api/network/baseline/reset', { method: 'POST' }),
+  resetNetworkBaselineStatus: () => requestJSON<DemoResetResponse>('/api/network/baseline/reset/status'),
+  resetNetworkBaseline: async () => {
+    let response = await requestJSON<DemoResetResponse>(
+      '/api/network/baseline/reset', { method: 'POST' },
+    )
+    const deadline = Date.now() + 15 * 60_000
+    while (response.reset.state === 'seeding_lakebase' || response.reset.state === 'bootstrapping' || response.reset.state === 'resetting') {
+      if (Date.now() >= deadline) throw new Error('Demo reset is still bootstrapping. Check Setup for status.')
+      await new Promise((resolve) => window.setTimeout(resolve, 2_000))
+      response = await requestJSON<DemoResetResponse>('/api/network/baseline/reset/status')
+    }
+    if (response.reset.state === 'failed') {
+      throw new Error(response.reset.error ?? 'Demo reset failed.')
+    }
+    return response
+  },
   networkDemandChanges: (runId: string) => requestJSON<NetworkDemandChange[]>(
     `/api/network/runs/${encodeURIComponent(runId)}/demand-changes`,
   ),
@@ -281,6 +310,11 @@ export const api = {
     requestJSON<DepotPlanDayDetail>(
       `/api/depot-plans/${encodeURIComponent(planSetId)}/days/${encodeURIComponent(serviceDate)}?${qs({ route_scenario_id: routeScenarioId })}`,
       { signal },
+    ),
+  solveDepotPlanDay: (planSetId: string, serviceDate: string) =>
+    requestJSON<DepotPlanDayDetail>(
+      `/api/depot-plans/${encodeURIComponent(planSetId)}/days/${encodeURIComponent(serviceDate)}/solve`,
+      { method: 'POST' },
     ),
   createDepotPlanScenario: (planSetId: string, scenarioName: string) =>
     requestJSON<DepotPlanRouteScenario>(

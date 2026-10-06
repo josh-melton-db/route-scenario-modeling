@@ -6,6 +6,7 @@ from datetime import date
 
 from .baseline import summarize_kpis
 from .cost import CostParameters
+from .pricing import revenue_for_cases
 from .schemas import MATRIX_SOURCE
 from .solver import solve_scenario_partition
 from .solver.payload import MAX_SOLVER_POINTS
@@ -205,6 +206,8 @@ def solve_depot_plan(
 
     raw_routes = list(solver_result["routes"])
     route_stops = list(solver_result["route_stops"])
+    for route in raw_routes:
+        route["total_revenue"] = revenue_for_cases(int(route.get("total_cases", 0)))
     orders_by_customer = {
         str(order["customer_id"]): order for order in targets["orders"]
     }

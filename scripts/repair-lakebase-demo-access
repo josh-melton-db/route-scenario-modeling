@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Grant app DML access to two legacy tables created by a local demo process."""
+import argparse
+import json
+
+import psycopg
+from psycopg import sql
+from databricks.sdk import WorkspaceClient
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--profile', required=True)
+parser.add_argument('--app', required=True)
+parser.add_argument('--endpoint', required=True)
+parser.add_argument('--database', required=True)
+parser.add_argument('--schema', required=True)
+parser.add_argument('--execute', action='store_true')
+args = parser.parse_args()
+w = WorkspaceClient(profile=args.profile)
+app = w.apps.get(name=args.app)
+owner = app.service_principal_client_id
+if not owner:
+    raise SystemExit('App has no service principal.')
+endpoint = w.postgres.get_endpoint(name=args.endpoint)
+credential = w.postgres.generate_database_credential(endpoint=args.endpoint)
+username = w.current_user.me().user_name
+targets = ('network_demand_changes', 'network_baseline_option_revisions')
+with psycopg.connect(host=endpoint.status.hosts.host, dbname=args.database,
+                     user=username, password=credential.token,
+                     sslmode='require', connect_timeout=15) as connection:
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT tablename, tableowner FROM pg_tables WHERE schemaname=%s AND tablename=ANY(%s)',
+                       (args.schema, list(targets)))
+        rows = cursor.fetchall()
+        if any(current not in (username, owner) for _, current in rows):
+            raise SystemExit('Refusing recovery: a target belongs to another identity.')
+        print(json.dumps({'schema': args.schema, 'app': args.app,
+                          'app_principal': owner, 'tables': rows,
+                          'execute': args.execute}, indent=2))
+        if args.execute:
+            for name, current in rows:
+                if current != owner:
+                    cursor.execute(sql.SQL('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {}.{} TO {}').format(
+                        sql.Identifier(args.schema), sql.Identifier(name), sql.Identifier(owner)))
+            print('Legacy table app access repaired; ownership and rows preserved.')

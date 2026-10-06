@@ -19,6 +19,27 @@ from ..config import (
 )
 
 
+class AnalyticsDataMissingError(HTTPException):
+    """Sanitized signal that canonical SQL objects need bootstrap creation."""
+
+    def __init__(self, error_type: str) -> None:
+        self.error_type = error_type
+        super().__init__(
+            status_code=409,
+            detail="Canonical analytics data is not bootstrapped.",
+        )
+
+
+def _missing_data_error_type(error: object) -> str | None:
+    raw_code = getattr(error, "error_code", None)
+    code = str(getattr(raw_code, "value", raw_code or "")).upper()
+    text = f"{code} {error}".upper()
+    for candidate in ("TABLE_OR_VIEW_NOT_FOUND", "SCHEMA_NOT_FOUND"):
+        if candidate in text:
+            return candidate
+    return None
+
+
 def resolve_sql_warehouse_id() -> str:
     configured_id = get_sql_warehouse_id()
     if configured_id:
@@ -171,13 +192,21 @@ def execute_sql(
     )
     execution = client.statement_execution.execute_statement(**options)
     error = str(execution.status.error) if execution.status and execution.status.error else ""
-    if "Inline byte limit exceeded" in error and query.lstrip().upper().startswith("SELECT"):
+    inline_incomplete = "Inline byte limit exceeded" in error or bool(
+        getattr(getattr(execution, "manifest", None), "truncated", False)
+    )
+    if inline_incomplete and query.lstrip().upper().startswith("SELECT"):
         execution = client.statement_execution.execute_statement(
             **options, disposition=Disposition.EXTERNAL_LINKS,
         )
     state = execution.status.state if execution.status and execution.status.state else None
     if state != StatementState.SUCCEEDED:
         # Raw warehouse errors can contain catalog names, query text, and resource IDs.
+        missing_type = _missing_data_error_type(
+            execution.status.error if execution.status else None
+        )
+        if missing_type:
+            raise AnalyticsDataMissingError(missing_type)
         raise HTTPException(status_code=502, detail="The analytics query could not be completed.")
     return _read_results(client, execution)
 

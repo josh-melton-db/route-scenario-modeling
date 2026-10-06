@@ -1,0 +1,12 @@
+{
+  "name": "minimal-example",
+  "preset": "minimal",
+  "variables": {
+    "catalog": "my_catalog",
+    "lakebase_database_owner_role_id": "dbrx-apps-REPLACE_ME"
+  },
+  "routing": {
+    "mode": "approximate_development",
+    "allow_haversine_fallback": false
+  }
+}

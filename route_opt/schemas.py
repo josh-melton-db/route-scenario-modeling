@@ -27,6 +27,7 @@ NETWORK_TABLES = [
     "demand_plan_daily",
     "capacity_plan_versions",
     "facility_capacity_daily",
+    "facility_supply_daily",
     "lane_capacity_daily",
     "baseline_network_flow_daily",
 ]

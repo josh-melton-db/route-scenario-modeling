@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 
 
 SOLVER_PAYLOAD_VERSION = 2
-MAX_SOLVER_POINTS = 150
+from route_opt.solver_limits import MAX_SOLVER_POINTS
 MAX_SOLVER_PAYLOAD_BYTES = 8 * 1024 * 1024
 
 INPUT_SCHEMA = (

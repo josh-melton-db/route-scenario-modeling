@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+mode="${1:-local}"
+if [[ "$mode" != "local" && "$mode" != "deploy" ]]; then
+  echo "Usage: scripts/doctor [local|deploy]" >&2
+  exit 2
+fi
+
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
+failures=0
+check_command() {
+  local command_name="$1"
+  if command -v "$command_name" >/dev/null 2>&1; then
+    echo "ok   command: ${command_name}"
+  else
+    echo "fail command: ${command_name}" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+check_value() {
+  local variable_name="$1"
+  if [[ -n "${!variable_name:-}" ]]; then
+    echo "ok   variable: ${variable_name}"
+  else
+    echo "fail variable: ${variable_name}" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+check_command node
+check_command npm
+check_command python3
+
+[[ -d node_modules ]] && echo "ok   frontend dependencies" || {
+  echo "fail frontend dependencies (run: npm run setup)" >&2
+  failures=$((failures + 1))
+}
+[[ -x .venv/bin/python ]] && echo "ok   Python environment" || {
+  echo "fail Python environment (run: npm run setup)" >&2
+  failures=$((failures + 1))
+}
+
+if [[ "$mode" == "deploy" ]]; then
+  check_command databricks
+  check_value DATABRICKS_CONFIG_PROFILE
+  check_value DATABRICKS_BUNDLE_VAR_catalog
+  check_value DATABRICKS_BUNDLE_VAR_lakebase_database_owner_role_id
+  if command -v databricks >/dev/null 2>&1 && [[ -n "${DATABRICKS_CONFIG_PROFILE:-}" ]]; then
+    if databricks current-user me --profile "$DATABRICKS_CONFIG_PROFILE" >/dev/null 2>&1; then
+      echo "ok   Databricks authentication: ${DATABRICKS_CONFIG_PROFILE}"
+    else
+      echo "fail Databricks authentication: ${DATABRICKS_CONFIG_PROFILE}" >&2
+      failures=$((failures + 1))
+    fi
+  fi
+fi
+
+if (( failures > 0 )); then
+  echo "Doctor found ${failures} problem(s)." >&2
+  exit 1
+fi
+
+echo "Doctor checks passed (${mode})."

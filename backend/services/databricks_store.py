@@ -25,6 +25,7 @@ from ..models import (
     ValidationResponse,
 )
 from route_opt.overrides import build_scenario_overrides
+from route_opt.pricing import CANONICAL_REVENUE_PER_CASE
 
 from .sql import SqlService, sql_literal
 from .stub_store import store as stub_store
@@ -547,7 +548,11 @@ class DatabricksStore:
         tables["carriers"] = [row.model_dump() for row in stub_store.list_carriers()]
         tables["carrier_contracts"] = [row.model_dump() for row in stub_store.list_carrier_contracts()]
         tables["operating_parameters"] = [row.model_dump() for row in stub_store.list_operating_parameters()]
-        tables["revenue_parameters"] = [{"product_family": "cartons", "revenue_per_case": 6.25, "active": True}]
+        tables["revenue_parameters"] = [{
+            "product_family": "cartons",
+            "revenue_per_case": CANONICAL_REVENUE_PER_CASE,
+            "active": True,
+        }]
         return tables
 
     def load_scenario_override_tables(

@@ -3,7 +3,7 @@ resources:
     route_scenario_modeling_pipeline:
       name: route-scenario-modeling-medallion-${bundle.target}
       catalog: ${var.catalog}
-      target: ${var.schema}
+      target: ${resources.schemas.route_scenario_modeling_schema.name}
       root_path: ../pipelines
       libraries:
         - file:
@@ -19,9 +19,9 @@ resources:
       channel: current
       configuration:
         catalog: ${var.catalog}
-        schema: ${var.schema}
-        raw_volume: ${var.raw_volume}
-        raw_path: /Volumes/${var.catalog}/${var.schema}/${var.raw_volume}
+        schema: ${resources.schemas.route_scenario_modeling_schema.name}
+        raw_volume: ${resources.volumes.raw.name}
+        raw_path: /Volumes/${var.catalog}/${resources.schemas.route_scenario_modeling_schema.name}/${resources.volumes.raw.name}
       permissions:
         - level: CAN_VIEW
           group_name: users

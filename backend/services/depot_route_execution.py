@@ -11,11 +11,14 @@ import ortools
 
 from route_opt.cost import CostParameters
 from route_opt.depot_planning import materialize_depot_targets, solve_depot_plan
+from route_opt.matrix import build_travel_matrix
 
 from ..config import (
+    allow_haversine_fallback,
     get_route_execution_mode,
     get_route_solver_endpoint,
     get_routing_coverage_manifest,
+    get_valhalla_max_snap_distance_miles,
 )
 from .solver import solver_service
 from .valhalla import ValhallaMatrixClient
@@ -43,7 +46,7 @@ class DatedRouteExecutor:
         self,
         *,
         mode: str | None = None,
-        coverage_resolver: Callable[..., Mapping[str, object]] = _resolve_coverage,
+        coverage_resolver: Callable[..., Mapping[str, object] | None] = _resolve_coverage,
         matrix_client_factory: Callable[..., ValhallaMatrixClient] = ValhallaMatrixClient,
         endpoint_invoker: Callable[..., dict[str, list[dict[str, object]]]] | None = None,
         local_solver: Callable[..., dict[str, object]] = solve_depot_plan,
@@ -123,13 +126,14 @@ class DatedRouteExecutor:
                 "input_hash": _stable_hash({"depot_id": depot_id, "service_date": service_date, "fleet": fleet}),
             }
             return solved
-        if mode not in {"strict_serving_road", "local_road"}:
+        if mode not in {"strict_serving_road", "serving_regional", "local_road"}:
             raise RouteExecutionError(f"Unsupported route execution mode {mode!r}.")
+        serving_mode = mode in {"strict_serving_road", "serving_regional"}
         solver_endpoint = (
             get_route_solver_endpoint(required=True)
-            if mode == "strict_serving_road" else None
+            if serving_mode else None
         )
-        _validate_pinned_constraints(targets, fleet, strict=mode == "strict_serving_road")
+        _validate_pinned_constraints(targets, fleet, strict=serving_mode)
         carrier_rows = sum(
             len(network_rows.get(name, ()))
             for name in ("carriers", "carrier_contracts", "rate_contract_details")
@@ -146,57 +150,60 @@ class DatedRouteExecutor:
             {"lat": stop["lat"], "lon": stop["lng"]} for stop in stops
         ]
         try:
+            coverage_kwargs: dict[str, object] = {
+                "manifest_path": get_routing_coverage_manifest(),
+                "strict": True,
+            }
+            if mode == "serving_regional":
+                coverage_kwargs["allow_uncovered"] = True
             coverage = self.coverage_resolver(
                 depot_id,
                 points,
-                manifest_path=get_routing_coverage_manifest(),
-                strict=True,
+                **coverage_kwargs,
             )
         except Exception as exc:
             raise RouteExecutionError(f"Road coverage validation failed: {exc}") from exc
-        required = {
-            "coverage_id", "artifact_version", "endpoint_url", "costing", "max_points"
-        }
-        missing = sorted(required - set(coverage))
-        if missing:
-            raise RouteExecutionError(
-                f"Coverage resolution omitted required fields: {', '.join(missing)}."
-            )
-        if coverage["costing"] != "truck":
-            raise RouteExecutionError(
-                "Dated delivery road routing requires validated truck costing; "
-                f"coverage {coverage['coverage_id']!r} uses {coverage['costing']!r}."
-            )
-        if len(points) > int(coverage["max_points"]):
-            raise RouteExecutionError(
-                f"Coverage {coverage['coverage_id']!r} allows {coverage['max_points']} "
-                f"matrix points; solve requires {len(points)}."
-            )
-        if len(points) > MAX_SOLVER_POINTS:
-            raise RouteExecutionError(
-                f"Route solve requires {len(points)} matrix points; the supported solver "
-                f"limit is {MAX_SOLVER_POINTS}. Partition the problem before solving."
-            )
-        client = self.matrix_client_factory(
-            str(coverage["endpoint_url"]), costing=str(coverage["costing"])
-        )
-        matrix_key = _matrix_cache_key(coverage, points)
-        matrix_started_at = time.perf_counter()
-        matrix = _cached_matrix(matrix_key)
-        matrix_cache = "hit" if matrix is not None else "miss"
-        if matrix is None:
-            _, matrix = client.build_travel_matrix(
+        if coverage is None:
+            if mode != "serving_regional":
+                raise RouteExecutionError("Strict road routing did not resolve validated coverage.")
+            if not allow_haversine_fallback():
+                raise RouteExecutionError(
+                    "No validated road coverage matches this depot solve and regional "
+                    "approximation is disabled; set VALHALLA_ALLOW_HAVERSINE_FALLBACK=true "
+                    "to allow an explicitly approximate matrix outside validated coverage."
+                )
+            matrix_started_at = time.perf_counter()
+            _, matrix = build_travel_matrix(
                 scenario_id=scenario_id,
                 depot=depot,
                 stops=stops,
                 delivery_day=service_date,
             )
-            _store_cached_matrix(matrix_key, matrix)
+            matrix_cache = "disabled"
+            matrix_seconds = time.perf_counter() - matrix_started_at
+            coverage_metadata: dict[str, object] = {
+                "coverage_id": None,
+                "artifact_version": None,
+                "costing": "haversine_circuity",
+            }
+            approximate_matrix = True
         else:
-            for row in matrix:
-                row["scenario_id"] = scenario_id
-                row["depot_id"] = depot_id
-                row["delivery_day"] = service_date
+            matrix, matrix_cache, matrix_seconds = self._road_matrix(
+                coverage=coverage,
+                points=points,
+                scenario_id=scenario_id,
+                depot=depot,
+                depot_id=depot_id,
+                stops=stops,
+                service_date=service_date,
+            )
+            coverage_metadata = {
+                "coverage_id": coverage["coverage_id"],
+                "artifact_version": coverage["artifact_version"],
+                "costing": coverage["costing"],
+            }
+            approximate_matrix = False
+
         _validate_directed_matrix(matrix, depot, stops)
         matrix, stops, unreachable_orders = _preprocess_road_reachability(
             matrix, stops, list(targets["orders"])
@@ -205,11 +212,10 @@ class DatedRouteExecutor:
             network_rows, flow_rows, depot_id,
             {str(stop["customer_id"]) for stop in stops},
         )
-        matrix_seconds = time.perf_counter() - matrix_started_at
 
         partition_solver = None
         serving_metadata: dict[str, object] = {}
-        if mode == "strict_serving_road":
+        if serving_mode:
             def partition_solver(**kwargs: Any) -> Mapping[str, Sequence[Mapping[str, object]]]:
                 nonlocal serving_metadata
                 kwargs.pop("params", None)
@@ -241,18 +247,17 @@ class DatedRouteExecutor:
             "mode": mode,
             "solver": (
                 "none_road_unreachable" if not stops else
-                "model_serving" if mode == "strict_serving_road" else "local_ortools"
+                "model_serving" if serving_mode else "local_ortools"
             ),
             "solver_invoked": bool(stops),
             "solver_endpoint": solver_endpoint,
             "matrix_source": solved["matrix_source"],
-            "matrix_requested": True,
+            "matrix_requested": not approximate_matrix,
             "matrix_cache": matrix_cache,
-            "coverage_id": coverage["coverage_id"],
-            "artifact_version": coverage["artifact_version"],
-            "costing": coverage["costing"],
+            **coverage_metadata,
             "resource_source": "pinned_fleet",
-            "approximate": False,
+            "approximate": approximate_matrix,
+            "approximation_reason": "outside_validated_coverage" if approximate_matrix else None,
             "solver_contract_version": 2,
             "ortools_version": getattr(ortools, "__version__", "unknown"),
             "time_limit_seconds": 2,
@@ -265,11 +270,64 @@ class DatedRouteExecutor:
                 "total": round(time.perf_counter() - started_at, 3),
             },
             "serving_model": serving_metadata or None,
-            "road_unreachable_customers": [
-                order["customer_id"] for order in unreachable_orders
-            ],
+            "road_unreachable_customers": [order["customer_id"] for order in unreachable_orders],
         }
         return solved
+
+    def _road_matrix(
+        self, *, coverage: Mapping[str, object], points: Sequence[Mapping[str, object]],
+        scenario_id: str, depot: Mapping[str, object], depot_id: str,
+        stops: Sequence[Mapping[str, object]], service_date: str,
+    ) -> tuple[list[dict[str, object]], str, float]:
+        required = {
+            "coverage_id", "artifact_version", "endpoint_url", "costing", "max_points"
+        }
+        missing = sorted(required - set(coverage))
+        if missing:
+            raise RouteExecutionError(
+                f"Coverage resolution omitted required fields: {', '.join(missing)}."
+            )
+        if coverage["costing"] != "truck":
+            raise RouteExecutionError(
+                "Dated delivery road routing requires validated truck costing; "
+                f"coverage {coverage['coverage_id']!r} uses {coverage['costing']!r}."
+            )
+        if len(points) > int(coverage["max_points"]):
+            raise RouteExecutionError(
+                f"Coverage {coverage['coverage_id']!r} allows {coverage['max_points']} "
+                f"matrix points; solve requires {len(points)}."
+            )
+        if len(points) > MAX_SOLVER_POINTS:
+            raise RouteExecutionError(
+                f"Route solve requires {len(points)} matrix points; the supported solver "
+                f"limit is {MAX_SOLVER_POINTS}. Partition the problem before solving."
+            )
+        client = self.matrix_client_factory(
+            str(coverage["endpoint_url"]), costing=str(coverage["costing"]),
+            max_snap_distance_miles=get_valhalla_max_snap_distance_miles(),
+        )
+        matrix_key = _matrix_cache_key(
+            coverage, points,
+            max_snap_distance_miles=get_valhalla_max_snap_distance_miles(),
+        )
+        matrix_started_at = time.perf_counter()
+        matrix = _cached_matrix(matrix_key)
+        matrix_cache = "hit" if matrix is not None else "miss"
+        if matrix is None:
+            _, matrix = client.build_travel_matrix(
+                scenario_id=scenario_id,
+                depot=depot,
+                stops=stops,
+                delivery_day=service_date,
+            )
+            _store_cached_matrix(matrix_key, matrix)
+        else:
+            for row in matrix:
+                row["scenario_id"] = scenario_id
+                row["depot_id"] = depot_id
+                row["delivery_day"] = service_date
+        matrix_seconds = time.perf_counter() - matrix_started_at
+        return matrix, matrix_cache, matrix_seconds
 
     def _solve_partitioned(
         self,
@@ -383,12 +441,12 @@ class DatedRouteExecutor:
             "matrix_source": _common_value([child.get("matrix_source") for child in child_results], "partitioned_mixed"),
             "execution": {
                 "mode": mode,
-                "solver": "partitioned_model_serving" if mode == "strict_serving_road" else "partitioned_local_ortools",
+                "solver": "partitioned_model_serving" if mode in {"strict_serving_road", "serving_regional"} else "partitioned_local_ortools",
                 "solver_invoked": True,
-                "matrix_requested": mode != "approximate_development",
+                "matrix_requested": any(bool(execution.get("matrix_requested")) for execution in executions),
                 "matrix_cache": _common_value([execution.get("matrix_cache") for execution in executions], "mixed"),
                 "resource_source": "pinned_fleet",
-                "approximate": mode == "approximate_development",
+                "approximate": any(bool(execution.get("approximate")) for execution in executions),
                 "partitioned": True,
                 "partition_count": len(chunks),
                 "partition_policy": "geographic_angle_sequential_vehicle_exclusive_v1",
@@ -587,13 +645,16 @@ def _stable_hash(value: object) -> str:
 
 
 def _matrix_cache_key(
-    coverage: Mapping[str, object], points: Sequence[Mapping[str, object]]
+    coverage: Mapping[str, object], points: Sequence[Mapping[str, object]],
+    *, max_snap_distance_miles: float | None = None,
 ) -> str:
     return _stable_hash({
         "coverage_id": coverage["coverage_id"],
         "artifact_version": coverage["artifact_version"],
         "costing": coverage["costing"],
         "points": points,
+        "snap_validation": "bounded_sources_v1",
+        "max_snap_distance_miles": max_snap_distance_miles,
     })
 
 

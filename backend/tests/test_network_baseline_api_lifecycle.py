@@ -1,8 +1,21 @@
 from fastapi.testclient import TestClient
+from time import monotonic, sleep
 
 from backend.main import app
 from backend.services.baseline_service import baseline_service
 from backend.tests.network_run_helpers import run_network_scenario
+
+
+def _wait_for_reset(client: TestClient) -> dict:
+    deadline = monotonic() + 30
+    while monotonic() < deadline:
+        payload = client.get('/api/network/baseline/reset/status').json()
+        if payload['reset']['state'] == 'reset_complete':
+            return client.get('/api/network/baseline').json()
+        if payload['reset']['state'] == 'failed':
+            raise AssertionError(payload['reset']['error'])
+        sleep(0.01)
+    raise AssertionError('Demo reset did not complete in time.')
 
 
 def test_scenario_create_uses_pointer_and_option_summary(monkeypatch) -> None:
@@ -27,12 +40,44 @@ def test_scenario_create_uses_pointer_and_option_summary(monkeypatch) -> None:
     assert client.delete(f'/api/network/scenarios/{scenario_id}').status_code == 204
 
 
-def test_real_regional_run_promotes_inherits_and_resets_without_rewriting_history() -> None:
+def test_baseline_plan_run_exposes_dated_unmet_evidence() -> None:
+    client = TestClient(app)
+    options = client.get('/api/network/options').json()
+    params = {
+        'demand_plan_version_id': options['default_demand_plan_version_id'],
+        'capacity_plan_version_id': options['default_capacity_plan_version_id'],
+        'horizon_start': options['default_horizon_start'],
+        'horizon_end': options['default_horizon_end'],
+    }
+    response = client.get('/api/network/baseline/plan-run', params=params)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['exception_evidence_status'] == 'available'
+    assert result['cross_border_assigned_units'] >= 0
+    assert result['baseline_cross_border_assigned_units'] == result['cross_border_assigned_units']
+    assert result['baseline_tariff_exposure'] == result['tariff_total_cost']
+    assert result['domestic_shift_units'] == 0
+    unmet = [
+        row for row in result['exceptions']
+        if row['exception_type'] == 'unmet_demand'
+    ]
+    assert sum(row['unmet_units'] for row in unmet) == result['overview']['kpis']['unmet_units']
+    assert all(row['service_date'] and row['entity_id'] for row in unmet)
+
+    reread = client.get(f"/api/network/scenarios/{result['scenario_id']}/result")
+    assert reread.status_code == 200, reread.text
+    assert reread.json()['run_id'] == result['run_id']
+    assert reread.json()['exceptions'] == result['exceptions']
+
+
+def test_real_regional_run_promotes_inherits_then_reset_clears_demo_history() -> None:
     """Exercise real API/services/solver on the national fixture, not response mocks."""
     client = TestClient(app)
     state = client.get('/api/network/baseline')
     assert state.status_code == 200
-    original = client.post('/api/network/baseline/reset').json()
+    initial_reset = client.post('/api/network/baseline/reset')
+    assert initial_reset.status_code == 200, initial_reset.text
+    original = _wait_for_reset(client)
     options = client.get('/api/network/options').json()
     params = {
         'demand_plan_version_id': options['default_demand_plan_version_id'],
@@ -94,6 +139,9 @@ def test_real_regional_run_promotes_inherits_and_resets_without_rewriting_histor
     finally:
         restored = client.post('/api/network/baseline/reset')
         assert restored.status_code == 200, restored.text
-    assert restored.json()['active_revision_id'] == original['original_revision_id']
+    restored_baseline = _wait_for_reset(client)
+    assert restored_baseline['active_revision_id'] == original['original_revision_id']
     assert client.get('/api/network/overview', params={**params, 'region_id': 'ALL'}).json()['kpis'] == initial_global['kpis']
-    assert client.get(f'/api/network/runs/{run_id}').json() == historical
+    assert client.get(f'/api/network/runs/{run_id}').status_code == 404
+    assert client.get(f'/api/network/scenarios/{scenario_id}').status_code == 404
+    assert client.get(f"/api/network/scenarios/{child.json()['scenario_id']}").status_code == 404

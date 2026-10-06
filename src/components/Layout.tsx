@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -6,13 +8,14 @@ import {
   MapPinned,
   Network,
   PlayCircle,
-  Plus,
   Route,
   ScrollText,
+  Settings,
   Table2,
   Warehouse,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { api } from '@/api/client'
 import {
   useCreateNetworkScenario,
   useDepots,
@@ -209,21 +212,150 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
 
           <div className="flex min-w-0 items-center justify-self-end gap-2 text-xs text-muted-foreground">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse-dot" />
-            <span className="hidden lg:inline">
-              As of{' '}
-              {new Date().toLocaleDateString(undefined, {
-                month: 'short',
-                day: 'numeric',
-                year: 'numeric',
-              })}
-            </span>
+            <NavLink
+              to="/setup"
+              aria-label="Setup and readiness"
+              className={({ isActive }) => cn('rounded-md p-2 hover:bg-accent hover:text-foreground', isActive && 'bg-primary/15 text-primary')}
+            >
+              <Settings className="h-4 w-4" />
+            </NavLink>
+            <DemoFreshnessControl />
           </div>
         </div>
       </nav>
 
       <main className="flex-1 flex flex-col min-h-0">{children}</main>
     </div>
+  )
+}
+
+function DemoFreshnessControl() {
+  const client = useQueryClient()
+  const [confirmReset, setConfirmReset] = useState(false)
+  const resetButtonRef = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const resetPendingRef = useRef(false)
+  const date = new Date().toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+  const reset = useMutation({
+    mutationFn: api.resetNetworkBaseline,
+    onSuccess: async () => {
+      await client.invalidateQueries()
+      setConfirmReset(false)
+    },
+  })
+  const resetStatus = useQuery({
+    queryKey: ['network-reset-status'],
+    queryFn: api.resetNetworkBaselineStatus,
+    enabled: confirmReset,
+    refetchInterval: reset.isPending ? 2_000 : false,
+  })
+  resetPendingRef.current = reset.isPending
+
+  useEffect(() => {
+    if (!confirmReset) return
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const focusableSelector = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector))
+    const frame = requestAnimationFrame(() => focusable().at(-1)?.focus())
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !resetPendingRef.current) {
+        event.preventDefault()
+        setConfirmReset(false)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const elements = focusable()
+      if (!elements.length) return
+      const first = elements[0]
+      const last = elements[elements.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      cancelAnimationFrame(frame)
+      document.removeEventListener('keydown', handleKeyDown)
+      resetButtonRef.current?.focus()
+    }
+  }, [confirmReset])
+
+  return (
+    <>
+      <button
+        ref={resetButtonRef}
+        type="button"
+        aria-label={`Demo data as of ${date}. Reset demo`}
+        className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent hover:text-foreground"
+        onClick={() => {
+          reset.reset()
+          setConfirmReset(true)
+        }}
+      >
+        <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse-dot" />
+        <span className="hidden lg:inline">As of {date}</span>
+      </button>
+      {confirmReset && createPortal(
+        <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-black/60 p-2 sm:items-center sm:p-4" role="presentation">
+          <div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reset-demo-title"
+            aria-describedby="reset-demo-description"
+            className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-lg border border-border bg-card text-foreground shadow-2xl sm:max-h-[calc(100dvh-2rem)]"
+          >
+            <div className="shrink-0 border-b border-border px-5 py-4">
+              <h2 id="reset-demo-title" className="text-base font-semibold">Reset demo data?</h2>
+              <p id="reset-demo-description" className="mt-1 text-sm text-muted-foreground">
+                Restore generated data and remove prior network scenarios and depot plans? This cannot be undone.
+              </p>
+            </div>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4" aria-live="polite">
+              {reset.isPending && (
+                <p className="text-sm text-muted-foreground">
+                  Reset: {resetStatus.data?.reset.state ?? 'starting'} · solver: {resetStatus.data?.solver_warmup.state ?? 'not started'}.
+                  {' '}This updates automatically and controls remain disabled until reset finishes.
+                </p>
+              )}
+              {reset.error && <p role="alert" className="text-sm text-destructive">{String(reset.error)}</p>}
+            </div>
+            <div className="flex shrink-0 justify-end gap-2 border-t border-border px-5 py-4">
+              <button
+                type="button"
+                disabled={reset.isPending}
+                className="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50"
+                onClick={() => {
+                  reset.reset()
+                  setConfirmReset(false)
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={reset.isPending}
+                className="inline-flex items-center gap-2 rounded-md bg-destructive px-3 py-2 text-sm font-semibold text-destructive-foreground disabled:opacity-50"
+                onClick={() => reset.mutate()}
+              >
+                {reset.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                {reset.isPending ? 'Resetting and warming resources…' : reset.isError ? 'Try reset again' : 'Yes, reset demo'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
   )
 }
 
@@ -234,12 +366,20 @@ function NetworkScenarioPicker({ activeScenarioId }: { activeScenarioId: string 
   const createScenario = useCreateNetworkScenario()
   const [error, setError] = useState<string | null>(null)
   const creating = createScenario.isPending
+  const baseline = useQuery({
+    queryKey: ['network-baseline'],
+    queryFn: api.networkBaseline,
+  })
+  const baselineScenarioId = baseline.data?.active_plan_scenario_id ?? null
+  const activeBaselineScenarioId = activeScenarioId?.startsWith('baseline-plan-scenario.')
+    ? activeScenarioId
+    : null
 
   async function handleSelect(value: string) {
     setError(null)
     if (value === activeScenarioId) return
     if (value !== NEW_SCENARIO_VALUE) {
-      navigate(`/network/scenarios/${encodeURIComponent(value)}/scenario`)
+      navigate(`/network/scenarios/${encodeURIComponent(value)}/${value === baselineScenarioId ? 'flow' : 'scenario'}`)
       return
     }
     if (!options.data) return
@@ -270,6 +410,12 @@ function NetworkScenarioPicker({ activeScenarioId }: { activeScenarioId: string 
         <option value="" disabled>
           {scenarios.isLoading ? 'Loading…' : 'Select scenario'}
         </option>
+        {baselineScenarioId && (
+          <option value={baselineScenarioId}>Published baseline · solved</option>
+        )}
+        {activeBaselineScenarioId && activeBaselineScenarioId !== baselineScenarioId && (
+          <option value={activeBaselineScenarioId}>Published baseline · selected horizon</option>
+        )}
         {scenarios.data?.map((scenario) => (
           <option key={scenario.scenario_id} value={scenario.scenario_id}>
             {scenario.scenario_name} · {scenario.status}
@@ -279,11 +425,6 @@ function NetworkScenarioPicker({ activeScenarioId }: { activeScenarioId: string 
       </select>
       {creating && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
       {error && <span className="max-w-40 truncate text-xs text-destructive">{error}</span>}
-      {!activeScenarioId && !scenarios.data?.length && !scenarios.isLoading && (
-        <span className="hidden items-center gap-1 text-xs text-muted-foreground lg:flex">
-          <Plus className="h-3 w-3" /> Plan coordinated changes
-        </span>
-      )}
     </div>
   )
 }

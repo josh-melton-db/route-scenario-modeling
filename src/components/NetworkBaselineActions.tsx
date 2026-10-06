@@ -8,9 +8,8 @@ export default function NetworkBaselineActions({ runId }: { runId?: string }) {
   const client = useQueryClient()
   const baseline = useQuery({ queryKey: ['network-baseline'], queryFn: api.networkBaseline })
   const [proposal, setProposal] = useState<NetworkBaselineProposal | null>(null)
-  const [confirmReset, setConfirmReset] = useState(false)
   const action = useMutation({
-    mutationFn: async (kind: 'propose' | 'accept' | 'reset') => {
+    mutationFn: async (kind: 'propose' | 'accept') => {
       if (kind === 'propose') {
         if (!runId) throw new Error('A solved network run is required.')
         setProposal(await api.proposeNetworkBaseline(runId))
@@ -18,9 +17,6 @@ export default function NetworkBaselineActions({ runId }: { runId?: string }) {
         if (!proposal || proposal.run_id !== runId) throw new Error('Propose this run first.')
         await api.acceptNetworkBaseline(proposal.proposal_id)
         setProposal(null)
-      } else {
-        await api.resetNetworkBaseline()
-        setConfirmReset(false)
       }
       await client.invalidateQueries({ queryKey: ['network-baseline'] })
       await client.invalidateQueries({ queryKey: ['network-overview'] })
@@ -42,17 +38,9 @@ export default function NetworkBaselineActions({ runId }: { runId?: string }) {
         </button>
       )}
       {currentProposal && (
-        <span>Proposal ready. Acceptance changes the default network, not historical plans. {currentProposal.route_coverage?.message ?? 'Local routes may still need optimization.'}</span>
+        <span>Proposal ready · history retained · {currentProposal.route_coverage?.message ?? 'Local routes pending'}</span>
       )}
       {state?.active_run_id && state.route_coverage && <span>· {state.route_coverage.message}</span>}
-      {state && state.active_revision_id !== state.original_revision_id && !confirmReset && (
-        <button className={buttonClass} disabled={action.isPending} onClick={() => setConfirmReset(true)}>Reset to original story</button>
-      )}
-      {confirmReset && <>
-        <span>Restore the original baseline? Accepted history will be retained.</span>
-        <button className={buttonClass} disabled={action.isPending} onClick={() => action.mutate('reset')}>Confirm reset</button>
-        <button className={buttonClass} disabled={action.isPending} onClick={() => setConfirmReset(false)}>Cancel</button>
-      </>}
       {(action.error || baseline.error) && <p role="alert" className="w-full text-destructive">{String(action.error || baseline.error)}</p>}
     </section>
   )

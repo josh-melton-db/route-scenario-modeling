@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Loader2, Plus } from 'lucide-react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
+import { api, ApiError } from '@/api/client'
 import type { DepotPlanDayResult, KpiDeltas, Kpis } from '@/api/types'
 import {
   useCreateDepotPlanScenario,
@@ -9,6 +11,8 @@ import {
   useDepotPlanDay,
   useOptimizeDepotPlanDay,
   useResetDepotPlanDay,
+  useSolveDepotPlanDay,
+  queryKeys,
 } from '@/api/queries'
 import ErrorState from './ErrorState'
 import KpiDeltaGrid from './KpiDeltaGrid'
@@ -19,13 +23,17 @@ import DepotPlanCalendar from './DepotPlanCalendar'
 import DepotDemandReleasePanel from './DepotDemandReleasePanel'
 import DepotOperationalOverrideForm, {
   emptyOperationalDraft,
-  type OperationalDraft,
 } from './DepotOperationalOverrideForm'
+import { useRoutePlanDrafts } from '@/state/useRoutePlanDrafts'
 import { useRouteContext } from '@/state/useRouteContext'
+import ShortageWorkflowLink from './ShortageWorkflowLink'
 
 export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenario' }) {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
   const runId = searchParams.get('networkRun') ?? ''
+  const networkScenarioId = searchParams.get('networkScenario') ?? ''
   const depotId = searchParams.get('depot') ?? ''
   const requestedPlanId = searchParams.get('depotPlan') ?? ''
   const requestedDate = searchParams.get('date') ?? ''
@@ -39,11 +47,16 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
   const createScenario = useCreateDepotPlanScenario(planSetId)
   const optimize = useOptimizeDepotPlanDay(planSetId, selectedDate)
   const reset = useResetDepotPlanDay(planSetId, routeScenarioId, selectedDate)
+  const solve = useSolveDepotPlanDay(planSetId)
   const setFacility = useRouteContext((state) => state.setFacility)
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null)
   const [newScenarioName, setNewScenarioName] = useState('Operational plan')
-  const [drafts, setDrafts] = useState<Record<string, OperationalDraft>>({})
+  const drafts = useRoutePlanDrafts((state) => state.drafts)
+  const setDraft = useRoutePlanDrafts((state) => state.setDraft)
+  const clearDraft = useRoutePlanDrafts((state) => state.clearDraft)
+  const [showRelease, setShowRelease] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [restoring, setRestoring] = useState(false)
 
   useEffect(() => {
     if (!planData) return
@@ -69,10 +82,38 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
     if (changed) setSearchParams(next, { replace: true })
   }, [planData, requestedDate, requestedPlanId, routeScenarioId, searchParams, setFacility, setSearchParams])
 
-  const activeDraft = drafts[selectedDate] ?? emptyOperationalDraft
+  const draftKey = `${planSetId}:${routeScenarioId}:${selectedDate}`
+  const activeDraft = drafts[draftKey] ?? day.data?.override_request ?? emptyOperationalDraft
   const currentResult = day.data?.selected_result ?? day.data?.default_result ?? null
   const pending = day.data?.default_status === 'queued' || day.data?.default_status === 'running' || day.data?.override_status === 'queued' || day.data?.override_status === 'running'
   const error = bootstrap.error ?? plan.error ?? day.error
+
+  async function restoreWorkspace() {
+    setRestoring(true)
+    setActionError(null)
+    try {
+      const restored = await api.createDepotPlan(runId, depotId, requestedDate || undefined)
+      let restoredScenarioId = 'default'
+      if (routeScenarioId !== 'default') {
+        const name = planData?.scenarios.find((row) => row.route_scenario_id === routeScenarioId)?.scenario_name
+          ?? newScenarioName
+        const restoredScenario = await api.createDepotPlanScenario(restored.plan_set_id, name)
+        restoredScenarioId = restoredScenario.route_scenario_id
+        setDraft(`${restored.plan_set_id}:${restoredScenarioId}:${selectedDate || restored.horizon_start}`, activeDraft)
+      }
+      queryClient.setQueryData(queryKeys.depotPlanBootstrap(runId, depotId), restored)
+      const next = new URLSearchParams(searchParams)
+      next.set('depotPlan', restored.plan_set_id)
+      next.set('routePlanScenario', restoredScenarioId)
+      next.set('date', selectedDate || restored.horizon_start)
+      setSearchParams(next, { replace: true })
+      navigate(`/scenario?${next.toString()}`, { replace: true })
+    } catch (err) {
+      setActionError(String(err))
+    } finally {
+      setRestoring(false)
+    }
+  }
 
   async function addScenario() {
     if (!newScenarioName.trim()) return
@@ -86,10 +127,11 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
   }
 
   async function optimizeDay() {
-    if (routeScenarioId === 'default') return
+    if (routeScenarioId === 'default' || !day.data?.default_result) return
     setActionError(null)
     try {
       await optimize.mutateAsync({ route_scenario_id: routeScenarioId, ...activeDraft })
+      navigate(`/analyze?${searchParams.toString()}`)
     } catch (err) {
       setActionError(String(err))
     }
@@ -99,6 +141,17 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
     setActionError(null)
     try {
       await reset.mutateAsync()
+      clearDraft(draftKey)
+    } catch (err) {
+      setActionError(String(err))
+    }
+  }
+
+  async function solveDay(serviceDate: string) {
+    setActionError(null)
+    try {
+      await solve.mutateAsync(serviceDate)
+      updateContext({ date: serviceDate })
     } catch (err) {
       setActionError(String(err))
     }
@@ -111,6 +164,17 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
     setSearchParams(next)
   }
 
+  if (error instanceof ApiError && error.status === 404 && requestedPlanId) {
+    return <div className="mx-auto flex max-w-xl flex-col gap-3 p-8" role="alert">
+      <h2 className="font-semibold">This depot plan is no longer available</h2>
+      <p className="text-sm text-muted-foreground">The local demo may have restarted or the plan may have been removed. Restore the workspace to prepare routes again. Any scenario changes still in this browser will be carried over for review.</p>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" disabled={restoring} onClick={() => void restoreWorkspace()} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">{restoring ? 'Restoring…' : 'Restore depot workspace'}</button>
+        <button type="button" onClick={() => navigate(searchParams.get('networkReturn') || '/network')} className="rounded-md border border-border px-3 py-2 text-sm">Back to network</button>
+      </div>
+      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+    </div>
+  }
   if (error) return <ErrorState title="Could not load depot horizon" error={error} />
   if (!planData || !planSetId) {
     return <Loading label="Creating the stored depot horizon…" />
@@ -118,70 +182,55 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-      <section className="rounded-lg border border-border bg-card p-4">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold">{planData.depot.name} daily route plan</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {planData.horizon_start} to {planData.horizon_end} · {planData.coverage.solved_days}/{planData.coverage.total_days} solved
-              {planData.is_partial ? ' · partial rollup' : ' · complete rollup'}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">Fleet source: {planData.resource_source}</p>
-          </div>
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="text-xs text-muted-foreground">
-              Route scenario
-              <select
-                aria-label="Route plan scenario"
-                value={routeScenarioId}
-                onChange={(event) => updateContext({ routePlanScenario: event.target.value })}
-                className="mt-1 block h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
-              >
-                {planData.scenarios.map((scenario) => <option key={scenario.route_scenario_id} value={scenario.route_scenario_id}>{scenario.scenario_name}</option>)}
-              </select>
-            </label>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-xs text-muted-foreground">
+            Route scenario
+            <select aria-label="Route plan scenario" value={routeScenarioId}
+              onChange={(event) => updateContext({ routePlanScenario: event.target.value })}
+              className="mt-1 block h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground">
+              {planData.scenarios.map((scenario) => <option key={scenario.route_scenario_id} value={scenario.route_scenario_id}>{scenario.scenario_name}</option>)}
+            </select>
+          </label>
+          {mode === 'scenario' && <>
             <input aria-label="New route scenario name" value={newScenarioName} onChange={(event) => setNewScenarioName(event.target.value)} className="h-9 rounded-md border border-border bg-background px-2 text-sm" />
             <button type="button" onClick={() => void addScenario()} disabled={createScenario.isPending} className="inline-flex h-9 items-center gap-1 rounded-md border border-border px-3 text-sm">
-              <Plus className="h-4 w-4" /> Create
+              <Plus className="h-4 w-4" /> Create scenario
             </button>
-          </div>
+          </>}
         </div>
-        <div className="mt-4 grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
-          <Coverage label="Solved" value={planData.coverage.solved_days} />
-          <Coverage label="Queued" value={planData.coverage.queued_days} />
-          <Coverage label="Running" value={planData.coverage.running_days} />
-          <Coverage label="Failed" value={planData.coverage.failed_days} />
-          <Coverage label="Total days" value={planData.coverage.total_days} />
-        </div>
-      </section>
-
-      <DepotPlanCalendar days={planData.days} selectedDate={selectedDate} onSelect={(date) => updateContext({ date })} />
-
-      {planData.kpis && <KpiDeltaGrid baselineKpis={planData.kpis} />}
-      {planData.is_partial && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
-          Horizon totals include only {planData.coverage.solved_days} solved dates. Queued, running, and failed dates are not counted as zero-cost delivery.
-        </div>
-      )}
+        {mode === 'scenario' && <DepotPlanCalendar days={planData.days} selectedDate={selectedDate} onSelect={(date) => updateContext({ date })} onSolve={(date) => void solveDay(date)} solvingDate={solve.isPending ? solve.variables : null} />}
+      </div>
 
       {mode === 'scenario' && routeScenarioId === 'default' && (
         <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-          Create or select a named route scenario before adding a day-specific operational override.
+          Select a scenario or create one to add changes.
+        </div>
+      )}
+      {mode === 'scenario' && !day.data?.default_result && (
+        <div role="status" className="flex items-center gap-3 rounded-md border border-border px-3 py-2 text-sm">
+          <span>{pending ? 'Solving baseline…' : 'Baseline not solved for this date'}</span>
+          {!pending && <button type="button" onClick={() => void solveDay(selectedDate)} disabled={solve.isPending} className="rounded-md border border-border px-3 py-1.5 text-xs font-medium">Solve baseline</button>}
         </div>
       )}
       {mode === 'scenario' && routeScenarioId !== 'default' && (
         <DepotOperationalOverrideForm
+          key={draftKey}
           value={activeDraft}
-          onChange={(value) => setDrafts((current) => ({ ...current, [selectedDate]: value }))}
+          onChange={(value) => setDraft(draftKey, value)}
           onOptimize={() => void optimizeDay()}
           onReset={() => void resetDay()}
           busy={optimize.isPending || reset.isPending}
-          canReset={Boolean(day.data?.selected_result && day.data.selected_result.result_id !== day.data.default_result?.result_id)}
+          canReset={Boolean(day.data?.override_status || day.data?.override_request || drafts[draftKey])}
+          canOptimize={Boolean(day.data?.default_result)}
+          depot={planData.depot}
+          baselineRoutes={day.data?.default_result?.routes ?? currentResult?.routes ?? []}
         />
       )}
 
       {actionError && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{actionError}</div>}
-      {mode === 'scenario' && (
+      {mode === 'scenario' && routeScenarioId !== 'default' && !showRelease && <button type="button" onClick={() => setShowRelease(true)} className="inline-flex w-fit items-center gap-1 rounded-md border border-border px-3 py-2 text-sm"><Plus className="h-4 w-4" />Release deliveries for reassignment</button>}
+      {mode === 'scenario' && showRelease && (
         <DepotDemandReleasePanel
           key={`${runId}:${routeScenarioId}:${selectedDate}`}
           runId={runId}
@@ -193,13 +242,28 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
       )}
       {day.isLoading && <Loading label={`Loading ${selectedDate}…`} />}
       {day.error && <ErrorState title="Could not load the selected route day" error={day.error} />}
+      {mode === 'analyze' && <>
+      {currentResult && (!day.data?.default_result || currentResult.result_id === day.data.default_result.result_id) && <KpiDeltaGrid baselineKpis={currentResult.kpis} />}
       {day.data && <DayStatus detail={day.data} pending={pending} />}
+      {currentResult && currentResult.unserved_cases > 0 && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/35 bg-destructive/5 px-3 py-2">
+          <p className="text-xs text-muted-foreground">Unserved: {currentResult.unserved_cases} cases</p>
+          {networkScenarioId && <ShortageWorkflowLink
+            scenarioId={networkScenarioId}
+            runId={runId}
+            depotId={depotId}
+            serviceDate={selectedDate}
+            className="shrink-0"
+          />}
+        </div>
+      )}
       {day.data?.default_result && day.data.selected_result && day.data.selected_result.result_id !== day.data.default_result.result_id ? (
         <>
+          <DepotPlanCalendar days={planData.days} selectedDate={selectedDate} onSelect={(date) => updateContext({ date })} onSolve={(date) => void solveDay(date)} solvingDate={solve.isPending ? solve.variables : null} />
           <KpiDeltaGrid baselineKpis={day.data.default_result.kpis} scenarioKpis={day.data.selected_result.kpis} deltas={kpiDeltas(day.data.default_result.kpis, day.data.selected_result.kpis)} />
           <DualMap
             baselineDepot={planData.depot}
-            scenarioDepot={planData.depot}
+            scenarioDepot={day.data.selected_result.depot ?? planData.depot}
             baselineRoutes={day.data.default_result.routes}
             scenarioRoutes={day.data.selected_result.routes}
             status={day.data.selected_result.status === 'infeasible' ? 'infeasible' : 'succeeded'}
@@ -208,53 +272,28 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
           />
         </>
       ) : currentResult ? (
-        <div className="flex min-h-[560px] overflow-hidden rounded-lg border border-border bg-card">
-          <RouteSidebar routes={currentResult.routes} selectedRouteId={selectedRouteId} onSelectRoute={setSelectedRouteId} title={`${selectedDate} routes`} />
-          <div className="min-w-0 flex-1"><MapView depot={planData.depot} routes={currentResult.routes} selectedRouteId={selectedRouteId} onSelectRoute={setSelectedRouteId} /></div>
+        <div className="flex h-[clamp(480px,65vh,680px)] overflow-hidden rounded-lg border border-border bg-card">
+          <RouteSidebar routes={currentResult.routes} selectedRouteId={selectedRouteId} onSelectRoute={setSelectedRouteId} title={`${selectedDate} routes`} headerAction={<DepotPlanCalendar days={planData.days} selectedDate={selectedDate} onSelect={(date) => updateContext({ date })} onSolve={(date) => void solveDay(date)} solvingDate={solve.isPending ? solve.variables : null} />} />
+          <div className="min-w-0 flex-1"><MapView depot={currentResult.depot ?? planData.depot} routes={currentResult.routes} selectedRouteId={selectedRouteId} onSelectRoute={setSelectedRouteId} /></div>
         </div>
       ) : !day.isLoading ? (
-        <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">No stored result yet for this date.</div>
+        <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+          <DepotPlanCalendar days={planData.days} selectedDate={selectedDate} onSelect={(date) => updateContext({ date })} onSolve={(date) => void solveDay(date)} solvingDate={solve.isPending ? solve.variables : null} />
+          <p className="mt-3">No stored result yet for this date.</p>
+          {day.data?.default_status === 'not_requested' && <button type="button" onClick={() => void solveDay(selectedDate)} disabled={solve.isPending} className="mt-3 rounded-md bg-primary px-3 py-2 font-semibold text-primary-foreground disabled:opacity-50">{solve.isPending ? 'Queueing solve…' : 'Solve this date'}</button>}
+        </div>
       ) : null}
+      </>}
     </div>
   )
 }
 
 function DayStatus({ detail, pending }: { detail: { default_status: string; override_status: string | null; selected_result: DepotPlanDayResult | null; error: string | null }; pending: boolean }) {
-  const result = detail.selected_result
-  return (
-    <div className="rounded-md border border-border bg-card px-4 py-3 text-sm">
-      <span className="font-medium capitalize">Default: {detail.default_status}</span>
-      {detail.override_status && <span className="ml-4 capitalize">Override: {detail.override_status}</span>}
-      {pending && <span className="ml-4 text-amber-500">Optimization in progress; the prior selected result remains visible.</span>}
-      {result && <span className="ml-4">Assigned {result.assigned_cases} · routed {result.routed_cases} · unserved {result.unserved_cases}</span>}
-      {result && <RouteExecutionNote result={result} />}
-      {detail.error && <div role="alert" className="mt-2 text-destructive">{detail.error}</div>}
-    </div>
-  )
-}
-
-function RouteExecutionNote({ result }: { result: DepotPlanDayResult }) {
-  const execution = result.execution
-  if (!execution) {
-    return <p className="mt-2 text-xs text-muted-foreground">Stored result · matrix: {result.matrix_source}. Execution and fleet provenance were not recorded for this legacy result.</p>
-  }
-  const mode = execution.mode === 'strict_serving_road'
-    ? 'Strict road routing + Model Serving'
-    : execution.mode === 'local_road' ? 'Road routing + local OR-Tools'
-      : execution.mode === 'approximate_development' ? 'Approximate development · local OR-Tools'
-        : `Execution: ${execution.mode ?? 'not recorded'}`
-  return (
-    <div aria-label="Route execution provenance" className="mt-2 text-xs text-muted-foreground">
-      <p>{execution.solver_invoked === false ? 'No deliveries to optimize · solver not invoked' : mode} · matrix: {execution.matrix_source ?? result.matrix_source}</p>
-      {execution.approximate && <p className="mt-1 text-warning">Approximate travel assumptions; this is not a road-network result.</p>}
-      {execution.coverage_id && <p className="mt-1">Coverage: {execution.coverage_id} · artifact: {execution.artifact_version ?? 'not recorded'} · costing: {execution.costing ?? 'not recorded'}</p>}
-      <p className="mt-1">Fleet: {execution.resource_source ?? 'not recorded'}{execution.cost_parameter_source ? ` · costs: ${execution.cost_parameter_source}` : ''}{execution.solver_endpoint ? ` · solver endpoint: ${execution.solver_endpoint}` : ''}</p>
-    </div>
-  )
-}
-
-function Coverage({ label, value }: { label: string; value: number }) {
-  return <div className="rounded-md border border-border bg-background/40 p-2"><div className="font-semibold tabular-nums">{value}</div><div className="text-xs text-muted-foreground">{label}</div></div>
+  if (!pending && !detail.error) return null
+  return <div role="status" className="rounded-md border border-border px-3 py-2 text-sm">
+    {pending && 'Optimizing…'}
+    {detail.error && <div role="alert" className="text-destructive">{detail.error}</div>}
+  </div>
 }
 
 function Loading({ label }: { label: string }) {

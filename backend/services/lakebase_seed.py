@@ -13,6 +13,7 @@ from route_opt.synthetic import generate_all
 
 from .lakebase_migrations import migrate_lakebase
 from .postgres import PostgresService
+from .rates import canonical_rate_contract_details
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class LakebaseSeedService:
     def seed(self, dataset: Mapping[str, list[dict[str, object]]], *, source: str) -> LakebaseSeedReport:
         """Upsert reference data, validate it, then rebuild immutable baseline snapshots."""
         migrate_lakebase(self.postgres)
+        self.ensure_canonical_rate_books()
         normalized = self._normalize_dataset(dataset)
         self._validate_reference_rows(normalized)
         self._upsert_reference_rows(normalized)
@@ -68,6 +70,151 @@ class LakebaseSeedService:
             generate_all(seed=seed, customer_count=customer_count),
             source="route_opt.synthetic",
         )
+
+    def reference_counts(self) -> dict[str, int]:
+        """Return required reference-table counts after ensuring schema defaults."""
+        migrate_lakebase(self.postgres)
+        return {
+            target: self._count(table_name)
+            for target, (_, table_name) in self._REFERENCE_TABLES.items()
+        }
+
+    def needs_synthetic_seed(self) -> bool:
+        return any(count == 0 for count in self.reference_counts().values())
+
+    def ensure_synthetic_seeded(
+        self, *, seed: int = 42, customer_count: int = 250
+    ) -> LakebaseSeedReport | None:
+        """Seed deterministic references only when at least one required table is empty."""
+        self.ensure_canonical_rate_books()
+        if not self.needs_synthetic_seed():
+            return None
+        return self.seed_synthetic(seed=seed, customer_count=customer_count)
+
+    def ensure_canonical_rate_books(self) -> int:
+        """Idempotently install the complete immutable national demo rate set."""
+        migrate_lakebase(self.postgres)
+        details = canonical_rate_contract_details()
+        with self.postgres.transaction() as connection:
+            self.postgres.executemany(
+                f"""INSERT INTO {self.postgres.qualified_table('carriers')}
+                    (carrier_id, carrier_name) VALUES (%s, %s)
+                    ON CONFLICT (carrier_id) DO NOTHING""",
+                [(row.carrier_id, row.carrier_name) for row in details],
+                connection=connection,
+            )
+            self.postgres.executemany(
+                f"""INSERT INTO {self.postgres.qualified_table('carrier_contracts')} (
+                    contract_id, carrier_id, contract_name, capacity_stops, rate_per_mile,
+                    rate_per_stop, minimum_charge, fuel_surcharge_pct, effective_start, effective_end
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (contract_id) DO NOTHING""",
+                [
+                    (
+                        row.contract_id, row.carrier_id, row.contract_name,
+                        int(row.capacity_commitments[0].capacity_quantity / 5),
+                        row.lane_rates[-1].rate_per_mile / 1.05,
+                        row.lane_rates[-1].rate_per_stop,
+                        row.lane_rates[-1].minimum_charge / 1.1,
+                        row.fuel_surcharges[0].rate_pct,
+                        row.version.effective_start, row.version.effective_end,
+                    )
+                    for row in details
+                ],
+                connection=connection,
+            )
+            self.postgres.executemany(
+                f"""INSERT INTO {self.postgres.qualified_table('contract_versions')} (
+                    version_id, contract_id, version_number, status, currency, effective_start,
+                    effective_end, published_at, published_by, change_reason
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (version_id) DO NOTHING""",
+                [
+                    (
+                        row.version.version_id, row.contract_id, row.version.version_number,
+                        row.version.status, row.version.currency, row.version.effective_start,
+                        row.version.effective_end, row.version.published_at,
+                        row.version.published_by, row.version.change_reason,
+                    )
+                    for row in details
+                ],
+                connection=connection,
+            )
+            self.postgres.executemany(
+                f"""INSERT INTO {self.postgres.qualified_table('contract_lane_rates')} (
+                    rule_id, version_id, lane_name, origin, destination, lane_type,
+                    origin_endpoint_id, origin_endpoint_type, destination_endpoint_id,
+                    destination_endpoint_type, priority, flat_rate, rate_per_mile,
+                    rate_per_stop, included_stops, minimum_charge, mileage_rounding
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (rule_id) DO NOTHING""",
+                [
+                    (
+                        rule.rule_id, row.version.version_id, rule.lane_name, rule.origin,
+                        rule.destination, rule.lane_type, rule.origin_endpoint_id,
+                        rule.origin_endpoint_type, rule.destination_endpoint_id,
+                        rule.destination_endpoint_type, rule.priority, rule.flat_rate,
+                        rule.rate_per_mile, rule.rate_per_stop, rule.included_stops,
+                        rule.minimum_charge, rule.mileage_rounding,
+                    )
+                    for row in details for rule in row.lane_rates
+                ],
+                connection=connection,
+            )
+            self.postgres.executemany(
+                f"""INSERT INTO {self.postgres.qualified_table('contract_fuel_rules')} (
+                    rule_id, version_id, name, rate_pct, basis, effective_start, effective_end
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (rule_id) DO NOTHING""",
+                [
+                    (rule.rule_id, row.version.version_id, rule.name, rule.rate_pct,
+                     rule.basis, rule.effective_start, rule.effective_end)
+                    for row in details for rule in row.fuel_surcharges
+                ],
+                connection=connection,
+            )
+            self._insert_rate_book_children(details, connection)
+        return len(details)
+
+    def _insert_rate_book_children(self, details: list[object], connection: object) -> None:
+        specs = (
+            ("contract_accessorial_rules", "rule_id, version_id, code, name, charge_type, rate, description", lambda row, rule: (rule.rule_id, row.version.version_id, rule.code, rule.name, rule.charge_type, rule.rate, rule.description), "accessorials"),
+            ("contract_volume_tiers", "rule_id, version_id, name, period, unit, min_volume, max_volume, discount_pct", lambda row, rule: (rule.rule_id, row.version.version_id, rule.name, rule.period, rule.unit, rule.min_volume, rule.max_volume, rule.discount_pct), "volume_tiers"),
+            ("contract_capacity_commitments", "rule_id, version_id, name, period, unit, committed_quantity, capacity_quantity, current_utilization, shortfall_rate, overage_rate", lambda row, rule: (rule.rule_id, row.version.version_id, rule.name, rule.period, rule.unit, rule.committed_quantity, rule.capacity_quantity, rule.current_utilization, rule.shortfall_rate, rule.overage_rate), "capacity_commitments"),
+        )
+        for table_name, columns, values, attribute in specs:
+            rows = [values(detail, rule) for detail in details for rule in getattr(detail, attribute)]
+            placeholders = ", ".join(["%s"] * len(rows[0]))
+            self.postgres.executemany(
+                f"INSERT INTO {self.postgres.qualified_table(table_name)} ({columns}) VALUES ({placeholders}) ON CONFLICT (rule_id) DO NOTHING",
+                rows,
+                connection=connection,
+            )
+
+    def reset(self) -> list[str]:
+        """Clear the app-owned schema while retaining its migration history."""
+        migrate_lakebase(self.postgres)
+        with self.postgres.transaction() as connection:
+            rows = self.postgres.query(
+                """
+                SELECT tablename
+                FROM pg_catalog.pg_tables
+                WHERE schemaname = %s AND tablename <> 'schema_migrations'
+                ORDER BY tablename
+                """,
+                (self.postgres.schema,),
+                connection=connection,
+            )
+            table_names = [str(row["tablename"]) for row in rows]
+            if table_names:
+                qualified = ", ".join(
+                    self.postgres.qualified_table(table_name) for table_name in table_names
+                )
+                self.postgres.execute(
+                    f"TRUNCATE TABLE {qualified} RESTART IDENTITY CASCADE",
+                    connection=connection,
+                )
+        return table_names
 
     def seed_from_uc(self) -> LakebaseSeedReport:
         """Copy the current interactive UC dataset before switching the feature flag."""
@@ -630,14 +777,44 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--customer-count", type=int, default=250)
+    parser.add_argument(
+        "--skip-route-preparation", action="store_true",
+        help="Skip preparing saved first-day depot routes after seeding.",
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Clear all application data in LAKEBASE_APP_SCHEMA before seeding.",
+    )
+    parser.add_argument(
+        "--confirm",
+        help="Required with --reset; pass RESET_WORKSHOP_DATA to acknowledge data deletion.",
+    )
     args = parser.parse_args()
     service = LakebaseSeedService()
+    reset_tables: list[str] = []
+    if args.reset:
+        if args.confirm != "RESET_WORKSHOP_DATA":
+            parser.error("--reset requires --confirm RESET_WORKSHOP_DATA")
+        reset_tables = service.reset()
     report = (
         service.seed_from_uc()
         if args.source == "uc"
         else service.seed_synthetic(seed=args.seed, customer_count=args.customer_count)
     )
-    print(json.dumps(asdict(report), indent=2, sort_keys=True))
+    payload = asdict(report)
+    if reset_tables:
+        payload["reset_tables"] = reset_tables
+    if not args.skip_route_preparation:
+        # The route repository must write to the same persistent backend that
+        # was just seeded, even when this one-time command has no app env set.
+        import os
+        os.environ["DATA_BACKEND"] = "lakebase"
+        from .depot_route_preparation import prepare_active_depot_routes
+        payload["depot_route_preparation"] = prepare_active_depot_routes()
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    if payload.get("depot_route_preparation", {}).get("failed"):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

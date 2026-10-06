@@ -15,11 +15,11 @@ from typing import Any
 
 from .cost import route_cost
 from .network_synthetic import _road_distance_miles
+from .pricing import revenue_for_cases
 
 DELIVERY_DAY = "Tuesday"
 MAX_STOPS_PER_ROUTE = 8
 CAPACITY_CASES = 720
-REVENUE_PER_CASE = 6.25
 _TIME_WINDOWS = [
     ("08:00", "12:00"),
     ("10:00", "14:00"),
@@ -181,7 +181,7 @@ def generate_depot_baseline(
     total_cost = sum(route["total_cost"] for route in routes)
     overtime = sum(route["overtime_minutes"] for route in routes)
     stop_count = sum(len(route["stops"]) for route in routes)
-    revenue = round(total_cases * REVENUE_PER_CASE, 2)
+    revenue = revenue_for_cases(total_cases)
     breakdown = {
         "mileage_cost": round(sum(route["total_miles"] for route in routes) * 3.0, 2),
         "labor_cost": round(

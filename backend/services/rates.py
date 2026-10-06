@@ -45,64 +45,86 @@ _MONTERREY_TEXAS_RATE_RULES = (
 )
 
 
+# These 2026 rows are immutable templates, not live market quotes. Generated
+# snapshots clone them for the configured anchor and keep every prior version.
+CANONICAL_RATE_CONTRACTS: tuple[dict[str, object], ...] = (
+    {"contract_id": "GL_STANDARD_2026", "carrier_id": "GL_LOGISTICS", "carrier_name": "Great Lakes Logistics", "contract_name": "GL Standard 2026", "capacity_stops": 12, "rate_per_mile": 4.25, "rate_per_stop": 45, "minimum_charge": 350, "fuel_surcharge_pct": 12, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+    {"contract_id": "GL_PRIORITY_2026", "carrier_id": "GL_LOGISTICS", "carrier_name": "Great Lakes Logistics", "contract_name": "GL Priority 2026", "capacity_stops": 20, "rate_per_mile": 5.10, "rate_per_stop": 55, "minimum_charge": 425, "fuel_surcharge_pct": 10, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+    {"contract_id": "MW_SPOT_2026", "carrier_id": "MIDWEST_EXPRESS", "carrier_name": "Midwest Express", "contract_name": "Midwest Spot 2026", "capacity_stops": 8, "rate_per_mile": 4.70, "rate_per_stop": 50, "minimum_charge": 400, "fuel_surcharge_pct": 14, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+    {"contract_id": "NE_STANDARD_2026", "carrier_id": "EASTERN_FREIGHT", "carrier_name": "Eastern Freight Lines", "contract_name": "Northeast Standard 2026", "capacity_stops": 14, "rate_per_mile": 4.55, "rate_per_stop": 48, "minimum_charge": 385, "fuel_surcharge_pct": 12, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+    {"contract_id": "SE_STANDARD_2026", "carrier_id": "SOUTHERN_FREIGHT", "carrier_name": "Southern Freight Lines", "contract_name": "Southeast Standard 2026", "capacity_stops": 14, "rate_per_mile": 4.35, "rate_per_stop": 46, "minimum_charge": 365, "fuel_surcharge_pct": 12, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+    {"contract_id": "WEST_STANDARD_2026", "carrier_id": "WESTERN_FREIGHT", "carrier_name": "Western Freight Lines", "contract_name": "West Standard 2026", "capacity_stops": 12, "rate_per_mile": 4.90, "rate_per_stop": 52, "minimum_charge": 420, "fuel_surcharge_pct": 13, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+    {"contract_id": "TOLA_STANDARD_2026", "carrier_id": "TOLA_FREIGHT", "carrier_name": "TOLA Freight", "contract_name": "TOLA Standard 2026", "capacity_stops": 14, "rate_per_mile": 4.40, "rate_per_stop": 46, "minimum_charge": 370, "fuel_surcharge_pct": 12, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+    {"contract_id": "CAN_STANDARD_2026", "carrier_id": "CAN_NORTHLINK", "carrier_name": "Northern Link Logistics", "contract_name": "Canada Standard 2026", "capacity_stops": 12, "rate_per_mile": 4.85, "rate_per_stop": 52, "minimum_charge": 410, "fuel_surcharge_pct": 11, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+    {"contract_id": "MX_STANDARD_2026", "carrier_id": "MX_TRANSPORTES", "carrier_name": "Transportes del Norte", "contract_name": "Mexico Standard 2026", "capacity_stops": 12, "rate_per_mile": 4.60, "rate_per_stop": 48, "minimum_charge": 390, "fuel_surcharge_pct": 13, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+)
+
+
+def canonical_rate_contract_details() -> list[RateContractDetail]:
+    """Return the immutable published rate books for the frozen demo anchor."""
+    return [
+        _with_curated_network_rates(
+            RateContractDetail.model_validate(
+                contract_detail_from_legacy(row, str(row["carrier_name"]))
+            ),
+            synthetic_seed=True,
+        )
+        for row in CANONICAL_RATE_CONTRACTS
+    ]
+
+
 def _with_curated_network_rates(
     detail: RateContractDetail, *, synthetic_seed: bool = False
 ) -> RateContractDetail:
     """Add published demo-corridor rates missing from legacy rate storage."""
 
-    detail = _with_demo_rate_dates(detail) if synthetic_seed else detail
     if (
-        detail.contract_id != "MX_STANDARD_2026"
-        or detail.version.version_number != 1
-        or detail.version.status != "published"
+        detail.contract_id == "MX_STANDARD_2026"
+        and detail.version.version_number == 1
+        and detail.version.status == "published"
     ):
-        return detail
-    existing = {rule.rule_id for rule in detail.lane_rates}
-    additions = [
-        {
-            "rule_id": rule_id,
-            "lane_name": lane_name,
-            "origin": origin,
-            "destination": destination,
-            "lane_type": "LINEHAUL",
-            "origin_endpoint_id": origin,
-            "origin_endpoint_type": "facility",
-            "destination_endpoint_id": destination,
-            "destination_endpoint_type": "facility",
-            "priority": 1000,
-            # $398.23 plus the contract's 13% fuel rule is $450/load, or
-            # $0.50/case at the network solver's governed 900-case load basis.
-            "flat_rate": 398.23,
-            "rate_per_mile": 0,
-            "rate_per_stop": 0,
-            "included_stops": 1,
-            "minimum_charge": 0,
-            "mileage_rounding": "exact",
-        }
-        for rule_id, origin, destination, lane_name in _MONTERREY_TEXAS_RATE_RULES
-        if rule_id not in existing
-    ]
-    if not additions:
-        return detail
-    return detail.model_copy(
-        update={
-            "lane_rates": [
-                *detail.lane_rates,
-                *[LaneRateRule.model_validate(row) for row in additions],
-            ]
-        }
-    )
+        existing = {rule.rule_id for rule in detail.lane_rates}
+        additions = [
+            {
+                "rule_id": rule_id,
+                "lane_name": lane_name,
+                "origin": origin,
+                "destination": destination,
+                "lane_type": "LINEHAUL",
+                "origin_endpoint_id": origin,
+                "origin_endpoint_type": "facility",
+                "destination_endpoint_id": destination,
+                "destination_endpoint_type": "facility",
+                "priority": 1000,
+                # $398.23 plus the contract's 13% fuel rule is $450/load, or
+                # $0.50/case at the network solver's governed 900-case load basis.
+                "flat_rate": 398.23,
+                "rate_per_mile": 0,
+                "rate_per_stop": 0,
+                "included_stops": 1,
+                "minimum_charge": 0,
+                "mileage_rounding": "exact",
+            }
+            for rule_id, origin, destination, lane_name in _MONTERREY_TEXAS_RATE_RULES
+            if rule_id not in existing
+        ]
+        if additions:
+            detail = detail.model_copy(
+                update={
+                    "lane_rates": [
+                        *detail.lane_rates,
+                        *[LaneRateRule.model_validate(row) for row in additions],
+                    ]
+                }
+            )
+    return _with_demo_rate_dates(detail) if synthetic_seed else detail
 
 
 def _with_demo_rate_dates(detail: RateContractDetail) -> RateContractDetail:
     """Keep seeded published rate books valid for the frozen demo snapshot."""
 
     seeded_version_ids = {
-        "GL_STANDARD_2026_V1",
-        "GL_PRIORITY_2026_V1",
-        "MW_SPOT_2026_V1",
-        "CAN_STANDARD_2026_V1",
-        "MX_STANDARD_2026_V1",
+        f"{row['contract_id']}_V1" for row in CANONICAL_RATE_CONTRACTS
     }
     if (
         detail.version.status != "published"
@@ -119,26 +141,66 @@ def _with_demo_rate_dates(detail: RateContractDetail) -> RateContractDetail:
     version = detail.version.model_copy(
         update={
             "version_id": snapshot_version_id(detail.version.version_id, anchor),
+            "version_number": int(anchor.strftime("%Y%m%d")),
             "effective_start": effective_start,
             "effective_end": effective_end,
             "published_at": anchor.isoformat(),
         }
     )
-    fuel = [
-        row.model_copy(
-            update={"effective_start": effective_start, "effective_end": effective_end}
-        )
-        for row in detail.fuel_surcharges
-    ]
-    return detail.model_copy(update={"version": version, "fuel_surcharges": fuel})
+    def anchored_rules(rows: list[Any], *, dated: bool = False) -> list[Any]:
+        return [
+            row.model_copy(
+                update={
+                    "rule_id": snapshot_version_id(row.rule_id, anchor),
+                    **(
+                        {
+                            "effective_start": effective_start,
+                            "effective_end": effective_end,
+                        }
+                        if dated
+                        else {}
+                    ),
+                }
+            )
+            for row in rows
+        ]
+
+    return detail.model_copy(
+        update={
+            "version": version,
+            "lane_rates": anchored_rules(detail.lane_rates),
+            "fuel_surcharges": anchored_rules(
+                detail.fuel_surcharges, dated=True
+            ),
+            "accessorials": anchored_rules(detail.accessorials),
+            "volume_tiers": anchored_rules(detail.volume_tiers),
+            "capacity_commitments": anchored_rules(detail.capacity_commitments),
+        }
+    )
 
 
 # Region-to-contract map for governed linehaul rating. Lanes whose origin region
 # is absent here fall back to planning rates rather than a governed rate book.
 GOVERNED_LINEHAUL_CONTRACTS: dict[str, tuple[str, str]] = {
     "REGION_GREAT_LAKES": ("GL_STANDARD_2026", "GL_STANDARD_2026_V1"),
+    "REGION_NORTHEAST": ("NE_STANDARD_2026", "NE_STANDARD_2026_V1"),
+    "REGION_SOUTHEAST": ("SE_STANDARD_2026", "SE_STANDARD_2026_V1"),
+    "REGION_WEST": ("WEST_STANDARD_2026", "WEST_STANDARD_2026_V1"),
+    "REGION_TOLA": ("TOLA_STANDARD_2026", "TOLA_STANDARD_2026_V1"),
     "REGION_CANADA": ("CAN_STANDARD_2026", "CAN_STANDARD_2026_V1"),
     "REGION_MEXICO": ("MX_STANDARD_2026", "MX_STANDARD_2026_V1"),
+}
+
+CONTRACT_APPLICABLE_REGIONS: dict[str, tuple[str, ...]] = {
+    "GL_STANDARD_2026": ("REGION_GREAT_LAKES",),
+    "GL_PRIORITY_2026": ("REGION_GREAT_LAKES",),
+    "MW_SPOT_2026": ("REGION_GREAT_LAKES",),
+    "NE_STANDARD_2026": ("REGION_NORTHEAST",),
+    "SE_STANDARD_2026": ("REGION_SOUTHEAST",),
+    "WEST_STANDARD_2026": ("REGION_WEST",),
+    "TOLA_STANDARD_2026": ("REGION_TOLA",),
+    "CAN_STANDARD_2026": ("REGION_CANADA",),
+    "MX_STANDARD_2026": ("REGION_MEXICO",),
 }
 
 
@@ -213,6 +275,9 @@ def list_rate_contract_summaries(
         RateContractSummary.model_validate(
             {
                 **contract_summary(detail.model_dump(mode="json"), service_date),
+                "applicable_region_ids": list(
+                    CONTRACT_APPLICABLE_REGIONS.get(detail.contract_id, ())
+                ),
                 "draft_version": next(
                     (
                         row.version.model_dump(mode="json")

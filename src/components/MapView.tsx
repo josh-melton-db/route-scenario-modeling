@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import DeckGL from '@deck.gl/react'
 import { IconLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers'
 import { Map as MapLibreMap } from 'react-map-gl/maplibre'
@@ -37,6 +37,8 @@ interface MapViewProps {
   routes: Route[]
   selectedRouteId: string | null
   onSelectRoute: (routeId: string | null) => void
+  onSelectStop?: (stop: Stop) => void
+  selectedCustomerId?: string | null
   viewState?: ViewState
   onViewStateChange?: (viewState: ViewState) => void
   editable?: boolean
@@ -54,16 +56,22 @@ function initialView(depot: Depot, routes: Route[], draftStops: DeliveryDraft[])
     ...routes.flatMap((route) => route.stops.map((stop) => stop.location)),
     ...draftStops.map((stop) => ({ lat: stop.lat, lng: stop.lng })),
   ]
-  const minLat = Math.min(...points.map((point) => point.lat))
-  const maxLat = Math.max(...points.map((point) => point.lat))
-  const minLng = Math.min(...points.map((point) => point.lng))
-  const maxLng = Math.max(...points.map((point) => point.lng))
+  return viewForPoints(points)
+}
+
+function viewForPoints(points: LatLng[]): ViewState {
+  const safePoints = points.length ? points : [{ lat: 39.5, lng: -98.35 }]
+  const minLat = Math.min(...safePoints.map((point) => point.lat))
+  const maxLat = Math.max(...safePoints.map((point) => point.lat))
+  const minLng = Math.min(...safePoints.map((point) => point.lng))
+  const maxLng = Math.max(...safePoints.map((point) => point.lng))
+  const span = Math.max(maxLat - minLat, (maxLng - minLng) * 0.7, 0.002) * 1.12
   return {
     longitude: (minLng + maxLng) / 2,
     latitude: (minLat + maxLat) / 2,
-    zoom: 7.2,
+    zoom: Math.max(4, Math.min(14, Math.log2(72 / span) + 0.5)),
     bearing: 0,
-    pitch: 30,
+    pitch: 20,
   }
 }
 
@@ -72,6 +80,8 @@ export default function MapView({
   routes,
   selectedRouteId,
   onSelectRoute,
+  onSelectStop,
+  selectedCustomerId = null,
   viewState,
   onViewStateChange,
   editable = false,
@@ -88,6 +98,15 @@ export default function MapView({
   )
   const [localViewState, setLocalViewState] = useState<ViewState>(fallbackInitialView)
   const activeViewState = viewState ?? localViewState
+
+  useEffect(() => {
+    if (editable) return
+    const selectedRoutes = selectedRouteId ? routes.filter((route) => route.route_id === selectedRouteId) : routes
+    const points = [depot.location, ...selectedRoutes.flatMap((route) => route.path.length ? route.path : route.stops.map((stop) => stop.location))]
+    const next = viewForPoints(points)
+    setLocalViewState(next)
+    onViewStateChange?.(next)
+  }, [depot.location, editable, onViewStateChange, routes, selectedRouteId])
 
   const paths = useMemo<PathDatum[]>(
     () =>
@@ -156,18 +175,21 @@ export default function MapView({
             ? [...datum.color, datum.is_new_customer ? 255 : 230]
             : [...datum.color, 80],
         getLineColor: (datum) =>
-          datum.window_risk === 'missed'
+          datum.customer_id === selectedCustomerId
+            ? [250, 204, 21, 255]
+            : datum.window_risk === 'missed'
             ? [248, 113, 113, 255]
             : [255, 255, 255, 180],
         stroked: true,
         lineWidthMinPixels: 1.5,
         radiusUnits: 'pixels',
         getRadius: (datum) =>
-          datum.is_new_customer ? 10 : isSelected(datum.route_id) ? 8 : 5,
+          datum.customer_id === selectedCustomerId ? 12 : datum.is_new_customer ? 10 : isSelected(datum.route_id) ? 8 : 5,
         pickable: !editable,
         updateTriggers: {
           getFillColor: [selectedRouteId],
-          getRadius: [selectedRouteId],
+          getRadius: [selectedRouteId, selectedCustomerId],
+          getLineColor: [selectedCustomerId],
         },
       }),
       new IconLayer<Depot>({
@@ -237,7 +259,7 @@ export default function MapView({
           ]
         : []),
     ]
-  }, [depot, draftData, editable, paths, proposedDepotLocation, selectedDraftIndex, selectedRouteId, stops])
+  }, [depot, draftData, editable, paths, proposedDepotLocation, selectedDraftIndex, selectedRouteId, selectedCustomerId, stops])
 
   return (
     <div className="relative h-full w-full overflow-hidden rounded-lg border border-border bg-card">
@@ -288,6 +310,10 @@ export default function MapView({
           }
           if (!info.object) {
             onSelectRoute(null)
+            return
+          }
+          if ('customer_id' in info.object && onSelectStop) {
+            onSelectStop(info.object as StopDatum)
             return
           }
           if ('route_id' in info.object) {

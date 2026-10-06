@@ -39,7 +39,18 @@ class DemandChangeRepository:
               UNIQUE (parent_run_id, depot_id, service_date, customer_id)
             )
         """)
-        lakebase_store.postgres.execute(f"ALTER TABLE {self._table()} ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ")
+        existing = lakebase_store.postgres.query_one(
+            """SELECT 1 AS present
+                 FROM pg_catalog.pg_attribute
+                WHERE attrelid = %s::regclass
+                  AND attname = %s
+                  AND NOT attisdropped""",
+            (self._table(), "processing_started_at"),
+        )
+        if existing is None:
+            lakebase_store.postgres.execute(
+                f"ALTER TABLE {self._table()} ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ"
+            )
 
     def recover_stale_claims(self, max_age_minutes: int = 15) -> int:
         if not self._uses_lakebase:
@@ -126,6 +137,20 @@ class DemandChangeRepository:
             return
         with self._lock:
             self._claimed_runs.pop(run_id, None)
+
+    def clear_all(self) -> int:
+        if self._uses_lakebase:
+            self._ensure_table()
+            count = lakebase_store.postgres.query_one(
+                f"SELECT COUNT(*) AS count FROM {self._table()}"
+            )
+            lakebase_store.postgres.execute(f"DELETE FROM {self._table()}")
+            return int((count or {}).get("count", 0))
+        with self._lock:
+            count = len(self._rows)
+            self._rows.clear()
+            self._claimed_runs.clear()
+            return count
 
 
 class DemandChangeService:

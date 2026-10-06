@@ -48,6 +48,31 @@ def test_reader_rejects_incomplete_results():
         sql._read_results(NS(), first)
 
 
+def test_truncated_inline_select_retries_complete_external_result(monkeypatch):
+    from databricks.sdk.service.sql import Disposition
+
+    first = execution(NS(data_array=[["1"]]), chunks=1)
+    first.manifest.truncated = True
+    complete = execution(NS(data_array=[["1"], ["2"]]), chunks=1)
+    service = NS(execute_statement=Mock(side_effect=[first, complete]))
+    monkeypatch.setattr(sql, "get_workspace_client", lambda: NS(statement_execution=service))
+    monkeypatch.setattr(sql, "resolve_sql_warehouse_id", lambda: "W")
+    assert sql.execute_sql("SELECT * FROM network") == [{"units": 1}, {"units": 2}]
+    assert service.execute_statement.call_count == 2
+    assert service.execute_statement.call_args.kwargs["disposition"] == Disposition.EXTERNAL_LINKS
+
+
+def test_truncated_external_result_is_still_rejected(monkeypatch):
+    truncated = execution(NS(data_array=[["1"]]), chunks=1)
+    truncated.manifest.truncated = True
+    service = NS(execute_statement=Mock(return_value=truncated))
+    monkeypatch.setattr(sql, "get_workspace_client", lambda: NS(statement_execution=service))
+    monkeypatch.setattr(sql, "resolve_sql_warehouse_id", lambda: "W")
+    with pytest.raises(HTTPException, match="truncated"):
+        sql.execute_sql("SELECT * FROM network")
+    assert service.execute_statement.call_count == 2
+
+
 def test_mutation_is_never_reexecuted(monkeypatch):
     service = NS(execute_statement=Mock(return_value=execution(None, error="secret_catalog.private_table failed")))
     monkeypatch.setattr(sql, "get_workspace_client", lambda: NS(statement_execution=service))
@@ -57,6 +82,22 @@ def test_mutation_is_never_reexecuted(monkeypatch):
     assert raised.value.detail == "The analytics query could not be completed."
     assert "secret_catalog" not in raised.value.detail
     assert service.execute_statement.call_count == 1
+
+
+@pytest.mark.parametrize("code", ["TABLE_OR_VIEW_NOT_FOUND", "SCHEMA_NOT_FOUND"])
+def test_missing_analytics_objects_raise_sanitized_bootstrap_signal(monkeypatch, code):
+    service = NS(execute_statement=Mock(return_value=execution(
+        None, error=NS(error_code=code, message="secret_catalog.private_table")
+    )))
+    monkeypatch.setattr(sql, "get_workspace_client", lambda: NS(statement_execution=service))
+    monkeypatch.setattr(sql, "resolve_sql_warehouse_id", lambda: "W")
+
+    with pytest.raises(sql.AnalyticsDataMissingError) as raised:
+        sql.execute_sql("SELECT * FROM network")
+
+    assert raised.value.status_code == 409
+    assert raised.value.error_type == code
+    assert "secret_catalog" not in raised.value.detail
 
 
 @pytest.mark.parametrize(

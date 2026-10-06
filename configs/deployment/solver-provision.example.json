@@ -1,0 +1,13 @@
+{
+  "name": "solver-provision-example",
+  "preset": "enhanced",
+  "variables": {
+    "catalog": "my_catalog",
+    "lakebase_database_owner_role_id": "dbrx-apps-REPLACE_ME",
+    "route_solver_endpoint_name": "my-route-solver"
+  },
+  "routing": {
+    "mode": "approximate_development",
+    "allow_haversine_fallback": false
+  }
+}

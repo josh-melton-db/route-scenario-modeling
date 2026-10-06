@@ -14,11 +14,13 @@ mlruns/
 .idea/
 .isaac/
 .cursor/
-docs/
+planning/*
+!planning/demo-solidification-implementation-plan.md
+!planning/demo-solidification-dev-verification.md
+!planning/demo-ux-and-reallocation-implementation-plan.md
+!planning/demo-ux-dev-verification.md
 examples/
-
-# Optional colocated checkout of the independently managed routing service
-/valhalla_poc/
+.databricks/deployment-render/
 
 # Playwright
 playwright-report/

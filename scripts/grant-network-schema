@@ -9,6 +9,17 @@ parser.add_argument("--profile", required=True)
 parser.add_argument("--principal", required=True)
 parser.add_argument("--schema", required=True)
 args = parser.parse_args()
+catalog, separator, schema = args.schema.partition(".")
+if not separator or not catalog or not schema:
+    parser.error("--schema must be catalog.schema")
+subprocess.run(
+    [
+        "databricks", "grants", "update", "catalog", catalog,
+        "--profile", args.profile, "--json",
+        json.dumps({"changes": [{"principal": args.principal, "add": ["USE_CATALOG"]}]}),
+    ],
+    check=True,
+)
 subprocess.run(
     [
         "databricks", "grants", "update", "schema", args.schema,

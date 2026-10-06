@@ -5,12 +5,19 @@ from route_opt.schemas import NETWORK_TABLES
 def test_sql_snapshot_retains_complete_network_table_shape(monkeypatch):
     service = NetworkOverviewService()
     captured = {}
+    supply_queries = []
     monkeypatch.setattr(service, "_run_sql_queries", lambda sql, statements: captured.update(statements) or {})
+    monkeypatch.setattr(
+        "backend.services.network_overview.SqlService.query",
+        lambda self, statement: supply_queries.append(statement) or [],
+    )
     service._load_sql_rows(
         demand_plan_version_id=None, capacity_plan_version_id=None,
         horizon_start=None, horizon_end=None,
     )
-    assert set(captured) == set(NETWORK_TABLES)
+    assert set(captured) == set(NETWORK_TABLES) - {"facility_supply_daily"}
+    assert len(supply_queries) == 1
+    assert "facility_supply_daily" in supply_queries[0]
     assert all("SELECT *" in statement for statement in captured.values())
     assert all("GROUP BY" not in statement for statement in captured.values())
 

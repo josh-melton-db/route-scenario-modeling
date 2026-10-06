@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if [[ ! -x .venv/bin/pytest ]]; then
+  echo "Missing .venv test environment. Run: npm run setup:python" >&2
+  exit 2
+fi
+if [[ ! -d node_modules ]]; then
+  echo "Missing frontend dependencies. Run: npm install" >&2
+  exit 2
+fi
+
+# A sub-minute workshop gate: Python syntax/imports, deterministic synthetic
+# data generation, and static frontend checks. Use verify:full before release.
+.venv/bin/python -m compileall -q backend route_opt
+.venv/bin/python -c 'from route_opt.synthetic import generate_all; data = generate_all(seed=42, customer_count=10); assert data["depot_master"] and len(data["location_data"]) == 10'
+npm run lint
+git diff --check

@@ -164,6 +164,44 @@ class BaselineRepository:
                 ("network", revision.revision_id, revision.revision_id), connection=connection,
             )
 
+    def replace_original(self, revision: BaselineRevision) -> None:
+        """Atomically replace all revision history with a refreshed canonical seed."""
+        self._ensure_lakebase()
+        if not self.uses_lakebase:
+            with self._lock:
+                self._revisions = {revision.revision_id: revision.copy()}
+                self._proposals.clear()
+                self._original_id = self._active_id = revision.revision_id
+            return
+        with lakebase_store.postgres.transaction() as connection:
+            lakebase_store.postgres.execute(
+                f"DELETE FROM {self._table('network_baseline_proposals')}", connection=connection
+            )
+            lakebase_store.postgres.execute(
+                f"DELETE FROM {self._table('network_baseline_option_revisions')}", connection=connection
+            )
+            lakebase_store.postgres.execute(
+                f"DELETE FROM {self._table('network_baseline_revisions')}", connection=connection
+            )
+            lakebase_store.postgres.execute(
+                f"INSERT INTO {self._table('network_baseline_revisions')} VALUES (%s,%s,%s,%s,%s)",
+                (revision.revision_id, None, None, None, lakebase_store.postgres.jsonb(revision.rows)),
+                connection=connection,
+            )
+            lakebase_store.postgres.execute(
+                f"INSERT INTO {self._table('network_baseline_option_revisions')} VALUES (%s,%s)",
+                (revision.revision_id, lakebase_store.postgres.jsonb(self._option_payload(revision.rows))),
+                connection=connection,
+            )
+            lakebase_store.postgres.execute(
+                f"""INSERT INTO {self._table('network_baseline_state')}
+                    (singleton_key, original_revision_id, active_revision_id) VALUES (%s,%s,%s)
+                    ON CONFLICT (singleton_key) DO UPDATE SET
+                      original_revision_id = EXCLUDED.original_revision_id,
+                      active_revision_id = EXCLUDED.active_revision_id""",
+                ("network", revision.revision_id, revision.revision_id), connection=connection,
+            )
+
     def ids(self) -> tuple[str, str]:
         self._ensure_lakebase()
         if not self.uses_lakebase:
@@ -325,13 +363,42 @@ class BaselineRepository:
             )
         return self.revision(str(proposal["proposed_revision_id"]))
 
-    def reset(self) -> None:
+    def reset(self, *, clear_history: bool = False) -> None:
         self._ensure_lakebase()
         if not self.uses_lakebase:
             with self._lock:
                 self._active_id = self._original_id
+                if clear_history and self._original_id:
+                    original = self._revisions[self._original_id]
+                    self._revisions = {self._original_id: original}
+                    self._proposals.clear()
             return
-        lakebase_store.postgres.execute(
-            f"UPDATE {self._table('network_baseline_state')} SET active_revision_id = original_revision_id WHERE singleton_key = %s",
-            ("network",),
-        )
+        with lakebase_store.postgres.transaction() as connection:
+            state = lakebase_store.postgres.query_one(
+                f"SELECT original_revision_id FROM {self._table('network_baseline_state')} "
+                "WHERE singleton_key = %s FOR UPDATE",
+                ("network",), connection=connection,
+            )
+            if state is None:
+                raise RuntimeError("Baseline state has not been seeded.")
+            original_id = str(state["original_revision_id"])
+            lakebase_store.postgres.execute(
+                f"UPDATE {self._table('network_baseline_state')} SET active_revision_id = %s "
+                "WHERE singleton_key = %s",
+                (original_id, "network"), connection=connection,
+            )
+            if clear_history:
+                lakebase_store.postgres.execute(
+                    f"DELETE FROM {self._table('network_baseline_proposals')}",
+                    connection=connection,
+                )
+                lakebase_store.postgres.execute(
+                    f"DELETE FROM {self._table('network_baseline_option_revisions')} "
+                    "WHERE revision_id <> %s",
+                    (original_id,), connection=connection,
+                )
+                lakebase_store.postgres.execute(
+                    f"DELETE FROM {self._table('network_baseline_revisions')} "
+                    "WHERE revision_id <> %s",
+                    (original_id,), connection=connection,
+                )

@@ -10,8 +10,12 @@ import type {
   TransportationChoices,
 } from '@/api/types'
 import { formatCurrency } from '@/lib/format'
+import { localRateContractsForDepot } from '@/lib/rateContractScope'
 
 interface Props {
+  depotId: string
+  depotRegion?: string | null
+  depotRegionId?: string | null
   constraints: OperatingConstraints
   choices: TransportationChoices
   pricingContext: PricingContext
@@ -30,6 +34,9 @@ interface Props {
 }
 
 export default function TransportationOptionsPanel({
+  depotId,
+  depotRegion,
+  depotRegionId,
   constraints,
   choices,
   pricingContext,
@@ -48,13 +55,20 @@ export default function TransportationOptionsPanel({
 }: Props) {
   const constraintNumber = (key: keyof OperatingConstraints, value: string) =>
     onConstraintsChange({ ...constraints, [key]: Number(value) })
-  const eligibleContracts = contracts.filter(
+  const normalizedRegion = depotRegionId || (depotRegion
+    ? `REGION_${depotRegion.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`
+    : '')
+  const localRateContracts = localRateContractsForDepot(rateContracts, depotId, normalizedRegion)
+  const localContractIds = new Set(localRateContracts.map((contract) => contract.contract_id))
+  const localContracts = contracts.filter((contract) => localContractIds.has(contract.contract_id))
+  const localCarrierIds = new Set(localContracts.map((contract) => contract.carrier_id))
+  const eligibleContracts = localContracts.filter(
     (contract) => contract.carrier_id === choices.carrier_id,
   )
   const selectedContract = eligibleContracts.find(
     (contract) => contract.contract_id === choices.contract_id,
   )
-  const effectiveContracts = contracts.filter((contract) => {
+  const effectiveContracts = localContracts.filter((contract) => {
     if (!contract.active) return false
     if (
       choices.contract_selection === 'automatic' &&
@@ -68,15 +82,15 @@ export default function TransportationOptionsPanel({
     return true
   })
   const linkedRateBook =
-    rateContracts.find((contract) => contract.contract_id === choices.contract_id) ??
-    rateContracts.find((rateContract) =>
+    localRateContracts.find((contract) => contract.contract_id === choices.contract_id) ??
+    localRateContracts.find((rateContract) =>
       effectiveContracts.some(
         (contract) => contract.contract_id === rateContract.contract_id,
       ),
     )
 
   function selectCarrier(carrierId: string) {
-    const firstContract = contracts.find(
+    const firstContract = localContracts.find(
       (contract) => contract.carrier_id === carrierId,
     )
     onChoicesChange({
@@ -276,7 +290,7 @@ export default function TransportationOptionsPanel({
             <div className="mt-4">
               <div className="text-xs font-medium">Eligible carrier pool</div>
               <div className="mt-2 flex flex-wrap gap-2">
-                {carriers.map((carrier) => {
+                {carriers.filter((carrier) => localCarrierIds.has(carrier.carrier_id)).map((carrier) => {
                   const selected = choices.eligible_carrier_ids.includes(carrier.carrier_id)
                   return (
                     <label
@@ -307,7 +321,7 @@ export default function TransportationOptionsPanel({
                   className="rounded-md border border-border bg-background px-3 py-2 text-sm"
                 >
                   <option value="">Select a carrier</option>
-                  {carriers.map((carrier) => (
+                  {carriers.filter((carrier) => localCarrierIds.has(carrier.carrier_id)).map((carrier) => (
                     <option key={carrier.carrier_id} value={carrier.carrier_id}>
                       {carrier.carrier_name}
                     </option>
@@ -370,7 +384,7 @@ export default function TransportationOptionsPanel({
                     {effectiveContracts.length} effective contract{effectiveContracts.length === 1 ? '' : 's'}
                   </div>
                   <div className="mt-1 text-muted-foreground">
-                    Resolved for {pricingContext.service_date}; lane and capacity are validated during precheck.
+                    Local last-mile contracts for {depotId} on {pricingContext.service_date}. Linehaul-only books are excluded.
                   </div>
                 </div>
               </div>

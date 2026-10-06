@@ -1,5 +1,6 @@
 from route_opt.depot_baseline import DELIVERY_DAY, generate_depot_baseline
 from route_opt.network_synthetic import national_dataset_cached
+from route_opt.pricing import CANONICAL_REVENUE_PER_CASE
 
 
 def test_generated_depot_baseline_is_coherent_and_deterministic() -> None:
@@ -31,7 +32,9 @@ def test_generated_depot_baseline_is_coherent_and_deterministic() -> None:
     assert kpis["cost_breakdown"]["total_cost"] == round(
         sum(route["total_cost"] for route in baseline["routes"]), 2
     )
-    assert kpis["total_revenue"] == round(kpis["total_cases"] * 6.25, 2)
+    assert kpis["total_revenue"] == round(
+        kpis["total_cases"] * CANONICAL_REVENUE_PER_CASE, 2
+    )
     assert kpis["profit"] == round(kpis["total_revenue"] - kpis["cost_breakdown"]["total_cost"], 2)
 
     first["baseline"].pop("generated_at")

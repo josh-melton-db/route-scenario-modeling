@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from ortools.graph.python import min_cost_flow
@@ -21,6 +21,123 @@ def _date_text(value: object) -> str:
 def _in_horizon(value: object, start: str, end: str) -> bool:
     service_date = _date_text(value)
     return start <= service_date <= end
+
+
+def _retained_capacity(
+    capacity: int, facility_id: str, retained_pct: Mapping[str, float]
+) -> int:
+    return math.floor(capacity * float(retained_pct.get(facility_id, 100)) / 100)
+
+
+def _validate_retained_percentages(name: str, retained_pct: Mapping[str, float]) -> None:
+    if any(not 0 <= float(value) <= 200 for value in retained_pct.values()):
+        raise ValueError(f"{name} values must be between 0 and 200 percent.")
+
+
+def _facility_supply_by_date(
+    rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    capacity_plan_version_id: str,
+    horizon_start: str,
+    horizon_end: str,
+    facility_capacity: Mapping[tuple[str, str], int],
+    dc_ids: set[str],
+) -> dict[tuple[str, str], int]:
+    """Resolve DC supply, defaulting missing rows to canonical facility capacity."""
+    supply = {
+        (_date_text(row["service_date"]), str(row["facility_id"])): int(row["supply_units"])
+        for row in rows.get("facility_supply_daily", [])
+        if str(row["capacity_plan_version_id"]) == capacity_plan_version_id
+        and _in_horizon(row["service_date"], horizon_start, horizon_end)
+        and str(row["facility_id"]) in dc_ids
+    }
+    for key, capacity in facility_capacity.items():
+        if key[1] in dc_ids:
+            supply.setdefault(key, capacity)
+    return supply
+
+
+def materialize_express_air_transfers(
+    rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    transfer_requests: Sequence[Mapping[str, Any]],
+    *,
+    capacity_plan_version_id: str,
+) -> dict[str, list[dict[str, Any]]]:
+    """Return detached lane/capacity rows for scenario-owned express-air arcs."""
+
+    facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
+    lanes = [
+        dict(row) for row in rows["dim_network_lanes"]
+        if str(row.get("eligibility_source", "")) != "scenario_express_air_transfer_v1"
+    ]
+    capacities = [
+        dict(row) for row in rows["lane_capacity_daily"]
+        if str(row.get("capacity_source", "")) != "scenario_transfer_request"
+    ]
+    existing_lane_ids = {str(row["lane_id"]) for row in lanes}
+    seen_transfer_ids: set[str] = set()
+    transfer_lanes: list[dict[str, Any]] = []
+    for request in transfer_requests:
+        transfer_id = str(request["transfer_id"])
+        if transfer_id in seen_transfer_ids:
+            raise ValueError(f"Duplicate transfer ID: {transfer_id}.")
+        seen_transfer_ids.add(transfer_id)
+        origin_id = str(request["origin_dc_id"])
+        destination_id = str(request["destination_dc_id"])
+        origin = facilities.get(origin_id)
+        destination = facilities.get(destination_id)
+        if origin is None or destination is None:
+            raise ValueError(f"Transfer {transfer_id} references an unknown facility.")
+        if any(
+            str(facility["facility_type"]) != "distribution_center"
+            for facility in (origin, destination)
+        ):
+            raise ValueError(f"Transfer {transfer_id} endpoints must be distribution centers.")
+        distance = round(_distance_miles(origin, destination), 1)
+        # Includes airport handling at both ends plus straight-line flight time.
+        transit_minutes = max(240, int(math.ceil(180 + distance / 500 * 60)))
+        planning_cost = round(max(2.0, 1.25 + distance * 0.004), 4)
+        lane_id = f"XFER_{transfer_id}"
+        if lane_id in existing_lane_ids:
+            raise ValueError(f"Transfer lane ID collides with an existing lane: {lane_id}.")
+        lane = {
+            "lane_id": lane_id,
+            "lane_name": f"Express air {origin_id} to {destination_id}",
+            "lane_type": "LINEHAUL",
+            "origin_endpoint_id": origin_id,
+            "origin_endpoint_type": "facility",
+            "destination_endpoint_id": destination_id,
+            "destination_endpoint_type": "facility",
+            "mode": "AIR",
+            "distance_miles": distance,
+            "transit_minutes": transit_minutes,
+            "planning_cost_per_case": planning_cost,
+            "active": True,
+            "eligibility_source": "scenario_express_air_transfer_v1",
+            "synthetic_provenance": {
+                "kind": "scenario_dc_transfer",
+                "transfer_id": transfer_id,
+                "distance_basis": "great_circle_miles",
+                "transit_basis": "180_minute_handling_plus_500_mph_flight",
+                "cost_basis": "max_2_or_1_25_plus_0_004_per_mile_per_case",
+            },
+        }
+        lanes.append(lane)
+        transfer_lanes.append(lane)
+        capacities.append(
+            {
+                "capacity_plan_version_id": capacity_plan_version_id,
+                "service_date": _date_text(request["departure_date"]),
+                "lane_id": lane_id,
+                "capacity_units": int(request["capacity_units"]),
+                "capacity_source": "scenario_transfer_request",
+            }
+        )
+    return {
+        "network_lanes": lanes,
+        "lane_capacity_rows": capacities,
+        "transfer_lanes": transfer_lanes,
+    }
 
 
 def _proportional_allocations(
@@ -66,6 +183,9 @@ def solve_fixed_capacity_network(
     tariff_per_case_by_date_lane: Mapping[tuple[str, str], float] | None = None,
     unmet_penalty_per_case: float = 250.0,
     release_requests: Sequence[Mapping[str, Any]] | None = None,
+    facility_capacity_retained_pct: Mapping[str, float] | None = None,
+    facility_supply_retained_pct: Mapping[str, float] | None = None,
+    dc_transfer_requests: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Assign fixed demand through fixed supplied capacity.
 
@@ -74,6 +194,35 @@ def solve_fixed_capacity_network(
     disabled nodes, disabled lanes, and direct DC-to-depot lane capacities are
     all hard bounds.
     """
+
+    retained_pct = facility_capacity_retained_pct or {}
+    supply_retained_pct = facility_supply_retained_pct or {}
+    _validate_retained_percentages("facility_capacity_retained_pct", retained_pct)
+    _validate_retained_percentages("facility_supply_retained_pct", supply_retained_pct)
+    transfer_requests = dc_transfer_requests or []
+    if transfer_requests:
+        if release_requests:
+            raise ValueError(
+                "DC transfers and customer release requests cannot be solved together."
+            )
+        return _solve_time_expanded_transfers(
+            rows,
+            demand_plan_version_id=demand_plan_version_id,
+            capacity_plan_version_id=capacity_plan_version_id,
+            horizon_start=horizon_start,
+            horizon_end=horizon_end,
+            region_id=region_id,
+            transfer_requests=transfer_requests,
+            facility_capacity_retained_pct=retained_pct,
+            facility_supply_retained_pct=supply_retained_pct,
+            disabled_facility_ids=disabled_facility_ids or set(),
+            disabled_lane_ids=disabled_lane_ids or set(),
+            lane_cost_adjustments_pct=lane_cost_adjustments_pct or {},
+            lane_unit_costs=lane_unit_costs or {},
+            lane_unit_costs_by_date_lane=lane_unit_costs_by_date_lane or {},
+            tariff_per_case_by_date_lane=tariff_per_case_by_date_lane or {},
+            unmet_penalty_per_case=unmet_penalty_per_case,
+        )
 
     selected_demand = [
         row
@@ -111,6 +260,8 @@ def solve_fixed_capacity_network(
             lane_unit_costs_by_date_lane=lane_unit_costs_by_date_lane or {},
             tariff_per_case_by_date_lane=tariff_per_case_by_date_lane or {},
             unmet_penalty_per_case=unmet_penalty_per_case,
+            facility_capacity_retained_pct=retained_pct,
+            facility_supply_retained_pct=supply_retained_pct,
         )
     disabled_facilities = disabled_facility_ids or set()
     disabled_lanes = disabled_lane_ids or set()
@@ -199,6 +350,14 @@ def solve_fixed_capacity_network(
         if str(row["capacity_plan_version_id"]) == capacity_plan_version_id
         and _in_horizon(row["service_date"], horizon_start, horizon_end)
     }
+    facility_supply = _facility_supply_by_date(
+        rows,
+        capacity_plan_version_id=capacity_plan_version_id,
+        horizon_start=horizon_start,
+        horizon_end=horizon_end,
+        facility_capacity=facility_capacity,
+        dc_ids=scoped_dcs,
+    )
 
     selected_baseline = [
         dict(row)
@@ -264,18 +423,27 @@ def solve_fixed_capacity_network(
         tracked_unmet_arcs: dict[int, str] = {}
 
         for dc_id in sorted(scoped_dcs):
-            supplied = facility_capacity.get((service_date, dc_id), 0)
+            handling = _retained_capacity(
+                facility_capacity.get((service_date, dc_id), 0), dc_id, retained_pct
+            )
+            supplied = _retained_capacity(
+                facility_supply.get((service_date, dc_id), 0), dc_id, supply_retained_pct
+            )
             if dc_id in disabled_facilities:
                 supplied = 0
             solver.add_arc_with_capacity_and_unit_cost(
-                source, node(f"dc:{dc_id}"), supplied, 0
+                source, node(f"dc:{dc_id}"), min(supplied, handling), 0
             )
 
         for depot_id in sorted(scoped_depots):
             demand = demand_by_date_depot[(service_date, depot_id)]
             assigned_node = node(f"assigned:{depot_id}")
             demand_node = node(f"demand:{depot_id}")
-            depot_capacity = facility_capacity.get((service_date, depot_id), 0)
+            depot_capacity = _retained_capacity(
+                facility_capacity.get((service_date, depot_id), 0),
+                depot_id,
+                retained_pct,
+            )
             if depot_id in disabled_facilities:
                 depot_capacity = 0
             solver.add_arc_with_capacity_and_unit_cost(
@@ -404,6 +572,315 @@ def solve_fixed_capacity_network(
     }
 
 
+def _solve_time_expanded_transfers(
+    rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    demand_plan_version_id: str,
+    capacity_plan_version_id: str,
+    horizon_start: str,
+    horizon_end: str,
+    region_id: str,
+    transfer_requests: Sequence[Mapping[str, Any]],
+    facility_capacity_retained_pct: Mapping[str, float],
+    facility_supply_retained_pct: Mapping[str, float],
+    disabled_facility_ids: set[str],
+    disabled_lane_ids: set[str],
+    lane_cost_adjustments_pct: Mapping[str, float],
+    lane_unit_costs: Mapping[str, float],
+    lane_unit_costs_by_date_lane: Mapping[tuple[str, str], float],
+    tariff_per_case_by_date_lane: Mapping[tuple[str, str], float],
+    unmet_penalty_per_case: float,
+) -> dict[str, list[dict[str, Any]]]:
+    """Solve dated DC transfers without creating supply or early arrivals."""
+
+    materialized = materialize_express_air_transfers(
+        rows, transfer_requests, capacity_plan_version_id=capacity_plan_version_id
+    )
+    working = {key: [dict(row) for row in value] for key, value in rows.items()}
+    working["dim_network_lanes"] = materialized["network_lanes"]
+    working["lane_capacity_daily"] = materialized["lane_capacity_rows"]
+    facilities = {str(row["facility_id"]): row for row in working["dim_facilities"]}
+    lanes = {str(row["lane_id"]): row for row in working["dim_network_lanes"]}
+    requests = {f"XFER_{row['transfer_id']}": row for row in transfer_requests}
+    dates = []
+    current = date.fromisoformat(horizon_start)
+    end = date.fromisoformat(horizon_end)
+    while current <= end:
+        dates.append(current.isoformat())
+        current += timedelta(days=1)
+
+    demand_rows = [
+        row for row in working["demand_plan_daily"]
+        if str(row["demand_plan_version_id"]) == demand_plan_version_id
+        and _in_horizon(row["service_date"], horizon_start, horizon_end)
+    ]
+    demand_by_date_depot: defaultdict[tuple[str, str], int] = defaultdict(int)
+    customer_rows: defaultdict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    for row in demand_rows:
+        key = (_date_text(row["service_date"]), str(row["depot_id"]))
+        demand_by_date_depot[key] += int(row["demand_units"])
+        customer_rows[key].append(row)
+    depots = {
+        facility_id for facility_id, facility in facilities.items()
+        if str(facility["facility_type"]) == "depot"
+        and (region_id == "ALL" or str(facility["region_id"]) == region_id)
+    }
+    dcs = {
+        facility_id for facility_id, facility in facilities.items()
+        if str(facility["facility_type"]) == "distribution_center"
+        and (region_id == "ALL" or str(facility["region_id"]) == region_id)
+    }
+    # Match the direct solver's regional capacity reservation. An AIR request
+    # must not silently admit every national DC and depot into a focused solve.
+    permitted_external = _EXTERNAL_DCS_BY_FOCUS_REGION.get(region_id, frozenset())
+    dcs.update(
+        str(lane["origin_endpoint_id"]) for lane in lanes.values()
+        if str(lane["lane_type"]) == "LINEHAUL"
+        and str(lane["destination_endpoint_id"]) in depots
+        and str(lane["origin_endpoint_id"]) in permitted_external
+    )
+    for request in transfer_requests:
+        dcs.update((str(request["origin_dc_id"]), str(request["destination_dc_id"])))
+    depots.update(
+        str(row["depot_id"]) for row in demand_rows
+        if str(row["distribution_center_id"]) in dcs
+    )
+    demand_by_date_depot = defaultdict(int, {
+        key: units for key, units in demand_by_date_depot.items() if key[1] in depots
+    })
+    facility_capacity = {
+        (_date_text(row["service_date"]), str(row["facility_id"])): int(row["capacity_units"])
+        for row in working["facility_capacity_daily"]
+        if str(row["capacity_plan_version_id"]) == capacity_plan_version_id
+        and _in_horizon(row["service_date"], horizon_start, horizon_end)
+    }
+    facility_supply = _facility_supply_by_date(
+        working,
+        capacity_plan_version_id=capacity_plan_version_id,
+        horizon_start=horizon_start,
+        horizon_end=horizon_end,
+        facility_capacity=facility_capacity,
+        dc_ids=dcs,
+    )
+    lane_capacity = {
+        (_date_text(row["service_date"]), str(row["lane_id"])): int(row["capacity_units"])
+        for row in working["lane_capacity_daily"]
+        if str(row["capacity_plan_version_id"]) == capacity_plan_version_id
+        and _in_horizon(row["service_date"], horizon_start, horizon_end)
+    }
+    direct_lanes = {
+        lane_id: lane for lane_id, lane in lanes.items()
+        if str(lane["lane_type"]) == "LINEHAUL"
+        and str(lane["origin_endpoint_id"]) in dcs
+        and str(lane["destination_endpoint_id"]) in depots
+    }
+    market_by_depot = {
+        str(lane["origin_endpoint_id"]): lane_id for lane_id, lane in lanes.items()
+        if str(lane["lane_type"]) == "MARKET"
+    }
+    delivery_by_customer = {
+        str(lane["destination_endpoint_id"]): lane_id for lane_id, lane in lanes.items()
+        if str(lane["lane_type"]) == "DELIVERY"
+    }
+    flow_by_key = {
+        (_date_text(row["service_date"]), str(row["lane_id"])): {
+            **row, "service_date": _date_text(row["service_date"])
+        }
+        for row in working["baseline_network_flow_daily"]
+        if str(row["demand_plan_version_id"]) == demand_plan_version_id
+        and str(row["capacity_plan_version_id"]) == capacity_plan_version_id
+        and _in_horizon(row["service_date"], horizon_start, horizon_end)
+    }
+    for lane_id, request in requests.items():
+        departure = _date_text(request["departure_date"])
+        flow_by_key[(departure, lane_id)] = {
+            "demand_plan_version_id": demand_plan_version_id,
+            "capacity_plan_version_id": capacity_plan_version_id,
+            "service_date": departure,
+            "lane_id": lane_id,
+            "lane_type": "LINEHAUL",
+            "assigned_units": 0,
+        }
+
+    solver = min_cost_flow.SimpleMinCostFlow()
+    node_ids: dict[str, int] = {}
+    def node(name: str) -> int:
+        if name not in node_ids:
+            node_ids[name] = len(node_ids)
+        return node_ids[name]
+
+    source, sink = node("source"), node("sink")
+    total_demand = sum(demand_by_date_depot.values())
+    tracked_direct: dict[int, tuple[str, str, str]] = {}
+    tracked_unmet: dict[int, tuple[str, str]] = {}
+    tracked_transfer: dict[int, dict[str, Any]] = {}
+    unlimited = max(1, total_demand)
+
+    for day_index, service_date in enumerate(dates):
+        for dc_id in sorted(dcs):
+            handling_capacity = _retained_capacity(
+                facility_capacity.get((service_date, dc_id), 0),
+                dc_id,
+                facility_capacity_retained_pct,
+            )
+            local_supply = _retained_capacity(
+                facility_supply.get((service_date, dc_id), 0),
+                dc_id,
+                facility_supply_retained_pct,
+            )
+            if dc_id in disabled_facility_ids:
+                handling_capacity = 0
+                local_supply = 0
+            normal = node(f"normal:{service_date}:{dc_id}")
+            inventory = node(f"inventory:{service_date}:{dc_id}")
+            handling = node(f"handling:{service_date}:{dc_id}")
+            outbound = node(f"outbound:{service_date}:{dc_id}")
+            solver.add_arc_with_capacity_and_unit_cost(source, normal, local_supply, 0)
+            solver.add_arc_with_capacity_and_unit_cost(normal, handling, local_supply, 0)
+            solver.add_arc_with_capacity_and_unit_cost(inventory, handling, unlimited, 0)
+            # Facility capacity is daily handling throughput. Local supply and
+            # arrived or transiting inventory share this single hard bound.
+            solver.add_arc_with_capacity_and_unit_cost(
+                handling, outbound, handling_capacity, 0
+            )
+            if day_index + 1 < len(dates):
+                solver.add_arc_with_capacity_and_unit_cost(
+                    inventory,
+                    node(f"inventory:{dates[day_index + 1]}:{dc_id}"),
+                    unlimited,
+                    0,
+                )
+
+        for depot_id in sorted(depots):
+            demand = demand_by_date_depot[(service_date, depot_id)]
+            assigned = node(f"assigned:{service_date}:{depot_id}")
+            demand_node = node(f"demand:{service_date}:{depot_id}")
+            depot_cap = _retained_capacity(
+                facility_capacity.get((service_date, depot_id), 0),
+                depot_id,
+                facility_capacity_retained_pct,
+            )
+            if depot_id in disabled_facility_ids:
+                depot_cap = 0
+            solver.add_arc_with_capacity_and_unit_cost(
+                assigned, demand_node, min(demand, depot_cap), 0
+            )
+            unmet_arc = solver.add_arc_with_capacity_and_unit_cost(
+                source, demand_node, demand,
+                max(1, int(round(unmet_penalty_per_case * 100))),
+            )
+            tracked_unmet[unmet_arc] = (service_date, depot_id)
+            solver.add_arc_with_capacity_and_unit_cost(demand_node, sink, demand, 0)
+
+        for lane_id, lane in direct_lanes.items():
+            dc_id = str(lane["origin_endpoint_id"])
+            depot_id = str(lane["destination_endpoint_id"])
+            cap = lane_capacity.get((service_date, lane_id), 0)
+            if lane_id in disabled_lane_ids or dc_id in disabled_facility_ids or depot_id in disabled_facility_ids:
+                cap = 0
+            base = float(lane_unit_costs_by_date_lane.get(
+                (service_date, lane_id),
+                lane_unit_costs.get(lane_id, lane.get("planning_cost_per_case") or max(450.0, float(lane["distance_miles"]) * 3.4) * 1.12 / 900),
+            ))
+            cost = base * (1 + float(lane_cost_adjustments_pct.get(lane_id, 0)) / 100) + float(tariff_per_case_by_date_lane.get((service_date, lane_id), 0))
+            arc = solver.add_arc_with_capacity_and_unit_cost(
+                node(f"outbound:{service_date}:{dc_id}"),
+                node(f"assigned:{service_date}:{depot_id}"), cap,
+                max(1, int(round(cost * 100))),
+            )
+            tracked_direct[arc] = (service_date, lane_id, depot_id)
+
+    for lane_id, request in requests.items():
+        lane = lanes[lane_id]
+        departure = _date_text(request["departure_date"])
+        transit_days = max(1, math.ceil(int(lane["transit_minutes"]) / (24 * 60)))
+        arrival = (date.fromisoformat(departure) + timedelta(days=transit_days)).isoformat()
+        cap = int(request["capacity_units"])
+        origin_id = str(request["origin_dc_id"])
+        destination_id = str(request["destination_dc_id"])
+        if not horizon_start <= departure <= horizon_end or arrival > horizon_end:
+            cap = 0
+        if lane_id in disabled_lane_ids or origin_id in disabled_facility_ids or destination_id in disabled_facility_ids:
+            cap = 0
+        base = float(lane_unit_costs_by_date_lane.get(
+            (departure, lane_id), lane_unit_costs.get(lane_id, lane["planning_cost_per_case"])
+        ))
+        cost = base * (1 + float(lane_cost_adjustments_pct.get(lane_id, 0)) / 100) + float(tariff_per_case_by_date_lane.get((departure, lane_id), 0))
+        arc = solver.add_arc_with_capacity_and_unit_cost(
+            node(f"outbound:{departure}:{origin_id}"),
+            node(f"inventory:{arrival}:{destination_id}"),
+            cap, max(1, int(round(cost * 100))),
+        )
+        tracked_transfer[arc] = {
+            "transfer_id": str(request["transfer_id"]), "lane_id": lane_id,
+            "origin_dc_id": origin_id, "destination_dc_id": destination_id,
+            "departure_date": departure, "arrival_date": arrival,
+            "mode": "AIR", "capacity_units": int(request["capacity_units"]),
+            "distance_miles": float(lane["distance_miles"]),
+            "transit_minutes": int(lane["transit_minutes"]),
+            "provenance": dict(lane["synthetic_provenance"]),
+        }
+
+    solver.set_node_supply(source, total_demand)
+    solver.set_node_supply(sink, -total_demand)
+    status = solver.solve()
+    if status != solver.OPTIMAL:
+        raise RuntimeError(f"Time-expanded network solve failed: status {status}.")
+
+    allocation_rows: list[dict[str, Any]] = []
+    assigned_by_date_depot: defaultdict[tuple[str, str], int] = defaultdict(int)
+    for arc, (service_date, lane_id, depot_id) in tracked_direct.items():
+        assigned = int(solver.flow(arc))
+        assigned_by_date_depot[(service_date, depot_id)] += assigned
+        flow_by_key[(service_date, lane_id)]["assigned_units"] = assigned
+        allocation_rows.append({
+            "service_date": service_date, "lane_id": lane_id, "depot_id": depot_id,
+            "assigned_units": assigned,
+            "capacity_units": lane_capacity.get((service_date, lane_id), 0),
+        })
+    transfer_movements: list[dict[str, Any]] = []
+    for arc, movement in tracked_transfer.items():
+        assigned = int(solver.flow(arc))
+        flow_by_key[(movement["departure_date"], movement["lane_id"])]["assigned_units"] = assigned
+        transfer_movements.append({**movement, "assigned_units": assigned})
+        allocation_rows.append({
+            "service_date": movement["departure_date"], "lane_id": movement["lane_id"],
+            "depot_id": movement["destination_dc_id"], "assigned_units": assigned,
+            "capacity_units": movement["capacity_units"],
+            "transfer_id": movement["transfer_id"],
+            "origin_dc_id": movement["origin_dc_id"],
+            "destination_dc_id": movement["destination_dc_id"],
+            "mode": movement["mode"],
+            "departure_date": movement["departure_date"], "arrival_date": movement["arrival_date"],
+        })
+    unmet_rows: list[dict[str, Any]] = []
+    for arc, key in tracked_unmet.items():
+        service_date, depot_id = key
+        demand = demand_by_date_depot[key]
+        assigned = assigned_by_date_depot[key]
+        unmet_rows.append({
+            "service_date": service_date, "depot_id": depot_id,
+            "demand_units": demand, "assigned_units": assigned,
+            "unmet_units": int(solver.flow(arc)),
+        })
+        market_lane = market_by_depot.get(depot_id)
+        if market_lane and (service_date, market_lane) in flow_by_key:
+            flow_by_key[(service_date, market_lane)]["assigned_units"] = assigned
+        rows_for_depot = customer_rows[key]
+        if rows_for_depot and all(str(row.get("customer_id", "")) in delivery_by_customer for row in rows_for_depot):
+            for customer_id, units in _proportional_allocations(rows_for_depot, assigned).items():
+                flow_by_key[(service_date, delivery_by_customer[customer_id])]["assigned_units"] = units
+
+    return {
+        "flow_rows": [flow_by_key[key] for key in sorted(flow_by_key)],
+        "allocation_rows": allocation_rows,
+        "unmet_rows": unmet_rows,
+        "network_lanes": materialized["network_lanes"],
+        "lane_capacity_rows": materialized["lane_capacity_rows"],
+        "transfer_movements": transfer_movements,
+    }
+
+
 def _distance_miles(left: Mapping[str, Any], right: Mapping[str, Any]) -> float:
     import math
 
@@ -430,6 +907,8 @@ def _solve_with_reassignment(
     lane_unit_costs_by_date_lane: Mapping[tuple[str, str], float],
     tariff_per_case_by_date_lane: Mapping[tuple[str, str], float],
     unmet_penalty_per_case: float,
+    facility_capacity_retained_pct: Mapping[str, float],
+    facility_supply_retained_pct: Mapping[str, float],
 ) -> dict[str, list[dict[str, Any]]]:
     """Jointly source and assign customer demand, including conserved releases."""
 
@@ -450,6 +929,14 @@ def _solve_with_reassignment(
         permitted = _EXTERNAL_DCS_BY_FOCUS_REGION.get(region_id, frozenset())
         dcs.update(str(l["origin_endpoint_id"]) for l in lanes.values() if str(l["lane_type"]) == "LINEHAUL" and str(l["destination_endpoint_id"]) in focus_depots and str(l["origin_endpoint_id"]) in permitted)
         dcs.update(str(l["origin_endpoint_id"]) for l in lanes.values() if str(l["lane_type"]) == "LINEHAUL" and str(l["destination_endpoint_id"]) in focus_depots and str(l["origin_endpoint_id"]) in facilities and str(facilities[str(l["origin_endpoint_id"])]["facility_type"]) == "distribution_center")
+    facility_supply = _facility_supply_by_date(
+        rows,
+        capacity_plan_version_id=capacity_plan_version_id,
+        horizon_start=horizon_start,
+        horizon_end=horizon_end,
+        facility_capacity=facility_capacity,
+        dc_ids=dcs,
+    )
     demand = [r for r in all_demand if str(r["depot_id"]) in focus_depots or str(r["distribution_center_id"]) in dcs]
     depots = set(focus_depots) | {str(r["depot_id"]) for r in demand}
     linehaul: defaultdict[str, list[tuple[str, str]]] = defaultdict(list)
@@ -493,10 +980,24 @@ def _solve_with_reassignment(
         tracked_unmet: dict[int, tuple[str, str, str, int]] = {}
         delivery_pair_nodes: set[tuple[str, str]] = set()
         for dc in sorted(dcs):
-            cap = 0 if dc in disabled_facility_ids else facility_capacity.get((service_date, dc), 0)
+            handling = _retained_capacity(
+                facility_capacity.get((service_date, dc), 0),
+                dc,
+                facility_capacity_retained_pct,
+            )
+            supply = _retained_capacity(
+                facility_supply.get((service_date, dc), 0),
+                dc,
+                facility_supply_retained_pct,
+            )
+            cap = 0 if dc in disabled_facility_ids else min(handling, supply)
             solver.add_arc_with_capacity_and_unit_cost(source, node(f"dc:{dc}"), cap, 0)
         for depot in sorted(depots):
-            cap = 0 if depot in disabled_facility_ids else facility_capacity.get((service_date, depot), 0)
+            cap = 0 if depot in disabled_facility_ids else _retained_capacity(
+                facility_capacity.get((service_date, depot), 0),
+                depot,
+                facility_capacity_retained_pct,
+            )
             solver.add_arc_with_capacity_and_unit_cost(node(f"depot:{depot}"), node(f"depotcap:{depot}"), cap, 0)
             for lid, dc in linehaul[depot]:
                 cap = lane_capacity.get((service_date, lid), 0)

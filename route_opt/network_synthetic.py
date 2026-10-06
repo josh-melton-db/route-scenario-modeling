@@ -21,6 +21,7 @@ def national_dataset_cached(seed: int = 42) -> dict[str, list]:
 
 import math
 import random
+from faker import Faker
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
@@ -39,6 +40,7 @@ from .network_schemas import (
     DemandPlanDaily,
     ExternalPlanVersion,
     FacilityCapacityDaily,
+    FacilitySupplyDaily,
     FacilityHierarchy,
     LaneCapacityDaily,
     NetworkCustomer,
@@ -53,7 +55,7 @@ NETWORK_SOURCE_SYSTEM = "synthetic_upstream_planning"
 ROAD_REACHABILITY_MAX_ADJUSTMENT_MILES = 5.0
 ROAD_REACHABILITY_ATTEMPTS = 6
 RoadReachabilityValidator = Callable[
-    [Mapping[str, object], Mapping[str, object]], bool
+    [Mapping[str, object], Mapping[str, object]], bool | Mapping[str, object]
 ]
 DEFAULT_NETWORK_HORIZON_START = demo_date_anchor()
 DEFAULT_NETWORK_HORIZON_DAYS = DEFAULT_DEMO_HORIZON_DAYS
@@ -670,11 +672,47 @@ def _resolve_road_reachable_coordinate(
             displacement,
         ))
     selected, selected_attempt, status = candidates[0], 0, "unresolved"
+    access_metadata: dict[str, object] = {}
     for attempt, candidate in enumerate(candidates):
         if is_on_water(candidate[0], candidate[1]):
             continue
-        if validator(depot, {"lat": candidate[0], "lng": candidate[1]}):
-            selected, selected_attempt, status = candidate, attempt, "validated"
+        validation = validator(depot, {"lat": candidate[0], "lng": candidate[1]})
+        reachable = bool(validation.get("reachable")) if isinstance(validation, Mapping) else validation
+        if reachable:
+            final_lat, final_lng = candidate[0], candidate[1]
+            if isinstance(validation, Mapping):
+                access_lat = validation.get("road_access_lat")
+                access_lng = validation.get("road_access_lng")
+                if access_lat is not None and access_lng is not None:
+                    final_validation = validator(
+                        depot, {"lat": float(access_lat), "lng": float(access_lng)}
+                    )
+                    final_reachable = (
+                        bool(final_validation.get("reachable"))
+                        if isinstance(final_validation, Mapping) else final_validation
+                    )
+                    if not final_reachable:
+                        continue
+                    final_lat, final_lng = float(access_lat), float(access_lng)
+                    final_metadata = (
+                        final_validation if isinstance(final_validation, Mapping) else {}
+                    )
+                    final_lat = float(final_metadata.get("road_access_lat", final_lat))
+                    final_lng = float(final_metadata.get("road_access_lng", final_lng))
+                    access_metadata = {
+                        "road_candidate_lat": round(candidate[0], 6),
+                        "road_candidate_lng": round(candidate[1], 6),
+                        "road_access_lat": round(final_lat, 6),
+                        "road_access_lng": round(final_lng, 6),
+                        "road_snap_distance_miles": float(
+                            final_metadata.get(
+                                "road_snap_distance_miles",
+                                validation.get("road_snap_distance_miles", 0),
+                            )
+                        ),
+                    }
+            selected = (final_lat, final_lng, candidate[2])
+            selected_attempt, status = attempt, "validated"
             break
     return selected[0], selected[1], {
         "road_original_lat": round(original_lat, 6),
@@ -685,6 +723,7 @@ def _resolve_road_reachable_coordinate(
         "road_reachability_costing": str(provenance.get("costing", "truck")),
         "road_coverage_id": str(provenance.get("coverage_id", "unknown")),
         "road_artifact_version": str(provenance.get("artifact_version", "unknown")),
+        **access_metadata,
     }
 
 
@@ -693,6 +732,7 @@ def repair_generated_customer_reachability(
     facilities: Sequence[Mapping[str, object]],
     *, validator: RoadReachabilityValidator, provenance: Mapping[str, object],
     max_adjustment_miles: float = ROAD_REACHABILITY_MAX_ADJUSTMENT_MILES,
+    depot_ids: set[str] | None = None,
 ) -> list[dict[str, object]]:
     """Return new generated rows for a new revision; never mutate accepted history."""
     depots = {str(row["facility_id"]): row for row in facilities}
@@ -700,11 +740,17 @@ def repair_generated_customer_reachability(
     for source in customers:
         row = dict(source)
         depot = depots.get(str(row.get("depot_id", "")))
-        if not str(row.get("customer_id", "")).startswith("NET-CUST-") or depot is None:
+        if (
+            not str(row.get("customer_id", "")).startswith("NET-CUST-")
+            or depot is None
+            or (depot_ids is not None and str(row.get("depot_id", "")) not in depot_ids)
+        ):
             repaired.append(row)
             continue
         lat, lng, metadata = _resolve_road_reachable_coordinate(
-            depot=depot, original_lat=float(row["lat"]), original_lng=float(row["lng"]),
+            depot=depot,
+            original_lat=float(row.get("road_original_lat") or row["lat"]),
+            original_lng=float(row.get("road_original_lng") or row["lng"]),
             validator=validator, provenance=provenance,
             max_adjustment_miles=max_adjustment_miles,
         )
@@ -719,6 +765,7 @@ def _build_customers(
     *,
     customers_per_depot: int,
     rng: random.Random,
+    name_seed: int = 42,
     customer_id_prefix: str = "NET-CUST",
     road_reachability_validator: RoadReachabilityValidator | None = None,
     road_reachability_provenance: Mapping[str, object] | None = None,
@@ -727,6 +774,10 @@ def _build_customers(
         raise ValueError("customers_per_depot must be at least 1.")
 
     markets_by_depot = {market.primary_depot_id: market for market in markets}
+    # Name generation has its own seed so labels never change demand, locations,
+    # capacity, or the optimizer's inputs.
+    fake = Faker("en_US")
+    fake.seed_instance(name_seed)
     customers: list[NetworkCustomer] = []
     base_demand: dict[str, int] = {}
     customer_number = 1
@@ -771,10 +822,7 @@ def _build_customers(
             customers.append(
                 NetworkCustomer(
                     customer_id=customer_id,
-                    customer_name=(
-                        f"{depot.facility_name.removesuffix(' Depot')} "
-                        f"Customer {local_number:02d}"
-                    ),
+                    customer_name=fake.unique.company(),
                     customer_tier=tier,
                     region_id=depot.region_id,
                     distribution_center_id=str(depot.parent_facility_id),
@@ -1047,6 +1095,29 @@ def _build_capacity_and_flow(
     return facility_capacity, lane_capacity, baseline_flow
 
 
+def _build_daily_supply(
+    facilities: Sequence[NetworkFacility],
+    facility_capacity: Sequence[FacilityCapacityDaily],
+) -> list[FacilitySupplyDaily]:
+    """Seed fresh daily DC availability, separate from inventory and handling."""
+
+    dc_ids = {
+        facility.facility_id
+        for facility in facilities
+        if facility.facility_type == "distribution_center"
+    }
+    return [
+        FacilitySupplyDaily(
+            capacity_plan_version_id=row.capacity_plan_version_id,
+            service_date=row.service_date,
+            facility_id=row.facility_id,
+            supply_units=int(math.ceil(row.capacity_units * 1.20)),
+        )
+        for row in facility_capacity
+        if row.facility_id in dc_ids
+    ]
+
+
 def _build_spec_facilities(
     region_id: str,
     distribution_centers: Sequence[tuple[str, str, float, float, str]],
@@ -1210,6 +1281,21 @@ def _append_southeast_constrained_capacity_plan(
     )
     dataset["capacity_plan_versions"].extend(_rows([constrained_version]))
     dataset["facility_capacity_daily"].extend(constrained_facility_capacity)
+    distribution_centers = {
+        facility_id
+        for facility_id, row in facilities.items()
+        if row["facility_type"] == "distribution_center"
+    }
+    dataset["facility_supply_daily"].extend(
+        {
+            "capacity_plan_version_id": SOUTHEAST_CONSTRAINED_CAPACITY_PLAN_VERSION_ID,
+            "service_date": row["service_date"],
+            "facility_id": row["facility_id"],
+            "supply_units": int(math.ceil(int(row["capacity_units"]) * 1.20)),
+        }
+        for row in constrained_facility_capacity
+        if str(row["facility_id"]) in distribution_centers
+    )
     dataset["lane_capacity_daily"].extend(constrained_lane_capacity)
     dataset["baseline_network_flow_daily"].extend(constrained_flow)
 
@@ -1328,6 +1414,7 @@ def generate_network_dataset(
         markets,
         customers_per_depot=customers_per_depot,
         rng=rng,
+        name_seed=seed,
         road_reachability_validator=road_reachability_validator,
         road_reachability_provenance=road_reachability_provenance,
     )
@@ -1344,6 +1431,7 @@ def generate_network_dataset(
         lanes=lanes,
         demand=demand,
     )
+    facility_supply = _build_daily_supply(facilities, facility_capacity)
     horizon_end = horizon_start + timedelta(days=horizon_days - 1)
     published_at = snapshot_published_at(horizon_start)
     demand_versions = [
@@ -1388,6 +1476,7 @@ def generate_network_dataset(
         "demand_plan_daily": _rows(demand),
         "capacity_plan_versions": _rows(capacity_versions),
         "facility_capacity_daily": _rows(facility_capacity),
+        "facility_supply_daily": _rows(facility_supply),
         "lane_capacity_daily": _rows(lane_capacity),
         "baseline_network_flow_daily": _rows(baseline_flow),
     }
@@ -1458,6 +1547,7 @@ def generate_national_network_dataset(
             region_markets,
             customers_per_depot=customers_per_depot,
             rng=random.Random(seed + region_index * 101),
+            name_seed=seed + region_index * 101,
             customer_id_prefix=f"NET-CUST-{prefix}",
             road_reachability_validator=road_reachability_validator,
             road_reachability_provenance=road_reachability_provenance,
@@ -1497,6 +1587,7 @@ def generate_national_network_dataset(
     _add_monterrey_texas_corridor(
         facilities, lanes, facility_capacity, lane_capacity, baseline_flow, demand
     )
+    facility_supply = _build_daily_supply(facilities, facility_capacity)
 
     horizon_end = horizon_start + timedelta(days=horizon_days - 1)
     published_at = snapshot_published_at(horizon_start)
@@ -1541,6 +1632,7 @@ def generate_national_network_dataset(
         "demand_plan_daily": _rows(demand),
         "capacity_plan_versions": _rows(capacity_versions),
         "facility_capacity_daily": _rows(facility_capacity),
+        "facility_supply_daily": _rows(facility_supply),
         "lane_capacity_daily": _rows(lane_capacity),
         "baseline_network_flow_daily": _rows(baseline_flow),
     }
@@ -1725,6 +1817,7 @@ def validate_network_dataset(
                 )
 
     facility_capacity: dict[tuple[str, str, str], int] = {}
+    facility_supply: dict[tuple[str, str, str], int] = {}
     lane_capacity: dict[tuple[str, str, str], int] = {}
     for row in dataset["facility_capacity_daily"]:
         capacity_key = (
@@ -1741,6 +1834,24 @@ def validate_network_dataset(
             )
         if str(row["facility_id"]) not in facilities:
             errors.append(f"Capacity row references missing facility {row['facility_id']}.")
+    for row in dataset["facility_supply_daily"]:
+        supply_key = (
+            str(row["capacity_plan_version_id"]),
+            str(row["service_date"]),
+            str(row["facility_id"]),
+        )
+        if supply_key in facility_supply:
+            errors.append(f"facility_supply_daily contains duplicate row {supply_key}.")
+        facility_supply[supply_key] = int(row["supply_units"])
+        if str(row["capacity_plan_version_id"]) not in capacity_versions:
+            errors.append(
+                f"Facility supply references missing plan {row['capacity_plan_version_id']}."
+            )
+        facility = facilities.get(str(row["facility_id"]))
+        if facility is None or facility["facility_type"] != "distribution_center":
+            errors.append(
+                f"Supply row references non-DC facility {row['facility_id']}."
+            )
     for row in dataset["lane_capacity_daily"]:
         capacity_key = (
             str(row["capacity_plan_version_id"]),
@@ -1876,6 +1987,17 @@ def validate_network_dataset(
             if dc_capacity is None or assigned > dc_capacity:
                 errors.append(
                     f"Distribution center {dc_id} on {service_date} lacks supplied capacity."
+                )
+            daily_supply = facility_supply.get(
+                (capacity_plan_id, service_date, dc_id)
+            )
+            if daily_supply is None:
+                errors.append(
+                    f"Distribution center {dc_id} on {service_date} lacks daily supply."
+                )
+            elif assigned > daily_supply:
+                errors.append(
+                    f"Distribution center {dc_id} on {service_date} exceeds daily supply."
                 )
 
     for plan_version_id, version in demand_versions.items():

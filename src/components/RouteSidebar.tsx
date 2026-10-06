@@ -1,4 +1,5 @@
 import { Clock, Package, Route as RouteIcon, Truck } from 'lucide-react'
+import type { ReactNode } from 'react'
 import type { Route } from '@/api/types'
 import { formatMinutes, formatNumber } from '@/lib/format'
 import { routeColorCss } from '@/lib/routeColors'
@@ -8,6 +9,7 @@ interface RouteSidebarProps {
   routes: Route[]
   selectedRouteId: string | null
   onSelectRoute: (routeId: string | null) => void
+  headerAction?: ReactNode
   title?: string
 }
 
@@ -16,6 +18,7 @@ export default function RouteSidebar({
   selectedRouteId,
   onSelectRoute,
   title = 'Routes',
+  headerAction,
 }: RouteSidebarProps) {
   const totals = routes.reduce(
     (acc, route) => {
@@ -30,6 +33,7 @@ export default function RouteSidebar({
   return (
     <aside className="flex h-full w-[360px] flex-col border-r border-border bg-card/40 backdrop-blur">
       <div className="border-b border-border/70 px-4 py-3">
+        {headerAction && <div className="mb-2">{headerAction}</div>}
         <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
           {title}
         </div>
@@ -40,7 +44,7 @@ export default function RouteSidebar({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {routes.map((route, index) => {
           const isSelected = selectedRouteId === route.route_id
           const dimmed = selectedRouteId !== null && !isSelected
@@ -50,6 +54,7 @@ export default function RouteSidebar({
               onClick={() =>
                 onSelectRoute(isSelected ? null : route.route_id)
               }
+              aria-expanded={isSelected}
               className={cn(
                 'w-full border-b border-border/40 px-4 py-3 text-left transition-colors',
                 'hover:bg-accent/40',
@@ -76,7 +81,7 @@ export default function RouteSidebar({
                 <MiniMetric icon={Clock} value={`${route.overtime_minutes} OT`} />
               </div>
 
-              <ol className="mt-3 space-y-1.5">
+              {isSelected && <ol className="mt-3 space-y-1.5">
                 {route.stops.map((stop) => (
                   <li
                     key={stop.stop_id}
@@ -98,7 +103,7 @@ export default function RouteSidebar({
                     </div>
                   </li>
                 ))}
-              </ol>
+              </ol>}
             </button>
           )
         })}

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import DeckGL from '@deck.gl/react'
-import { ArcLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers'
+import { ArcLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import { Map as MapLibreMap } from 'react-map-gl/maplibre'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type {
@@ -36,7 +36,11 @@ export default function NetworkFlowMap({
   onSelectFacility,
   onSelectLane,
 }: NetworkFlowMapProps) {
-  const calculatedView = useMemo(() => fitView(facilities, lanes), [facilities, lanes])
+  const mapLanes = useMemo(
+    () => lanes.filter((lane) => lane.lane_type === 'LINEHAUL' || lane.mode.toUpperCase() === 'AIR'),
+    [lanes],
+  )
+  const calculatedView = useMemo(() => fitView(facilities, mapLanes), [facilities, mapLanes])
   const [viewState, setViewState] = useState<ViewState>(calculatedView)
   const colors = useMemo(
     () => ({
@@ -54,79 +58,111 @@ export default function NetworkFlowMap({
     setViewState(calculatedView)
   }, [calculatedView])
 
-  const unmetByFacility = useMemo(() => {
-    const ratios = new Map<string, number>()
-    for (const facility of facilities) {
-      ratios.set(
-        facility.facility_id,
-        facility.demand_units > 0
-          ? Math.max(0, facility.demand_units - facility.assigned_units) /
-            facility.demand_units
-          : 0,
-      )
+  const destinationDemand = useMemo(() => {
+    const depotIds = new Set(facilities.filter((row) => row.facility_type === 'depot')
+      .map((row) => row.facility_id))
+    const inboundByDepot = new Map<string, number>()
+    for (const lane of lanes) {
+      if (lane.lane_type !== 'LINEHAUL' || !depotIds.has(lane.destination_endpoint_id)) continue
+      inboundByDepot.set(lane.destination_endpoint_id,
+        (inboundByDepot.get(lane.destination_endpoint_id) ?? 0) + lane.assigned_units)
     }
-    return ratios
-  }, [facilities])
-  const unmetCasesByFacility = useMemo(() => {
-    const cases = new Map<string, number>()
+    const values = new Map<string, { demand: number; assigned: number }>()
     for (const facility of facilities) {
-      cases.set(
-        facility.facility_id,
-        Math.max(0, facility.demand_units - facility.assigned_units),
-      )
+      const demandTargets = facility.facility_type === 'distribution_center'
+        ? facilities.filter(
+          (row) => row.facility_type === 'depot' && row.parent_facility_id === facility.facility_id,
+        )
+        : [facility]
+      values.set(facility.facility_id, {
+        demand: demandTargets.reduce((total, row) => total + row.demand_units, 0),
+        // Market and delivery layers can repeat the same cases leaving a depot.
+        // Incoming linehaul measures the supply actually available to its demand.
+        assigned: demandTargets.reduce((total, row) =>
+          total + (inboundByDepot.get(row.facility_id) ?? row.assigned_units), 0),
+      })
     }
-    return cases
-  }, [facilities])
+    return values
+  }, [facilities, lanes])
+  const unmetByFacility = useMemo(() => new Map(
+    [...destinationDemand].map(([id, row]) => [id, row.demand > 0
+      ? Math.max(0, row.demand - row.assigned) / row.demand : 0]),
+  ), [destinationDemand])
+  const unmetCasesByFacility = useMemo(() => new Map(
+    [...destinationDemand].map(([id, row]) => [id, Math.max(0, row.demand - row.assigned)]),
+  ), [destinationDemand])
   const maxFlow = useMemo(
-    () => Math.max(1, ...lanes.map((lane) => lane.assigned_units)),
-    [lanes],
+    () => Math.max(1, ...mapLanes.map((lane) => Math.max(lane.capacity_units, lane.assigned_units))),
+    [mapLanes],
   )
   const maxFacilityFlow = useMemo(
     () => Math.max(1, ...facilities.map((facility) => facility.assigned_units)),
     [facilities],
   )
 
+  const laneUtilizationColor = (pct: number): Rgba => {
+    if (pct > 100) return colors.destructive
+    if (pct >= 95) return colors.warning
+    return colors.success
+  }
+
+  const unmetDemandColor = (facility: NetworkFacilityAggregate): Rgba => {
+    if (facility.facility_type === 'distribution_center') return colors.primary
+    const demand = destinationDemand.get(facility.facility_id)?.demand ?? 0
+    if (demand <= 0) return colors.muted
+    const ratio = unmetByFacility.get(facility.facility_id) ?? 0
+    if (ratio >= 0.1) return colors.destructive
+    if (ratio > 0) return colors.warning
+    return colors.success
+  }
+
   const layers = useMemo(
     () => {
-      const unmetColor = (lane: NetworkLaneAggregate): Rgba => {
-        if (lane.lane_id === selectedLaneId) return colors.foreground
-        const ratio = laneUnmetRatio(lane, unmetByFacility)
-        if (ratio >= 0.1) return colors.destructive
-        if (ratio > 0.01) return colors.warning
-        return colors.success
-      }
+      const flowColor = (lane: NetworkLaneAggregate): Rgba =>
+        laneUtilizationColor(lane.utilization_pct)
       const arcWidth = (lane: NetworkLaneAggregate) => {
         const base = 5 + Math.sqrt(lane.assigned_units / maxFlow) * 11
         return lane.lane_id === selectedLaneId ? base + 3 : base
       }
-      const localWidth = (lane: NetworkLaneAggregate) => {
-        const base = 4 + Math.sqrt(lane.assigned_units / maxFlow) * 7
-        return lane.lane_id === selectedLaneId ? base + 2 : base
-      }
-      const linehaul = lanes.filter((lane) => lane.lane_type === 'LINEHAUL')
-      const local = lanes.filter((lane) => lane.lane_type !== 'LINEHAUL')
+      const activeLanes = mapLanes.filter((lane) => lane.assigned_units > 0)
+      const expressAir = activeLanes.filter((lane) => lane.mode.toUpperCase() === 'AIR')
+      const linehaul = activeLanes.filter(
+        (lane) => lane.lane_type === 'LINEHAUL' && lane.mode.toUpperCase() !== 'AIR',
+      )
+      const depots = facilities.filter((facility) => facility.facility_type === 'depot')
+      const distributionCenters = facilities.filter((facility) => facility.facility_type === 'distribution_center')
       return [
-        new ArcLayer<NetworkLaneAggregate>({
-          id: 'network-linehaul-arcs',
+        new PathLayer<NetworkLaneAggregate>({
+          id: 'network-linehaul-lines',
           data: linehaul,
-          getSourcePosition: (lane) => [
-            lane.origin_location.lng,
-            lane.origin_location.lat,
+          getPath: (lane) => [
+            [lane.origin_location.lng, lane.origin_location.lat],
+            [lane.destination_location.lng, lane.destination_location.lat],
           ],
-          getTargetPosition: (lane) => [
-            lane.destination_location.lng,
-            lane.destination_location.lat,
-          ],
-          getSourceColor: unmetColor,
-          getTargetColor: (lane) => {
-            if (lane.lane_id === selectedLaneId) return colors.foreground
-            const color = unmetColor(lane)
-            return [color[0], color[1], color[2], Math.min(color[3], 120)]
-          },
+          getColor: flowColor,
           getWidth: arcWidth,
-          getHeight: (lane) =>
-            0.3 + Math.min(1, lane.assigned_units / maxFlow) * 0.3,
-          getTilt: 20,
+          widthUnits: 'pixels',
+          widthMinPixels: 5,
+          widthMaxPixels: 19,
+          capRounded: true,
+          jointRounded: true,
+          pickable: true,
+          autoHighlight: true,
+          updateTriggers: {
+            getColor: [colors],
+            getWidth: [maxFlow, selectedLaneId],
+          },
+        }),
+        new ArcLayer<NetworkLaneAggregate>({
+          id: 'network-express-air-arcs',
+          data: expressAir,
+          getSourcePosition: (lane) => [lane.origin_location.lng, lane.origin_location.lat],
+          getTargetPosition: (lane) => [lane.destination_location.lng, lane.destination_location.lat],
+          getSourceColor: flowColor,
+          getTargetColor: flowColor,
+          getWidth: arcWidth,
+          getHeight: (lane) => lane.lane_id === selectedLaneId ? 1.35 : 0.9 + laneOffset(lane.lane_id) * 0.35,
+          getTilt: (lane) => 28 + laneOffset(lane.lane_id) * 34,
           widthUnits: 'pixels',
           widthMinPixels: 5,
           widthMaxPixels: 19,
@@ -134,58 +170,65 @@ export default function NetworkFlowMap({
           autoHighlight: true,
           greatCircle: false,
           updateTriggers: {
-            getSourceColor: [selectedLaneId, unmetByFacility, colors],
-            getTargetColor: [selectedLaneId, unmetByFacility, colors],
             getWidth: [maxFlow, selectedLaneId],
-            getHeight: [maxFlow],
+            getHeight: [selectedLaneId],
+            getSourceColor: [colors],
+            getTargetColor: [colors],
           },
         }),
-        new PathLayer<NetworkLaneAggregate>({
-          id: 'network-local-lanes',
-          data: local,
-          getPath: (lane) => [
-            [lane.origin_location.lng, lane.origin_location.lat],
-            [lane.destination_location.lng, lane.destination_location.lat],
+        new TextLayer<NetworkLaneAggregate>({
+          id: 'network-express-air-labels',
+          data: expressAir,
+          getPosition: (lane) => [
+            (lane.origin_location.lng + lane.destination_location.lng) / 2,
+            (lane.origin_location.lat + lane.destination_location.lat) / 2,
           ],
-          getColor: unmetColor,
-          getWidth: localWidth,
-          widthUnits: 'pixels',
-          widthMinPixels: 4,
-          widthMaxPixels: 13,
-          capRounded: true,
-          jointRounded: true,
-          pickable: true,
-          autoHighlight: true,
-          updateTriggers: {
-            getColor: [selectedLaneId, unmetByFacility, colors],
-            getWidth: [maxFlow, selectedLaneId],
-          },
+          getText: (lane) =>
+            `${lane.origin_endpoint_name} → ${lane.destination_endpoint_name} · AIR · ${formatCurrency(lane.total_cost)}`,
+          getColor: colors.foreground,
+          getSize: 12,
+          sizeUnits: 'pixels',
+          getPixelOffset: [0, -14],
+          background: true,
+          getBackgroundColor: [15, 23, 42, 220],
+          backgroundPadding: [5, 3],
+          billboard: true,
+          pickable: false,
         }),
         new ScatterplotLayer<NetworkFacilityAggregate>({
-          id: 'network-facilities',
-          data: facilities,
+          id: 'network-depot-dots',
+          data: depots,
           getPosition: (facility) => [facility.location.lng, facility.location.lat],
-          getRadius: (facility) =>
-            7 + Math.sqrt(facility.assigned_units / maxFacilityFlow) * 13,
+          getRadius: (facility) => 6 + Math.sqrt(facility.assigned_units / maxFacilityFlow) * 8 + (facility.facility_id === selectedFacilityId ? 3 : 0),
           radiusUnits: 'pixels',
-          getFillColor: (facility) =>
-            facility.facility_type === 'distribution_center'
-              ? colors.primary
-              : colors.success,
-          getLineColor: (facility) =>
-            facility.facility_id === selectedFacilityId
-              ? colors.foreground
-              : [255, 255, 255, 160],
-          getLineWidth: (facility) =>
-            facility.facility_id === selectedFacilityId ? 4 : 2,
-          lineWidthUnits: 'pixels',
+          getFillColor: unmetDemandColor,
+          filled: true,
           stroked: true,
+          getLineColor: colors.foreground,
+          getLineWidth: 1,
+          lineWidthUnits: 'pixels',
           pickable: true,
           autoHighlight: true,
           updateTriggers: {
-            getRadius: [maxFacilityFlow],
-            getLineColor: [selectedFacilityId],
-            getLineWidth: [selectedFacilityId],
+            getRadius: [maxFacilityFlow, selectedFacilityId],
+            getFillColor: [destinationDemand, unmetByFacility, colors],
+          },
+        }),
+        new TextLayer<NetworkFacilityAggregate>({
+          id: 'network-distribution-center-squares',
+          data: distributionCenters,
+          getPosition: (facility) => [facility.location.lng, facility.location.lat],
+          getText: () => '■',
+          characterSet: ['■'],
+          getColor: unmetDemandColor,
+          getSize: (facility) => 18 + Math.sqrt(facility.assigned_units / maxFacilityFlow) * 16 + (facility.facility_id === selectedFacilityId ? 6 : 0),
+          sizeUnits: 'pixels',
+          billboard: true,
+          pickable: true,
+          autoHighlight: true,
+          updateTriggers: {
+            getColor: [destinationDemand, unmetByFacility, colors],
+            getSize: [maxFacilityFlow, selectedFacilityId],
           },
         }),
       ]
@@ -193,17 +236,30 @@ export default function NetworkFlowMap({
     [
       colors,
       facilities,
-      lanes,
+      mapLanes,
       maxFacilityFlow,
       maxFlow,
       selectedFacilityId,
       selectedLaneId,
       unmetByFacility,
+      destinationDemand,
     ],
   )
 
   return (
     <div className="relative h-[620px] min-h-[620px] overflow-hidden rounded-lg border border-border bg-card xl:h-full">
+      <div className="sr-only" aria-label="Facility unmet demand details">
+        <h3>Facility unmet demand details</h3>
+        <ul>
+          {facilities.map((facility) => (
+            <li key={facility.facility_id}>
+              {facility.facility_name}, {facility.facility_type === 'distribution_center' ? 'distribution center' : 'depot'}: {(destinationDemand.get(facility.facility_id)?.demand ?? 0) > 0
+                ? `${formatNumber(unmetCasesByFacility.get(facility.facility_id) ?? 0)} unmet cases at this target`
+                : 'no target demand in this view'}.
+            </li>
+          ))}
+        </ul>
+      </div>
       <DeckGL
         viewState={viewState}
         controller
@@ -238,21 +294,28 @@ export default function NetworkFlowMap({
           if ('facility_id' in object) {
             const facility = object as NetworkFacilityAggregate
             const unmet = unmetCasesByFacility.get(facility.facility_id) ?? 0
+            const demand = destinationDemand.get(facility.facility_id)?.demand ?? 0
             return tooltip(`
               <strong>${escapeHtml(facility.facility_name)}</strong>
               <div>${facility.facility_type === 'distribution_center' ? 'Distribution center' : 'Depot'}</div>
+              <div style="margin-top:4px">Available supply setting: ${facility.facility_type === 'depot' ? 'Unavailable — depots do not own stock' : facility.supply_retained_pct == null ? 'Unknown (legacy result)' : `${formatPercent(facility.supply_retained_pct)} of normal daily stock`}</div>
+              ${facility.facility_type === 'distribution_center' && facility.normal_supply_units != null ? `<div>Normal daily local stock: ${formatNumber(facility.normal_supply_units)} cases</div>` : ''}
+              ${facility.facility_type === 'distribution_center' && facility.supply_units != null ? `<div>Effective local stock after setting: ${formatNumber(facility.supply_units)} cases</div>` : ''}
+              ${facility.facility_type === 'distribution_center' && facility.supply_available_units != null ? `<div>Solver-reported available supply: ${formatNumber(facility.supply_available_units)} cases (may include transfer arrivals)</div>` : ''}
+              <div>Handling capacity: ${facility.handling_retained_pct == null ? 'Unknown (legacy result)' : `${formatPercent(facility.handling_retained_pct)} of normal daily handling${facility.handling_capacity_units == null ? '' : ` (${formatNumber(facility.handling_capacity_units)} normal)`}${facility.handling_available_units == null ? '' : ` · ${formatNumber(facility.handling_available_units)} available`}${facility.handling_utilization_pct == null ? '' : ` · ${formatPercent(facility.handling_utilization_pct)} used`}`}</div>
+              ${facility.supply_source ? `<div>Supply source: ${escapeHtml(supplySourceLabel(facility.supply_source))}</div>` : ''}
               <div style="margin-top:4px">${formatNumber(facility.assigned_units)} assigned · ${formatPercent(facility.utilization_pct)} utilized</div>
-              <div>${unmet > 0 ? `${formatNumber(unmet)} unmet` : 'No unmet demand'}</div>
+              <div>${demand > 0 ? `${formatNumber(unmet)} unmet demand ${facility.facility_type === 'distribution_center' ? 'across its displayed depots' : 'at this target'} (${formatPercent(unmet / demand * 100)})` : 'No target demand in this view'}</div>
             `)
           }
           const lane = object as NetworkLaneAggregate
-          const laneUnmet = laneUnmetCases(lane, unmetCasesByFacility)
           return tooltip(`
             <strong>${escapeHtml(lane.lane_name)}</strong>
             <div>${escapeHtml(lane.origin_endpoint_name)} → ${escapeHtml(lane.destination_endpoint_name)}</div>
-            <div style="margin-top:4px">${formatNumber(lane.assigned_units)} cases · ${formatPercent(lane.utilization_pct)}</div>
+            <div style="margin-top:4px">Flow volume: ${formatNumber(lane.assigned_units)} cases</div>
+            <div>Lane capacity: ${formatNumber(lane.capacity_units)} cases · ${formatPercent(lane.utilization_pct)} utilized</div>
             <div>${formatCurrency(lane.total_cost)} modeled cost</div>
-            <div>${laneUnmet > 0 ? `${formatNumber(laneUnmet)} unmet at destination` : 'Destination demand served'}</div>
+            ${(lane.tariff_total ?? 0) > 0 ? `<div>Cross-border tariff exposure: ${formatCurrency(lane.tariff_total ?? 0)} on ${formatNumber(lane.assigned_units)} cases</div>` : ''}
           `)
         }}
       >
@@ -263,30 +326,30 @@ export default function NetworkFlowMap({
       </DeckGL>
 
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-md border border-border bg-background/90 p-3 text-[11px] shadow-lg backdrop-blur">
-        <div className="font-medium">Unmet demand by lane</div>
+        <div className="font-medium">Depot fill · unmet demand at target</div>
         <div className="mt-2 flex items-center gap-3 text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-4 rounded bg-success" /> Served
+            <span className="h-1.5 w-4 rounded bg-success" /> 0% unmet
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-4 rounded bg-warning" /> 1–10%
+            <span className="h-1.5 w-4 rounded bg-warning" /> &gt;0–&lt;10%
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-4 rounded bg-destructive" /> &gt;10%
+            <span className="h-1.5 w-4 rounded bg-destructive" /> ≥10%
           </span>
         </div>
         <div className="mt-2 flex flex-col gap-1 border-t border-border pt-2 text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden>
-              <path d="M1 9 Q9 -3 17 9" fill="none" stroke="currentColor" strokeWidth="2" />
+              <line x1="1" y1="8" x2="17" y2="8" stroke="currentColor" strokeWidth="2" />
             </svg>
-            Linehaul freight
+            Linehaul freight · flat
           </span>
           <span className="flex items-center gap-1.5">
             <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden>
-              <line x1="1" y1="8" x2="17" y2="8" stroke="currentColor" strokeWidth="2" />
+              <path d="M1 9 Q9 -3 17 9" fill="none" stroke="currentColor" strokeWidth="2" />
             </svg>
-            Local distribution
+            Express AIR · elevated arc →
           </span>
         </div>
         <div className="mt-2 flex items-center gap-2 border-t border-border pt-2 text-muted-foreground">
@@ -295,18 +358,26 @@ export default function NetworkFlowMap({
         </div>
         <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-primary" /> DC
+            <span className="text-base leading-none text-primary">■</span> DC
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-success" /> Depot
+            <span className="text-base leading-none">●</span> Depot
           </span>
+        </div>
+        <div className="mt-2 border-t border-border pt-2 text-muted-foreground">
+          <div className="font-medium text-foreground">Lane color · utilization of capacity</div>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+            <span><span className="text-success">●</span> &lt;95%</span>
+            <span><span className="text-warning">●</span> 95–100%</span>
+            <span><span className="text-destructive">●</span> &gt;100%</span>
+          </div>
         </div>
       </div>
 
-      {lanes.length === 0 && (
+      {!mapLanes.some((lane) => lane.assigned_units > 0) && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/70 backdrop-blur-sm">
           <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-            No lanes match this planning context.
+            No shipments in this planning context.
           </div>
         </div>
       )}
@@ -314,27 +385,16 @@ export default function NetworkFlowMap({
   )
 }
 
-function laneUnmetRatio(
-  lane: NetworkLaneAggregate,
-  unmetByFacility: Map<string, number>,
-): number {
-  if (lane.destination_endpoint_type !== 'customer' && lane.destination_endpoint_type !== 'market') {
-    const destination = unmetByFacility.get(lane.destination_endpoint_id)
-    if (destination !== undefined) return destination
-  }
-  const origin = unmetByFacility.get(lane.origin_endpoint_id)
-  return origin ?? 0
+function supplySourceLabel(source: string) {
+  if (source === 'canonical_daily_supply') return 'Canonical daily supply'
+  if (source === 'legacy_handling_capacity_fallback') return 'Legacy fallback derived from handling capacity'
+  return source
 }
 
-function laneUnmetCases(
-  lane: NetworkLaneAggregate,
-  unmetCasesByFacility: Map<string, number>,
-): number {
-  if (lane.destination_endpoint_type !== 'customer' && lane.destination_endpoint_type !== 'market') {
-    const destination = unmetCasesByFacility.get(lane.destination_endpoint_id)
-    if (destination !== undefined) return destination
-  }
-  return unmetCasesByFacility.get(lane.origin_endpoint_id) ?? 0
+function laneOffset(laneId: string) {
+  let hash = 0
+  for (const character of laneId) hash = (hash * 31 + character.charCodeAt(0)) | 0
+  return (Math.abs(hash) % 1000) / 999
 }
 
 function fitView(

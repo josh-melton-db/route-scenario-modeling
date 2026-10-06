@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "Usage: scripts/test-clean-clone --config TRACKED_CONFIG --profile PROFILE --target TARGET" >&2
+}
+
+profile=""
+target=""
+config=""
+while (($#)); do
+  case "$1" in
+    --profile) profile="${2:-}"; shift 2 ;;
+    --target) target="${2:-}"; shift 2 ;;
+    --config) config="${2:-}"; shift 2 ;;
+    *) usage; exit 2 ;;
+  esac
+done
+if [[ -z "$profile" || -z "$target" || -z "$config" ]]; then
+  usage
+  exit 2
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+config="${config#./}"
+git ls-files --error-unmatch "$config" >/dev/null 2>&1 || {
+  echo "Clean-clone rehearsal requires a tracked repository-relative config: $config" >&2
+  exit 2
+}
+test_root="$(mktemp -d)"
+trap 'echo "Clean-clone test directory: $test_root"' EXIT
+
+git clone --quiet --no-local "$repo_root" "$test_root/checkout"
+cd "$test_root/checkout"
+npm ci
+npm run setup:python
+npm run doctor
+npm run verify:fast
+DATABRICKS_CONFIG_PROFILE="$profile" npm run doctor:deploy
+scripts/deploy-demo --config "$config" --target "$target" --profile "$profile" --dry-run
+scripts/deploy-demo --config "$config" --target "$target" --profile "$profile"
+
+echo "Clean clone deployed successfully with target '$target' and profile '$profile'."

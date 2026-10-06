@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import re
+
 from datetime import date
 from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from .models import Depot, Kpis, LatLng, MatrixSource, Route, StrictModel
+from .models import DeliveryDraft, Depot, Kpis, LatLng, MatrixSource, Route, StrictModel
 
 
-PlanStatus = Literal["queued", "running", "completed", "infeasible", "failed"]
+PlanStatus = Literal[
+    "not_requested", "queued", "running", "completed", "infeasible", "failed"
+]
 
 
 def _validate_date(value: str | None, field_name: str) -> str | None:
@@ -21,12 +25,24 @@ def _validate_date(value: str | None, field_name: str) -> str | None:
     return value
 
 
+_TIME_PATTERN = re.compile(r"^(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)$")
+
+
+def _validate_hh_mm(value: str | None, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or _TIME_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must use 24-hour HH:MM format.")
+    return value
+
+
 class Coverage(StrictModel):
     total_days: int = Field(ge=0)
     solved_days: int = Field(ge=0)
     queued_days: int = Field(ge=0)
     running_days: int = Field(ge=0)
     failed_days: int = Field(ge=0)
+    not_requested_days: int = Field(default=0, ge=0)
 
 
 class RouteScenario(StrictModel):
@@ -58,6 +74,7 @@ class DayResult(StrictModel):
     service_date: str
     status: PlanStatus
     routes: list[Route] = Field(default_factory=list)
+    depot: Depot | None = None
     kpis: Kpis
     assigned_cases: int = Field(ge=0)
     routed_cases: int = Field(ge=0)
@@ -87,6 +104,7 @@ class DayDetail(StrictModel):
     route_scenario_id: str
     default_status: PlanStatus
     override_status: PlanStatus | None = None
+    override_request: dict[str, Any] | None = None
     default_result: DayResult | None = None
     selected_result: DayResult | None = None
     error: str | None = None
@@ -142,6 +160,37 @@ class CreateRouteScenarioRequest(StrictModel):
     scenario_name: str = Field(min_length=1, max_length=120)
 
 
+class DailyPlanChange(StrictModel):
+    kind: Literal["add_deliveries", "facility_move", "time_window_change"]
+    deliveries: list[DeliveryDraft] = Field(default_factory=list, max_length=100)
+    new_depot_location: LatLng | None = None
+    preserve_service_windows: bool = True
+    customer_id: str | None = None
+    receiving_window_start: str | None = None
+    receiving_window_end: str | None = None
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "DailyPlanChange":
+        if self.kind == "add_deliveries" and not self.deliveries:
+            raise ValueError("add_deliveries requires at least one delivery.")
+        if self.kind == "facility_move" and self.new_depot_location is None:
+            raise ValueError("facility_move requires new_depot_location.")
+        if self.kind == "time_window_change":
+            if not self.customer_id or not self.customer_id.strip():
+                raise ValueError("time_window_change requires customer_id.")
+            start = _validate_hh_mm(self.receiving_window_start, "receiving_window_start")
+            end = _validate_hh_mm(self.receiving_window_end, "receiving_window_end")
+            if start is None or end is None:
+                raise ValueError(
+                    "time_window_change requires receiving_window_start and receiving_window_end."
+                )
+            if start >= end:
+                raise ValueError(
+                    "time_window_change receiving_window_end must be after its start."
+                )
+        return self
+
+
 class OverrideRequest(StrictModel):
     route_scenario_id: str = Field(min_length=1)
     driver_delta: int = Field(default=0, ge=-64, le=64)
@@ -149,6 +198,7 @@ class OverrideRequest(StrictModel):
     max_route_minutes: int | None = Field(default=None, ge=1, le=1_440)
     max_stops_per_route: int | None = Field(default=None, ge=1, le=149)
     new_depot_location: LatLng | None = None
+    changes: list[DailyPlanChange] = Field(default_factory=list, max_length=50)
 
     @model_validator(mode="after")
     def validate_named_scenario(self) -> "OverrideRequest":

@@ -9,6 +9,7 @@ from route_opt.depot_planning import (
     materialize_depot_targets,
     solve_depot_plan,
 )
+from route_opt.pricing import revenue_for_cases
 
 
 DATE_ONE = "2026-09-28"
@@ -143,6 +144,12 @@ def test_real_solver_returns_route_and_preserves_date_windows_and_ids() -> None:
     assert result["unserved_cases"] == 0
     assert result["diagnostics"][0]["solver"] == "ortools_cvrptw"
     assert result["matrix_source"] == "haversine_circuity"
+    assert result["kpis"]["total_revenue"] == revenue_for_cases(100)
+    assert result["kpis"]["profit"] == round(
+        result["kpis"]["total_revenue"]
+        - result["kpis"]["cost_breakdown"]["total_cost"],
+        2,
+    )
     routes = [Route.model_validate(route) for route in result["routes"]]
     assert routes[0].rated_service_date == DATE_TWO
     assert {stop.customer_id for route in routes for stop in route.stops} == {"CUST_A", "CUST_B"}

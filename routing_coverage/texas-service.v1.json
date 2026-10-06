@@ -14,27 +14,25 @@
       },
       "build": {
         "built_at": "2026-10-02T14:22:57Z",
-        "profile": "DEFAULT",
-        "run_id": 1001382283120031,
-        "task_run_id": 310302840286406,
-        "valhalla_version": "3.5.1",
-        "volume_path": "/Volumes/demos/route_scenario_modeling/valhalla_assets"
+        "process": "valhalla_service/build_valhalla.py named regional build",
+        "valhalla_version": "3.5.1"
       },
       "costing": "truck",
       "coverage_id": "texas-delivery",
       "depot_ids": [
         "DPT_TOLA_DALLAS",
-        "DPT_TOLA_SAN_ANTONIO"
+        "DPT_TOLA_SAN_ANTONIO",
+        "DPT_TOLA_HOUSTON"
       ],
-      "endpoint_url": "https://valhalla-texas-dev-860013386775689.aws.databricksapps.com",
-      "max_points": 500,
+      "endpoint_url": "https://valhalla-service-860013386775689.aws.databricksapps.com",
+      "max_points": 150,
       "smoke_test": {
         "artifact_version": "texas-20261002-v1",
         "coverage_id": "texas-delivery",
-        "endpoint_url": "https://valhalla-texas-dev-860013386775689.aws.databricksapps.com",
+        "endpoint_url": "https://valhalla-service-860013386775689.aws.databricksapps.com",
         "region_id": "texas",
         "result": "success",
-        "tested_at": "2026-10-03T00:49:01.279572Z"
+        "tested_at": "2026-10-06T15:01:50.060777Z"
       },
       "source": {
         "name": "Geofabrik Texas named extract",

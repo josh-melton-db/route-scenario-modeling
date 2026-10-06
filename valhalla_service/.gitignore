@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+!.env.example
+.databricks/
+dist/
+build/
+*.tar.gz
+*.whl

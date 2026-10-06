@@ -6,15 +6,17 @@ import json
 import hashlib
 import os
 import logging
-import zlib
 from copy import deepcopy
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 from typing import Any, cast
 
 from fastapi import HTTPException
 
-from route_opt.network_flow import solve_fixed_capacity_network
+from route_opt.network_flow import (
+    materialize_express_air_transfers,
+    solve_fixed_capacity_network,
+)
 
 from ..config import get_data_backend
 from ..models import (
@@ -41,10 +43,16 @@ from ..models import (
 from .lakebase_store import lakebase_store
 from .network_overview import NetworkRows, network_overview_service
 from .network_rating import (
-    linear_objective_cost, objective_lane_unit_costs, rate_network_flows,
+    has_governed_lane_rate, linear_objective_cost, objective_lane_unit_costs, rate_network_flows,
     resolve_network_tariffs,
 )
 from .network_run_snapshots import NetworkRunSnapshot
+from .network_snapshot_codec import (
+    apply_table_delta as _apply_table_delta,
+    decode_envelope as _decode_snapshot_envelope,
+    encode_envelope as _encode_snapshot_envelope,
+    manifest_with_deltas as _snapshot_manifest_with_deltas,
+)
 from .network_assignment_projection import merge_assignment_overlays
 from .rates import list_rate_contract_details
 from .store_provider import get_store
@@ -55,12 +63,6 @@ def _now() -> str:
 
 
 logger = logging.getLogger(__name__)
-_SNAPSHOT_MAX_UNCOMPRESSED_BYTES = int(
-    os.getenv("NETWORK_SNAPSHOT_MAX_UNCOMPRESSED_BYTES", str(512 * 1024 * 1024))
-)
-_SNAPSHOT_MAX_COMPRESSED_BYTES = int(
-    os.getenv("NETWORK_SNAPSHOT_MAX_COMPRESSED_BYTES", str(64 * 1024 * 1024))
-)
 
 
 def _json_value(value: Any) -> Any:
@@ -69,121 +71,6 @@ def _json_value(value: Any) -> Any:
 
         return json.loads(value)
     return value
-
-
-_SNAPSHOT_MUTABLE_TABLES = (
-    "dim_network_lanes",
-    "network_customer_assignments_daily",
-    "lane_capacity_daily",
-)
-_SNAPSHOT_TABLE_KEYS = {
-    "dim_network_lanes": ("lane_id",),
-    "network_customer_assignments_daily": (
-        "demand_plan_version_id", "capacity_plan_version_id", "service_date", "customer_id",
-    ),
-    "lane_capacity_daily": ("capacity_plan_version_id", "service_date", "lane_id"),
-}
-
-
-def _row_key(row: dict[str, Any], fields: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(str(row.get(field, ""))[:10] if field == "service_date" else str(row.get(field, "")) for field in fields)
-
-
-def _table_delta(
-    before: list[dict[str, Any]], after: list[dict[str, Any]], fields: tuple[str, ...]
-) -> dict[str, Any] | None:
-    prior = {_row_key(row, fields): row for row in before}
-    current = {_row_key(row, fields): row for row in after}
-    upserts = [deepcopy(row) for row in after if prior.get(_row_key(row, fields)) != row]
-    deletes = [list(key) for key in prior.keys() - current.keys()]
-    return {"key_fields": list(fields), "upserts": upserts, "deletes": deletes} if upserts or deletes else None
-
-
-def _apply_table_delta(
-    rows: list[dict[str, Any]], delta: dict[str, Any]
-) -> list[dict[str, Any]]:
-    fields = tuple(str(field) for field in delta["key_fields"])
-    deleted = {tuple(str(value) for value in key) for key in delta.get("deletes", [])}
-    upserts = {_row_key(row, fields): deepcopy(row) for row in delta.get("upserts", [])}
-    result: list[dict[str, Any]] = []
-    seen: set[tuple[str, ...]] = set()
-    for row in rows:
-        key = _row_key(row, fields)
-        if key in deleted:
-            continue
-        result.append(upserts.get(key, deepcopy(row)))
-        seen.add(key)
-    result.extend(row for key, row in upserts.items() if key not in seen)
-    return result
-
-
-def _snapshot_manifest_with_deltas(
-    manifest: dict[str, Any], source_rows: NetworkRows, network_rows: NetworkRows
-) -> dict[str, Any]:
-    encoded = deepcopy(manifest)
-    encoded["table_deltas"] = {
-        table: delta
-        for table in _SNAPSHOT_MUTABLE_TABLES
-        if (delta := _table_delta(
-            source_rows.get(table, []),
-            network_rows.get(table, []),
-            _SNAPSHOT_TABLE_KEYS[table],
-        )) is not None
-    }
-    return encoded
-
-
-def _encode_snapshot_envelope(
-    flow_rows: list[dict[str, Any]], cost_rows: list[dict[str, Any]]
-) -> tuple[bytes, int, str]:
-    raw = json.dumps(
-        {"version": 1, "flow_rows": flow_rows, "cost_rows": cost_rows},
-        separators=(",", ":"), default=str,
-    ).encode()
-    if len(raw) > _SNAPSHOT_MAX_UNCOMPRESSED_BYTES:
-        raise ValueError("Network snapshot exceeds the uncompressed safety limit.")
-    compressed = zlib.compress(raw, level=9)
-    if len(compressed) > _SNAPSHOT_MAX_COMPRESSED_BYTES:
-        raise ValueError("Network snapshot exceeds the compressed safety limit.")
-    return compressed, len(raw), hashlib.sha256(raw).hexdigest()
-
-
-def _decode_snapshot_envelope(
-    payload: bytes | bytearray | memoryview,
-    *,
-    codec: str,
-    uncompressed_bytes: int,
-    expected_sha256: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    compressed = bytes(payload)
-    if codec != "zlib-json-v1":
-        raise RuntimeError(f"Unsupported network snapshot codec: {codec!r}")
-    if not 0 <= uncompressed_bytes <= _SNAPSHOT_MAX_UNCOMPRESSED_BYTES:
-        raise RuntimeError("Network snapshot declares an unsafe uncompressed size.")
-    if len(compressed) > _SNAPSHOT_MAX_COMPRESSED_BYTES:
-        raise RuntimeError("Network snapshot compressed payload exceeds the safety limit.")
-    try:
-        decoder = zlib.decompressobj()
-        raw = decoder.decompress(compressed, _SNAPSHOT_MAX_UNCOMPRESSED_BYTES + 1)
-        if decoder.unconsumed_tail or len(raw) > _SNAPSHOT_MAX_UNCOMPRESSED_BYTES:
-            raise RuntimeError("Network snapshot expands beyond the safety limit.")
-        raw += decoder.flush(_SNAPSHOT_MAX_UNCOMPRESSED_BYTES + 1 - len(raw))
-    except zlib.error as exc:
-        raise RuntimeError("Network snapshot envelope is corrupt.") from exc
-    if not decoder.eof or decoder.unused_data or len(raw) != uncompressed_bytes:
-        raise RuntimeError("Network snapshot envelope length check failed.")
-    if hashlib.sha256(raw).hexdigest() != expected_sha256:
-        raise RuntimeError("Network snapshot envelope integrity check failed.")
-    try:
-        document = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Network snapshot envelope is not valid JSON.") from exc
-    if document.get("version") != 1:
-        raise RuntimeError("Network snapshot envelope version is unsupported.")
-    return (
-        cast(list[dict[str, Any]], document["flow_rows"]),
-        cast(list[dict[str, Any]], document["cost_rows"]),
-    )
 
 
 def _filter_revision_rows(rows: NetworkRows, scenario: NetworkScenario) -> NetworkRows:
@@ -197,6 +84,10 @@ def _filter_revision_rows(rows: NetworkRows, scenario: NetworkScenario) -> Netwo
             and start <= str(row.get("service_date", ""))[:10] <= end
         ),
         "facility_capacity_daily": lambda row: (
+            str(row.get("capacity_plan_version_id")) == scenario.capacity_plan_version_id
+            and start <= str(row.get("service_date", ""))[:10] <= end
+        ),
+        "facility_supply_daily": lambda row: (
             str(row.get("capacity_plan_version_id")) == scenario.capacity_plan_version_id
             and start <= str(row.get("service_date", ""))[:10] <= end
         ),
@@ -214,6 +105,88 @@ def _filter_revision_rows(rows: NetworkRows, scenario: NetworkScenario) -> Netwo
         if table in filtered:
             filtered[table] = [deepcopy(row) for row in filtered[table] if predicate(row)]
     return filtered
+
+
+def _effective_facility_rows(
+    rows: NetworkRows, scenario: NetworkScenario
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    """Materialize the exact facility bounds used by a solved snapshot."""
+
+    start, end = scenario.horizon_start, scenario.horizon_end
+    capacity_id = scenario.capacity_plan_version_id
+    facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
+
+    def selected(row: dict[str, Any]) -> bool:
+        return (
+            str(row.get("capacity_plan_version_id")) == capacity_id
+            and start <= str(row.get("service_date", ""))[:10] <= end
+        )
+
+    capacity_rows = deepcopy(rows.get("facility_capacity_daily", []))
+    for row in capacity_rows:
+        if selected(row):
+            row["normal_capacity_units"] = int(row["capacity_units"])
+            row["effective_bound_applied"] = True
+            retained = scenario.assumptions.facility_capacity_retained_pct.get(
+                str(row["facility_id"]), 100
+            )
+            if str(row["facility_id"]) in scenario.assumptions.disabled_facility_ids:
+                retained = 0
+            row["capacity_units"] = int(float(row["capacity_units"]) * retained / 100)
+
+    supply_rows = [
+        {**deepcopy(row), "supply_source": "canonical_daily_supply"}
+        for row in rows.get("facility_supply_daily", [])
+    ]
+    supply_keys = {
+        (str(row.get("capacity_plan_version_id")), str(row.get("service_date"))[:10],
+         str(row.get("facility_id")))
+        for row in supply_rows
+    }
+    fallback_rows = [
+            {
+                "capacity_plan_version_id": row["capacity_plan_version_id"],
+                "service_date": row["service_date"],
+                "facility_id": row["facility_id"],
+                "supply_units": row["capacity_units"],
+                "supply_source": "legacy_handling_capacity_fallback",
+            }
+            for row in rows.get("facility_capacity_daily", [])
+            if str(facilities.get(str(row["facility_id"]), {}).get("facility_type"))
+            == "distribution_center"
+            and (
+                str(row.get("capacity_plan_version_id")),
+                str(row.get("service_date"))[:10],
+                str(row.get("facility_id")),
+            ) not in supply_keys
+        ]
+    supply_rows.extend(fallback_rows)
+    for row in supply_rows:
+        if selected(row):
+            row["normal_supply_units"] = int(row["supply_units"])
+            row["effective_bound_applied"] = True
+            retained = scenario.assumptions.facility_supply_retained_pct.get(
+                str(row["facility_id"]), 100
+            )
+            row["supply_units"] = int(float(row["supply_units"]) * retained / 100)
+    return (
+        capacity_rows,
+        supply_rows,
+        "legacy_handling_capacity_fallback" if fallback_rows else "canonical_daily_supply",
+    )
+
+
+def _restore_normal_facility_rows(rows: NetworkRows) -> None:
+    """Undo prior effective bounds before reapplying inherited assumptions."""
+
+    for row in rows.get("facility_capacity_daily", []):
+        if row.get("effective_bound_applied") is True and row.get("normal_capacity_units") is not None:
+            row["capacity_units"] = int(row["normal_capacity_units"])
+            row.pop("effective_bound_applied", None)
+    for row in rows.get("facility_supply_daily", []):
+        if row.get("effective_bound_applied") is True and row.get("normal_supply_units") is not None:
+            row["supply_units"] = int(row["normal_supply_units"])
+            row.pop("effective_bound_applied", None)
 
 
 class NetworkScenarioRepository:
@@ -284,6 +257,12 @@ class NetworkScenarioRepository:
         return self._scenario_from_row(row)
 
     def create(self, scenario: NetworkScenario) -> NetworkScenario:
+        from .demo_state_gate import demo_state_gate
+
+        with demo_state_gate.admission():
+            return self._create(scenario)
+
+    def _create(self, scenario: NetworkScenario) -> NetworkScenario:
         if not self._uses_lakebase:
             with self._lock:
                 self._scenarios[scenario.scenario_id] = scenario.model_copy(deep=True)
@@ -405,6 +384,31 @@ class NetworkScenarioRepository:
                     (scenario_id,),
                     connection=connection,
                 )
+
+    def clear_all(self) -> int:
+        """Delete scenarios and immutable run artifacts after workers are idle."""
+        if not self._uses_lakebase:
+            with self._lock:
+                count = len(self._scenarios)
+                self._scenarios.clear()
+                self._results.clear()
+                self._run_snapshots.clear()
+                return count
+        with lakebase_store.postgres.transaction() as connection:
+            count_row = lakebase_store.postgres.query_one(
+                f"SELECT COUNT(*) AS count FROM {self._table('network_scenarios')}",
+                connection=connection,
+            )
+            for table_name in (
+                "network_run_charge_details", "network_run_snapshots",
+                "network_flow_charge_details", "network_flow_results",
+                "network_scenario_exceptions", "network_scenario_results",
+                "network_scenarios",
+            ):
+                lakebase_store.postgres.execute(
+                    f"DELETE FROM {self._table(table_name)}", connection=connection
+                )
+        return int((count_row or {}).get("count", 0))
 
     def result(self, scenario_id: str) -> NetworkScenarioResult:
         if not self._uses_lakebase:
@@ -1020,7 +1024,7 @@ class NetworkScenarioService:
             except (ImportError, AttributeError):
                 source_revision = None
         assumptions_payload = request.assumptions.model_dump(mode="json")
-        if "tariffs" not in request.assumptions.model_fields_set and source_revision:
+        if source_revision:
             try:
                 from .baseline_service import baseline_service
 
@@ -1028,7 +1032,17 @@ class NetworkScenarioService:
                     "baseline_revision_metadata", []
                 )
                 if metadata:
-                    assumptions_payload["tariffs"] = metadata[0].get("tariffs", [])
+                    inherited = metadata[0]
+                    for field in (
+                        "tariffs",
+                        "facility_capacity_retained_pct",
+                        "facility_supply_retained_pct",
+                        "dc_transfer_requests",
+                    ):
+                        if field not in request.assumptions.model_fields_set:
+                            assumptions_payload[field] = inherited.get(
+                                field, assumptions_payload.get(field)
+                            )
             except (ImportError, AttributeError):
                 pass
         assumptions_payload["source_baseline_revision_id"] = source_revision
@@ -1216,6 +1230,58 @@ class NetworkScenarioService:
                         message="Disabled facility does not exist in the canonical network.",
                     )
                 )
+        for facility_id in assumptions.facility_capacity_retained_pct:
+            if facility_id not in facilities:
+                issues.append(
+                    NetworkScenarioValidationIssue(
+                        severity="error",
+                        code="unknown_capacity_facility",
+                        scope="facility",
+                        entity_id=facility_id,
+                        message="Capacity adjustment facility does not exist in the canonical network.",
+                    )
+                )
+        for facility_id in assumptions.facility_supply_retained_pct:
+            facility = facilities.get(facility_id)
+            if facility is None or str(facility.get("facility_type")) != "distribution_center":
+                issues.append(
+                    NetworkScenarioValidationIssue(
+                        severity="error",
+                        code="unknown_supply_facility",
+                        scope="facility",
+                        entity_id=facility_id,
+                        message="Supply adjustments require a canonical distribution center.",
+                    )
+                )
+        seen_transfer_ids: set[str] = set()
+        for transfer in assumptions.dc_transfer_requests:
+            if transfer.transfer_id in seen_transfer_ids:
+                issues.append(
+                    NetworkScenarioValidationIssue(
+                        severity="error", code="duplicate_transfer_id",
+                        scope="scenario", entity_id=transfer.transfer_id,
+                        message="DC transfer IDs must be unique within a scenario.",
+                    )
+                )
+            seen_transfer_ids.add(transfer.transfer_id)
+            for endpoint_id in (transfer.origin_dc_id, transfer.destination_dc_id):
+                endpoint = facilities.get(endpoint_id)
+                if endpoint is None or str(endpoint.get("facility_type")) != "distribution_center":
+                    issues.append(
+                        NetworkScenarioValidationIssue(
+                            severity="error", code="invalid_transfer_endpoint",
+                            scope="facility", entity_id=endpoint_id,
+                            message="DC transfer endpoints must be canonical distribution centers.",
+                        )
+                    )
+            if not scenario.horizon_start <= transfer.departure_date <= scenario.horizon_end:
+                issues.append(
+                    NetworkScenarioValidationIssue(
+                        severity="error", code="transfer_departure_outside_horizon",
+                        scope="scenario", entity_id=transfer.transfer_id,
+                        message="DC transfer departure must fall inside the scenario horizon.",
+                    )
+                )
         changed_lane_ids = set(assumptions.disabled_lane_ids) | set(
             assumptions.lane_cost_adjustments_pct
         )
@@ -1252,21 +1318,31 @@ class NetworkScenarioService:
                 )
             )
 
-        non_gl_lanes = {
-            str(row["lane_id"])
-            for row in rows["dim_network_lanes"]
-            if row["lane_type"] == "LINEHAUL"
-            and str(facilities[str(row["origin_endpoint_id"])]["region_id"])
-            != "REGION_GREAT_LAKES"
+        contracts = list_rate_contract_details(get_store())
+        service_dates: list[str] = []
+        current_date = date.fromisoformat(scenario.horizon_start)
+        horizon_end = date.fromisoformat(scenario.horizon_end)
+        while current_date <= horizon_end:
+            service_dates.append(current_date.isoformat())
+            current_date += timedelta(days=1)
+        missing_rate_lanes = {
+            str(lane["lane_id"])
+            for lane in rows["dim_network_lanes"]
+            if lane["lane_type"] == "LINEHAUL"
+            and str(lane["lane_id"]) not in assumptions.disabled_lane_ids
+            and any(
+                not has_governed_lane_rate(contracts, service_date, lane, facilities)
+                for service_date in service_dates
+            )
         }
-        if non_gl_lanes:
+        if missing_rate_lanes:
             issues.append(
                 NetworkScenarioValidationIssue(
                     severity="warning",
                     code="planning_rate_fallback",
                     scope="rate",
                     message=(
-                        f"{len(non_gl_lanes)} permitted linehaul lanes do not have a "
+                        f"{len(missing_rate_lanes)} permitted linehaul lanes do not have a "
                         "published canonical rate-book match and will use an explicit "
                         "planning fallback."
                     ),
@@ -1300,6 +1376,12 @@ class NetworkScenarioService:
         self.repository.delete(scenario_id)
 
     def result(self, scenario_id: str) -> NetworkScenarioResult:
+        if self._is_baseline_resource(scenario_id, "scenario"):
+            from .baseline_service import baseline_service
+            run_id = scenario_id.replace(
+                "baseline-plan-scenario.", "baseline-plan-run.", 1
+            )
+            return baseline_service.resolve_plan_run(run_id).result
         self.get(scenario_id)
         return self.repository.result(scenario_id)
 
@@ -1409,6 +1491,8 @@ class NetworkScenarioService:
         else:
             rows = deepcopy(rows_override) if rows_override is not None else self._rows(scenario)
         source_rows = deepcopy(rows)
+        _restore_normal_facility_rows(rows)
+        normal_rows = deepcopy(rows)
         mark("input_loading_and_copying")
         source_metadata = source_rows.get("baseline_revision_metadata", [])
         pinned_context = (
@@ -1434,6 +1518,18 @@ class NetworkScenarioService:
         ]
         if release_requests is None and scenario.assumptions.release_overlays:
             release_requests = [row.model_dump(mode="json") if hasattr(row, "model_dump") else dict(row) for row in scenario.assumptions.release_overlays]
+        transfer_requests = [
+            row.model_dump(mode="json")
+            for row in scenario.assumptions.dc_transfer_requests
+        ]
+        if transfer_requests:
+            materialized = materialize_express_air_transfers(
+                rows,
+                transfer_requests,
+                capacity_plan_version_id=scenario.capacity_plan_version_id,
+            )
+            rows["dim_network_lanes"] = materialized["network_lanes"]
+            rows["lane_capacity_daily"] = materialized["lane_capacity_rows"]
         tariff_by_date_lane = self._resolve_tariffs(
             rows,
             scenario.assumptions.tariffs,
@@ -1480,6 +1576,13 @@ class NetworkScenarioService:
                 scenario.assumptions.unmet_penalty_per_case
             ),
             release_requests=release_requests,
+            facility_capacity_retained_pct=(
+                scenario.assumptions.facility_capacity_retained_pct
+            ),
+            facility_supply_retained_pct=(
+                scenario.assumptions.facility_supply_retained_pct
+            ),
+            dc_transfer_requests=transfer_requests,
         )
         mark("network_solve")
         if allocation.get("network_lanes") is not None:
@@ -1491,6 +1594,25 @@ class NetworkScenarioService:
             )
         if allocation.get("lane_capacity_rows") is not None:
             rows["lane_capacity_daily"] = allocation["lane_capacity_rows"]
+        if allocation.get("facility_capacity_rows") is not None:
+            rows["facility_capacity_daily"] = allocation["facility_capacity_rows"]
+        if allocation.get("facility_supply_rows") is not None:
+            rows["facility_supply_daily"] = allocation["facility_supply_rows"]
+        rows["network_transfer_movements"] = deepcopy(
+            allocation.get("transfer_movements", [])
+        )
+        if (
+            allocation.get("facility_capacity_rows") is None
+            or allocation.get("facility_supply_rows") is None
+        ):
+            effective_capacity, effective_supply, supply_source = _effective_facility_rows(
+                normal_rows, scenario
+            )
+            if allocation.get("facility_capacity_rows") is None:
+                rows["facility_capacity_daily"] = effective_capacity
+            if allocation.get("facility_supply_rows") is None:
+                rows["facility_supply_daily"] = effective_supply
+            rows["facility_supply_provenance"] = [{"source": supply_source}]
         flow_rows = allocation["flow_rows"]
         cost_rows, charges, exceptions = self._rate_flows(
             rows, flow_rows, tariff_by_date_lane, contracts=contracts
@@ -1511,6 +1633,15 @@ class NetworkScenarioService:
         for unmet in allocation["unmet_rows"]:
             if int(unmet["unmet_units"]) <= 0:
                 continue
+            shortage_cause = str(unmet.get("shortage_cause", "unknown"))
+            if shortage_cause not in {"supply", "handling", "lane"}:
+                shortage_cause = "unknown"
+            cause_message = {
+                "supply": "available distribution-center stock",
+                "handling": "facility handling throughput",
+                "lane": "permitted lane capacity",
+                "unknown": "supplied facility and lane capacity",
+            }[shortage_cause]
             exceptions.append(
                 NetworkScenarioException(
                     exception_id=(
@@ -1523,11 +1654,12 @@ class NetworkScenarioService:
                     entity_id=str(unmet["depot_id"]),
                     message=(
                         f"{int(unmet['unmet_units']):,} cases cannot be assigned "
-                        "within supplied facility and lane capacity."
+                        f"within {cause_message}."
                     ),
                     demand_units=int(unmet["demand_units"]),
                     assigned_units=int(unmet["assigned_units"]),
                     unmet_units=int(unmet["unmet_units"]),
+                    shortage_cause=cast(Any, shortage_cause),
                 )
             )
 
@@ -1552,7 +1684,14 @@ class NetworkScenarioService:
         scenario_rows["baseline_network_flow_daily"] = flow_rows
         scenario_rows["network_flow_cost_daily"] = cost_rows
         overview = network_overview_service.build_overview(
-            scenario_rows, context=context, scenario_id=scenario.scenario_id
+            scenario_rows,
+            context=context,
+            scenario_id=scenario.scenario_id,
+            facility_capacity_retained_pct={
+                **scenario.assumptions.facility_capacity_retained_pct,
+                **{facility_id: 0 for facility_id in scenario.assumptions.disabled_facility_ids},
+            },
+            facility_supply_retained_pct=scenario.assumptions.facility_supply_retained_pct,
         )
         mark("overview_construction")
         # The comparison/audit uses the same selected linehaul scope as its
@@ -1726,6 +1865,24 @@ class NetworkScenarioService:
             round(objective_gap / optimization_objective_cost * 100, 2)
             if optimization_objective_cost > 0 else None
         )
+        transfer_charges = {
+            (row.service_date, row.lane_id): row for row in charges
+            if row.lane_id.startswith("XFER_")
+        }
+        transfer_movements = []
+        for movement in allocation.get("transfer_movements", []):
+            charge = transfer_charges.get(
+                (movement["departure_date"], movement["lane_id"])
+            )
+            freight = charge.freight_total if charge else 0.0
+            tariff = charge.tariff_total if charge else 0.0
+            transfer_movements.append({
+                **movement,
+                "freight_cost": freight,
+                "tariff_cost": tariff,
+                "total_cost": round(freight + tariff, 2),
+                "tariff_rule_ids": charge.tariff_rule_ids if charge else [],
+            })
         result = NetworkScenarioResult(
             run_id=run_id or f"network-run-{uuid.uuid4()}",
             scenario_id=scenario.scenario_id,
@@ -1768,7 +1925,9 @@ class NetworkScenarioService:
                     "reported_charges_are_dated_and_whole_load_rounded"
                 ),
             ),
+            exception_evidence_status="available",
             exceptions=exceptions,
+            transfer_movements=transfer_movements,
         )
         mark("result_assembly")
         summary_payload = result.model_dump(

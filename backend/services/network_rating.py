@@ -69,6 +69,39 @@ def governed_contract_for_date(
     return max(candidates, key=lambda row: row.version.version_number, default=None)
 
 
+def has_governed_lane_rate(
+    contracts: list[RateContractDetail],
+    service_date: str,
+    lane: dict[str, Any],
+    facilities: Mapping[str, dict[str, Any]],
+) -> bool:
+    """Check the same dated contract and lane-rule match used by rating."""
+    if str(lane.get("lane_type")) != "LINEHAUL":
+        return True
+    origin = facilities.get(str(lane.get("origin_endpoint_id")))
+    if origin is None:
+        return False
+    contract = governed_contract_for_date(
+        contracts, service_date, str(origin.get("region_id"))
+    )
+    if contract is None:
+        return False
+    quote = quote_contract(
+        contract.model_dump(mode="json"),
+        {
+            "service_date": service_date,
+            "origin": str(lane.get("origin_endpoint_id")),
+            "destination": str(lane.get("destination_endpoint_id")),
+            "miles": float(lane.get("distance_miles", 0)),
+            "stops": 1,
+            "cases": 900,
+            "period_volume": 1,
+            "commitment_policy": "honor",
+        },
+    )
+    return bool(quote["matched_lane_rule_id"])
+
+
 def objective_lane_unit_costs(
     rows: NetworkRows,
     service_date: str,
@@ -168,9 +201,18 @@ def rate_network_flows(
         tariff_total = round(assigned * tariff_rate, 2)
 
         if str(lane["lane_type"]) == "LINEHAUL" and assigned > 0:
+            is_scenario_air_transfer = (
+                str(lane.get("mode", "")).upper() == "AIR"
+                and str(lane.get("eligibility_source", ""))
+                == "scenario_express_air_transfer_v1"
+            )
             origin = facilities[str(lane["origin_endpoint_id"])]
-            contract = governed_contract_for_date(
-                contracts, service_date, str(origin["region_id"])
+            contract = (
+                None
+                if is_scenario_air_transfer
+                else governed_contract_for_date(
+                    contracts, service_date, str(origin["region_id"])
+                )
             )
             if contract is not None:
                 quote = quote_contract(
@@ -213,7 +255,22 @@ def rate_network_flows(
                     freight_total = round(
                         sum(line.amount for line in charge_lines), 2
                     )
-            if rate_source == "planning_fallback":
+            if is_scenario_air_transfer:
+                per_case = float(lane["planning_cost_per_case"])
+                freight_total = round(assigned * per_case, 2)
+                charge_lines = [
+                    RateChargeLine(
+                        category="accessorial",
+                        label="Scenario express air transfer",
+                        formula=f"{assigned} cases × ${per_case:.4f} per case",
+                        quantity=assigned,
+                        unit="case",
+                        rate=per_case,
+                        amount=freight_total,
+                        rule_id="SCENARIO_EXPRESS_AIR_TRANSFER_V1",
+                    )
+                ]
+            elif rate_source == "planning_fallback":
                 missing.add(lane_id)
                 per_load = max(450.0, float(lane["distance_miles"]) * 3.4)
                 base = per_load * loads

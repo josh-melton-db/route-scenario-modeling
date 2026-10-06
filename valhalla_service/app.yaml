@@ -1,0 +1,8 @@
+command:
+  - bash
+  - start.sh
+env:
+  - name: VALHALLA_VOLUME_PATH
+    valueFrom: valhalla-assets
+  - name: VALHALLA_REGION
+    value: michigan

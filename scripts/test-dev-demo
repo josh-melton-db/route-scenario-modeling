@@ -1,0 +1,825 @@
+#!/usr/bin/env python3
+"""Destructive, authenticated acceptance test for a deployed demo app."""
+
+from __future__ import annotations
+
+import argparse
+import atexit
+import http.client
+import json
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import date, timedelta
+from typing import Any
+
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.core import Config
+
+
+TERMINAL_RUN_STATES = {"succeeded", "failed", "cancelled", "stale"}
+TERMINAL_PLAN_STATES = {"completed", "infeasible", "failed"}
+
+
+class AcceptanceFailure(RuntimeError):
+    pass
+
+
+class AppClient:
+    def __init__(self, *, profile: str, app: str, timeout: float) -> None:
+        self.config = Config(profile=profile)
+        self.workspace = WorkspaceClient(config=self.config)
+        self.base_url = self._resolve_url(app)
+        self.timeout = timeout
+
+    def _resolve_url(self, app: str) -> str:
+        if app.startswith(("https://", "http://")):
+            return app.rstrip("/")
+        resolved = str(self.workspace.apps.get(name=app).url or "").strip()
+        if not resolved.startswith(("https://", "http://")):
+            raise AcceptanceFailure(f"App {app!r} did not return an HTTP URL.")
+        return resolved.rstrip("/")
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: dict[str, Any] | None = None,
+        query: dict[str, Any] | None = None,
+        expected: tuple[int, ...] = (200,),
+    ) -> Any:
+        url = f"{self.base_url}{path}"
+        if query:
+            url = f"{url}?{urllib.parse.urlencode(query)}"
+        headers = {"Accept": "application/json", **self.config.authenticate()}
+        encoded = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            encoded = json.dumps(body, separators=(",", ":")).encode()
+        request = urllib.request.Request(url, data=encoded, headers=headers, method=method)
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    status = response.status
+                    payload = response.read()
+                break
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                payload = exc.read()
+                break
+            except http.client.IncompleteRead:
+                if method != "GET" or attempt == 2:
+                    raise
+                note(f"retry incomplete GET response for {path} ({attempt + 1}/2)")
+                time.sleep(1)
+        if status not in expected:
+            detail = payload.decode(errors="replace")[:1000]
+            raise AcceptanceFailure(f"{method} {path} returned HTTP {status}: {detail}")
+        if not payload:
+            return None
+        return json.loads(payload)
+
+
+def note(message: str) -> None:
+    print(f"[dev-demo] {message}", flush=True)
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AcceptanceFailure(message)
+
+
+def wait_until(description: str, timeout: float, fetch, done):
+    deadline = time.monotonic() + timeout
+    last: Any = None
+    while time.monotonic() < deadline:
+        try:
+            last = fetch()
+            if done(last):
+                return last
+        except (urllib.error.URLError, TimeoutError):
+            pass
+        time.sleep(2)
+    raise AcceptanceFailure(f"Timed out waiting for {description}; last value: {last!r}")
+
+
+def scenario_payload(
+    options: dict[str, Any],
+    name: str,
+    tariff: float | None,
+    *,
+    horizon_days: int = 1,
+    assumptions: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    start = options["default_horizon_start"]
+    end = min(
+        date.fromisoformat(options["default_horizon_end"]),
+        date.fromisoformat(start) + timedelta(days=horizon_days - 1),
+    ).isoformat()
+    payload: dict[str, Any] = {
+        "scenario_name": name,
+        "demand_plan_version_id": options["default_demand_plan_version_id"],
+        "capacity_plan_version_id": options["default_capacity_plan_version_id"],
+        "horizon_start": start,
+        "horizon_end": end,
+        "region_id": "REGION_TOLA",
+    }
+    scenario_assumptions = dict(assumptions or {})
+    if tariff is not None:
+        scenario_assumptions["tariffs"] = [{
+                "rule_id": f"DEV_MX_US_{str(tariff).replace('.', '_')}",
+                "origin_country": "MX",
+                "destination_country": "US",
+                "effective_start": start,
+                "effective_end": end,
+                "amount_per_case": tariff,
+            }]
+    if scenario_assumptions:
+        payload["assumptions"] = scenario_assumptions
+    return payload
+
+
+def run_scenario(
+    client: AppClient, payload: dict[str, Any], timeout: float
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    scenario = client.request("POST", "/api/network/scenarios", body=payload, expected=(201,))
+    validated = client.request("POST", f"/api/network/scenarios/{scenario['scenario_id']}/validate")
+    require(validated["validation"]["valid"], f"Scenario validation failed: {validated['validation']}")
+    run = client.request(
+        "POST",
+        f"/api/network/scenarios/{scenario['scenario_id']}/run",
+        body={"expected_revision": validated["revision"]},
+        expected=(202,),
+    )
+    run = wait_until(
+        f"network run {run['run_id']}", timeout,
+        lambda: client.request("GET", f"/api/network/run-requests/{run['run_id']}"),
+        lambda row: row["status"] in TERMINAL_RUN_STATES,
+    )
+    require(run["status"] == "succeeded", f"Network run failed: {run}")
+    result = client.request("GET", f"/api/network/runs/{run['run_id']}")
+    return scenario, validated, result
+
+
+def wait_for_day(
+    client: AppClient,
+    plan_id: str,
+    service_day: str,
+    timeout: float,
+    *,
+    route_scenario_id: str = "default",
+) -> dict[str, Any]:
+    query = {"route_scenario_id": route_scenario_id}
+    detail = wait_until(
+        f"depot plan {plan_id} day {service_day} ({route_scenario_id})",
+        timeout,
+        lambda: client.request(
+            "GET", f"/api/depot-plans/{plan_id}/days/{service_day}", query=query
+        ),
+        lambda row: (
+            row["default_status"] in TERMINAL_PLAN_STATES
+            if route_scenario_id == "default"
+            else row.get("override_status") in TERMINAL_PLAN_STATES
+        ),
+    )
+    status = (
+        detail["default_status"]
+        if route_scenario_id == "default"
+        else detail.get("override_status")
+    )
+    require(status != "failed", f"Depot day failed: {detail}")
+    require(detail.get("selected_result"), f"Depot day has no selected result: {detail}")
+    return detail
+
+
+def require_no_road_unreachable(detail: dict[str, Any], context: str) -> int:
+    result = detail.get("selected_result") or {}
+    diagnostics = result.get("diagnostics") or []
+    diagnostic_ids = {
+        str(customer_id)
+        for row in diagnostics if isinstance(row, dict) and row.get("reason") == "road_unreachable"
+        for customer_id in row.get("customer_ids") or []
+    }
+    execution_ids = {
+        str(customer_id)
+        for customer_id in (result.get("execution") or {}).get("road_unreachable_customers") or []
+    }
+    unreachable = sorted(diagnostic_ids | execution_ids)
+    require(not unreachable, f"{context} retained road-unreachable customers: {unreachable}")
+    return len(unreachable)
+
+
+def run_lazy_depot_acceptance(
+    client: AppClient, run_id: str, depot_id: str, timeout: float
+) -> dict[str, Any]:
+    plan = client.request(
+        "POST", f"/api/network/runs/{run_id}/depots/{depot_id}/plans", expected=(200,)
+    )
+    plan_id = plan["plan_set_id"]
+    require(len(plan["days"]) >= 2, f"Expected a multi-day depot horizon: {plan}")
+    first_day = plan["days"][0]["service_date"]
+    future_day = plan["days"][1]["service_date"]
+    first = wait_for_day(client, plan_id, first_day, timeout)
+    require_no_road_unreachable(first, "Dallas first-day solve")
+    plan = client.request("GET", f"/api/depot-plans/{plan_id}")
+    future = next(row for row in plan["days"] if row["service_date"] == future_day)
+    require(
+        future["default_status"] == "not_requested",
+        f"Creating a plan eagerly solved a future day: {future}",
+    )
+
+    client.request(
+        "POST", f"/api/depot-plans/{plan_id}/days/{future_day}/solve", expected=(202,)
+    )
+    client.request(
+        "POST", f"/api/depot-plans/{plan_id}/days/{future_day}/solve", expected=(202,)
+    )
+    future_detail = wait_for_day(client, plan_id, future_day, timeout)
+    require_no_road_unreachable(future_detail, "Dallas future-day solve")
+    result_id = future_detail["selected_result"]["result_id"]
+    history = client.request(
+        "GET", f"/api/depot-plans/{plan_id}/days/{future_day}/results"
+    )
+    client.request(
+        "POST", f"/api/depot-plans/{plan_id}/days/{future_day}/solve", expected=(202,)
+    )
+    repeated = client.request(
+        "GET", f"/api/depot-plans/{plan_id}/days/{future_day}"
+    )
+    repeated_history = client.request(
+        "GET", f"/api/depot-plans/{plan_id}/days/{future_day}/results"
+    )
+    require(
+        repeated["selected_result"]["result_id"] == result_id,
+        "A terminal repeat solve replaced the selected result.",
+    )
+    require(
+        repeated_history["total"] == history["total"],
+        "A terminal repeat solve created duplicate persisted results.",
+    )
+
+    named = client.request(
+        "POST", f"/api/depot-plans/{plan_id}/scenarios",
+        body={"scenario_name": "Acceptance persisted operations"}, expected=(201,),
+    )
+    depot = plan["depot"]
+    reachable_stops = [
+        stop
+        for route in future_detail["selected_result"]["routes"]
+        for stop in route["stops"]
+    ]
+    require(reachable_stops, "Future-day baseline has no routed customer to anchor the fixture.")
+    reachable_anchor = reachable_stops[0]
+    moved = {
+        "lat": round(float(depot["location"]["lat"]) + 0.002, 6),
+        "lng": round(float(depot["location"]["lng"]) + 0.002, 6),
+    }
+    customer_id = "ACCEPTANCE-ADDED-DELIVERY"
+    added_cases = 1
+    override = {
+        "route_scenario_id": named["route_scenario_id"],
+        "changes": [
+            {
+                "kind": "add_deliveries",
+                "deliveries": [{
+                    "customer_id": customer_id,
+                    "customer_name": "Acceptance added delivery",
+                    "lat": float(reachable_anchor["location"]["lat"]),
+                    "lng": float(reachable_anchor["location"]["lng"]),
+                    "demand_cases": added_cases,
+                    "service_minutes": 5,
+                    "receiving_window_start": "08:00",
+                    "receiving_window_end": "17:00",
+                }],
+            },
+            {
+                "kind": "facility_move",
+                "new_depot_location": moved,
+                "preserve_service_windows": True,
+            },
+        ],
+    }
+    client.request(
+        "POST", f"/api/depot-plans/{plan_id}/days/{future_day}/optimize",
+        body=override, expected=(202,),
+    )
+    overridden = wait_for_day(
+        client, plan_id, future_day, timeout,
+        route_scenario_id=named["route_scenario_id"],
+    )
+    selected = overridden["selected_result"]
+    require_no_road_unreachable(overridden, "Dallas persisted override")
+    require(
+        selected["assigned_cases"] == future_detail["selected_result"]["assigned_cases"] + added_cases,
+        "The persisted override did not add the requested delivery supply.",
+    )
+    added_stops = [
+        stop for route in selected["routes"] for stop in route["stops"]
+        if stop["customer_id"] == customer_id
+    ]
+    require(added_stops, "The persisted override result has no added delivery stop.")
+    route_endpoints = [
+        point for route in selected["routes"] for point in (
+            route.get("path", [None])[0], route.get("path", [None])[-1]
+        ) if isinstance(point, dict)
+    ]
+    require(
+        any(
+            abs(float(point["lat"]) - moved["lat"]) < 0.0001
+            and abs(float(point["lng"]) - moved["lng"]) < 0.0001
+            for point in route_endpoints
+        ),
+        "The persisted route geometry does not start or end at the moved facility.",
+    )
+    persisted = client.request(
+        "GET", f"/api/depot-plans/{plan_id}/days/{future_day}",
+        query={"route_scenario_id": named["route_scenario_id"]},
+    )
+    require(
+        persisted["selected_result"]["result_id"] == selected["result_id"],
+        "The operational override was not stable across a fresh API read.",
+    )
+    return {
+        "plan_set_id": plan_id,
+        "first_day": first_day,
+        "first_day_result_id": first["selected_result"]["result_id"],
+        "future_day": future_day,
+        "future_day_result_id": result_id,
+        "future_day_result_count": history["total"],
+        "override_result_id": selected["result_id"],
+        "added_customer_id": customer_id,
+        "moved_facility": moved,
+        "added_delivery_anchor_customer_id": reachable_anchor["customer_id"],
+        "road_unreachable_count": 0,
+    }
+
+
+def unmet_by_date(result: dict[str, Any]) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for row in result.get("exceptions") or []:
+        if row.get("exception_type") == "unmet_demand" and row.get("service_date"):
+            values[str(row["service_date"])] = values.get(str(row["service_date"]), 0) + int(
+                row.get("unmet_units") or 0
+            )
+    return values
+
+
+def verify_supply_relief(
+    client: AppClient, options: dict[str, Any], baseline: dict[str, Any], timeout: float
+) -> dict[str, Any]:
+    """Prove stock replenishment and handling bypass with frozen canonical inputs."""
+    dc, depot, donor = "DC_TOLA_DALLAS", "DPT_TOLA_DALLAS", "DC_TOLA_HOUSTON"
+    blocked = [
+        lane["lane_id"] for lane in baseline["overview"]["lanes"]
+        if lane["lane_type"] == "LINEHAUL"
+        and lane["destination_endpoint_id"] == depot
+        and lane["origin_endpoint_id"] != dc
+    ]
+    require(blocked, "Supply relief fixture requires permitted alternate Dallas linehaul lanes.")
+    assumptions = {
+        "facility_supply_retained_pct": {dc: 0, donor: 150},
+        "facility_capacity_retained_pct": {donor: 150},
+        "disabled_lane_ids": blocked,
+    }
+    _, _, control = run_scenario(client, scenario_payload(
+        options, "Acceptance stock shortage", None, horizon_days=3, assumptions=assumptions
+    ), timeout)
+    start = options["default_horizon_start"]
+    transfer_id = "ACCEPTANCE_STOCK_REPLENISHMENT"
+    _, _, relief = run_scenario(client, scenario_payload(
+        options, "Acceptance stock replenishment", None, horizon_days=3,
+        assumptions={**assumptions, "dc_transfer_requests": [{
+            "transfer_id": transfer_id, "origin_dc_id": donor,
+            "destination_dc_id": dc, "departure_date": start, "capacity_units": 5000,
+        }]},
+    ), timeout)
+    movement = next(row for row in relief["transfer_movements"] if row["transfer_id"] == transfer_id)
+    gain = relief["overview"]["kpis"]["assigned_units"] - control["overview"]["kpis"]["assigned_units"]
+    require(0 < gain <= movement["assigned_units"] <= 5000,
+            f"Stock replenishment must produce positive conserved relief: gain={gain}, movement={movement}")
+    require(movement["arrival_date"] > start, f"Replenishment arrived early: {movement}")
+    require(unmet_by_date(control).get(start, 0) == unmet_by_date(relief).get(start, 0),
+            "Stock replenishment affected demand before arrival.")
+    facilities = {row["facility_id"]: row for row in relief["overview"]["facilities"]}
+    require(facilities[dc]["supply_retained_pct"] == 0
+            and facilities[dc]["handling_retained_pct"] == 100,
+            "Selected supply result did not preserve independent map percentages.")
+    require(facilities[donor]["supply_retained_pct"] == 150
+            and facilities[donor]["handling_retained_pct"] == 150,
+            "Expanded donor map percentages are missing.")
+    require(facilities[dc]["supply_source"] == "canonical_daily_supply",
+            "Live stock relief used legacy supply instead of the new generated canonical table.")
+    pinned = client.request("GET", f"/api/network/runs/{control['run_id']}")
+    require(pinned["overview"] == control["overview"], "New relief run mutated the pinned control map.")
+
+    _, _, handling_control = run_scenario(client, scenario_payload(
+        options, "Acceptance isolated handling bottleneck", None,
+        assumptions={"facility_capacity_retained_pct": {dc: 0}, "disabled_lane_ids": blocked},
+    ), timeout)
+    _, _, bypass = run_scenario(client, scenario_payload(
+        options, "Acceptance alternate DC linehaul", None,
+        assumptions={"facility_capacity_retained_pct": {dc: 0}},
+    ), timeout)
+    bypass_gain = bypass["overview"]["kpis"]["assigned_units"] - handling_control["overview"]["kpis"]["assigned_units"]
+    require(bypass_gain > 0, "Permitted alternate DC linehaul did not relieve the isolated handling bottleneck.")
+    direct_relief = sum(lane["assigned_units"] for lane in bypass["overview"]["lanes"]
+                       if lane["lane_id"] in blocked)
+    require(direct_relief > 0, "Handling relief did not use alternate direct shipment lanes.")
+    return {
+        "stock_assigned_gain": gain, "movement": movement,
+        "handling_bypass_assigned_gain": bypass_gain,
+        "alternate_direct_assigned_units": direct_relief,
+        "destination_supply_pct": facilities[dc]["supply_retained_pct"],
+        "destination_handling_pct": facilities[dc]["handling_retained_pct"],
+        "donor_supply_pct": facilities[donor]["supply_retained_pct"],
+        "donor_handling_pct": facilities[donor]["handling_retained_pct"],
+        "canonical_supply": True, "pinned_control_unchanged": True,
+        "relief_run_id": relief["run_id"],
+        "relief_scenario_id": relief["scenario_id"],
+    }
+
+
+def assert_governed_rates(validated: dict[str, Any], result: dict[str, Any]) -> None:
+    fallback_issues = [
+        row for row in validated["validation"]["issues"]
+        if row["code"] == "planning_rate_fallback"
+    ]
+    require(not fallback_issues, f"Seeded scenario reported fallback-rate warnings: {fallback_issues}")
+    coverage = result.get("scenario_rate_coverage") or {}
+    require(
+        coverage.get("governed_charge_count", 0) > 0,
+        f"Seeded solve did not use governed rate contracts: {coverage}",
+    )
+    require(
+        coverage.get("fallback_charge_count") == 0
+        and coverage.get("fallback_assigned_units") == 0,
+        f"Seeded solve used planning fallback rates: {coverage}",
+    )
+
+
+def run_depot_plan(
+    client: AppClient,
+    run_id: str,
+    depot_id: str,
+    timeout: float,
+    *,
+    require_reachable: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    plan = client.request(
+        "POST", f"/api/network/runs/{run_id}/depots/{depot_id}/plans",
+        expected=(200,),
+    )
+    plan_id = plan["plan_set_id"]
+    plan = wait_until(
+        f"depot plan {plan_id}", timeout,
+        lambda: client.request("GET", f"/api/depot-plans/{plan_id}"),
+        lambda row: all(day["status"] in TERMINAL_PLAN_STATES for day in row["days"]),
+    )
+    failures = [day for day in plan["days"] if day["status"] == "failed"]
+    require(not failures, f"Depot plan failed: {failures}")
+    service_day = plan["days"][0]["service_date"]
+    detail = client.request("GET", f"/api/depot-plans/{plan_id}/days/{service_day}")
+    require(detail.get("selected_result"), f"Depot plan {plan_id} has no persisted selected result.")
+    if require_reachable:
+        require_no_road_unreachable(detail, f"{depot_id} depot solve")
+    return plan, detail
+
+
+def assert_execution(detail: dict[str, Any], *, approximate: bool) -> dict[str, Any]:
+    execution = detail["selected_result"].get("execution") or {}
+    require(execution.get("solver") == "model_serving", f"Expected Model Serving execution: {execution}")
+    require(execution.get("solver_invoked") is True, f"Solver was not invoked: {execution}")
+    require(execution.get("solver_endpoint"), f"Solver endpoint metadata is missing: {execution}")
+    require(execution.get("serving_model"), f"Served model metadata is missing: {execution}")
+    require(execution.get("approximate") is approximate, f"Unexpected approximation metadata: {execution}")
+    if approximate:
+        require(execution.get("approximation_reason") == "outside_validated_coverage", f"Bad fallback reason: {execution}")
+        require(execution.get("matrix_requested") is False, f"Fallback unexpectedly requested Valhalla: {execution}")
+    else:
+        require(execution.get("matrix_requested") is True, f"Texas solve did not request Valhalla: {execution}")
+        require(execution.get("matrix_source") == "valhalla", f"Texas matrix was not Valhalla: {execution}")
+        require(execution.get("coverage_id") and execution.get("artifact_version"), f"Coverage identity is missing: {execution}")
+        require(execution.get("costing") == "truck", f"Texas solve did not use truck costing: {execution}")
+    return execution
+
+
+def reset_and_wait(client: AppClient, timeout: float) -> dict[str, Any]:
+    started = client.request("POST", "/api/network/baseline/reset")
+
+    def workflow_state(payload: dict[str, Any]) -> str:
+        # Current contract has separate reset and solver_warmup objects. Accept
+        # the single-state form too so seeding_lakebase/data_setup/warming remain
+        # pollable if the API folds the phases into one state machine.
+        reset = payload.get("reset")
+        if isinstance(reset, dict):
+            return str(reset.get("state") or "")
+        return str(payload.get("state") or "")
+
+    def workflow_done(payload: dict[str, Any]) -> bool:
+        state = workflow_state(payload)
+        if state in {"failed", "ready"}:
+            return True
+        if state != "reset_complete":
+            return False
+        warmup = payload.get("solver_warmup")
+        return not isinstance(warmup, dict) or warmup.get("state") in {
+            "ready", "failed", "skipped"
+        }
+
+    latest = started
+    if not workflow_done(latest):
+        latest = wait_until(
+            "demo reset, data setup, and solver warm-up", timeout,
+            lambda: client.request("GET", "/api/network/baseline/reset/status"),
+            workflow_done,
+        )
+    state = workflow_state(latest)
+    require(state in {"reset_complete", "ready"}, f"Demo reset failed: {latest}")
+    warmup = latest.get("solver_warmup")
+    if isinstance(warmup, dict):
+        require(warmup.get("state") in {"ready", "skipped"}, f"Solver warm-up failed: {warmup}")
+    # Synchronous reset responses include deletion counts and baseline details;
+    # retain those when the final status endpoint only exposes phase state.
+    return {**started, **latest}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", required=True, help="Databricks CLI/SDK profile (for example DEFAULT).")
+    parser.add_argument("--app", required=True, help="Databricks app name or authenticated app URL.")
+    parser.add_argument("--timeout", type=float, default=900, help="Per-workflow polling timeout in seconds.")
+    parser.add_argument("--texas-depot", default="DPT_TOLA_DALLAS")
+    parser.add_argument("--uncovered-depot", default="DPT_TOLA_LITTLE_ROCK")
+    args = parser.parse_args()
+
+    client = AppClient(profile=args.profile, app=args.app, timeout=min(args.timeout, 115))
+    cleanup = {"armed": False}
+
+    def final_cleanup(*, strict: bool) -> dict[str, Any]:
+        if not cleanup["armed"]:
+            return {"performed": False, "scenarios_remaining": 0}
+        note("final cleanup reset and endpoint warm-up")
+        try:
+            reset = reset_and_wait(client, args.timeout)
+            scenarios = client.request("GET", "/api/network/scenarios")
+            require(scenarios == [], f"Acceptance scenarios survived final cleanup: {scenarios}")
+        except Exception as exc:
+            if strict:
+                raise
+            print(f"[dev-demo] cleanup warning: {exc}", file=sys.stderr)
+            return {"performed": True, "error": str(exc)}
+        cleanup["armed"] = False
+        return {
+            "performed": True,
+            "scenarios_remaining": 0,
+            "cleared": reset.get("cleared") or {},
+            "solver_warmup": reset.get("solver_warmup") or {},
+        }
+
+    atexit.register(lambda: final_cleanup(strict=False))
+    note(f"target={client.base_url} profile={args.profile}")
+    ready = client.request("GET", "/api/ready")
+    solver = ready["checks"]["route_solver"]
+    require(solver["mode"] == "serving_regional", f"Expected serving_regional mode: {solver}")
+    require(solver.get("endpoint"), f"No serving endpoint configured: {solver}")
+    supported = set(ready["checks"]["routing_coverage"]["supported_depot_ids"])
+    require(args.texas_depot in supported, f"Texas depot is not covered: {sorted(supported)}")
+    require(args.uncovered_depot not in supported, f"Fallback depot is unexpectedly covered: {sorted(supported)}")
+
+    note("reset #1 and endpoint warm-up")
+    reset_and_wait(client, args.timeout)
+    cleanup["armed"] = True
+    options = client.request("GET", "/api/network/options")
+
+    note("create disposable scenario and depot plan for reset deletion proof")
+    disposable, _, disposable_result = run_scenario(
+        client, scenario_payload(options, "Acceptance reset proof", None), args.timeout
+    )
+    disposable_plan, _ = run_depot_plan(
+        client, disposable_result["run_id"], args.texas_depot, args.timeout,
+        require_reachable=True,
+    )
+
+    note("reset #2 and verify scenario/plan deletion")
+    second_reset = reset_and_wait(client, args.timeout)
+    cleared = second_reset.get("cleared") or {}
+    if cleared:
+        require(cleared["network_scenarios"] >= 1, f"Reset did not report scenario deletion: {cleared}")
+        require(cleared["depot_plans"] >= 1, f"Reset did not report depot-plan deletion: {cleared}")
+    require(client.request("GET", "/api/network/scenarios") == [], "Scenarios survived reset.")
+    client.request("GET", f"/api/network/scenarios/{disposable['scenario_id']}", expected=(404,))
+    client.request("GET", f"/api/depot-plans/{disposable_plan['plan_set_id']}", expected=(404,))
+
+    note("solve baseline, mild-tariff, and severe-tariff network scenarios")
+    _, baseline_validation, baseline = run_scenario(
+        client, scenario_payload(options, "Acceptance baseline", None), args.timeout
+    )
+    assert_governed_rates(baseline_validation, baseline)
+    _, _, mild_tariff = run_scenario(
+        client, scenario_payload(options, "Acceptance mild tariff", 0.1), args.timeout
+    )
+    _, _, tariff = run_scenario(
+        client, scenario_payload(options, "Acceptance severe tariff", 5.0), args.timeout
+    )
+    require(
+        mild_tariff["cross_border_assigned_units"] <= baseline["cross_border_assigned_units"],
+        "Mild tariff increased cross-border assigned units: "
+        f"baseline={baseline['cross_border_assigned_units']} mild={mild_tariff['cross_border_assigned_units']}",
+    )
+    require(
+        tariff["cross_border_assigned_units"] == 0,
+        "Severe tariff did not eliminate cross-border assigned units: "
+        f"severe={tariff['cross_border_assigned_units']}",
+    )
+
+    note("verify lazy depot horizon, idempotent day solve, and persisted daily override")
+    _, ux_validation, ux_result = run_scenario(
+        client,
+        scenario_payload(options, "Acceptance depot UX", None, horizon_days=3),
+        args.timeout,
+    )
+    assert_governed_rates(ux_validation, ux_result)
+    depot_ux = run_lazy_depot_acceptance(
+        client, ux_result["run_id"], args.texas_depot, args.timeout
+    )
+
+    note("verify retained capacity and dated AIR transfer conservation")
+    start = options["default_horizon_start"]
+    transfer_id = "ACCEPTANCE_HOUSTON_DALLAS"
+    retained = {"DC_TOLA_DALLAS": 1}
+    _, retained_validation, retained_result = run_scenario(
+        client,
+        scenario_payload(
+            options, "Acceptance retained capacity control", None,
+            horizon_days=3,
+            assumptions={"facility_capacity_retained_pct": retained},
+        ),
+        args.timeout,
+    )
+    assert_governed_rates(retained_validation, retained_result)
+    _, transfer_validation, transfer_result = run_scenario(
+        client,
+        scenario_payload(
+            options, "Acceptance AIR transfer", None,
+            horizon_days=3,
+            assumptions={
+                "facility_capacity_retained_pct": retained,
+                "dc_transfer_requests": [{
+                    "transfer_id": transfer_id,
+                    "origin_dc_id": "DC_TOLA_HOUSTON",
+                    "destination_dc_id": "DC_TOLA_DALLAS",
+                    "departure_date": start,
+                    "capacity_units": 5_000,
+                }],
+            },
+        ),
+        args.timeout,
+    )
+    fallback_issues = [
+        row for row in transfer_validation["validation"]["issues"]
+        if row["code"] == "planning_rate_fallback"
+    ]
+    require(
+        not fallback_issues,
+        f"Seeded canonical lanes reported fallback warnings before AIR materialization: {fallback_issues}",
+    )
+    movements = [
+        row for row in transfer_result.get("transfer_movements") or []
+        if row["transfer_id"] == transfer_id
+    ]
+    require(len(movements) == 1, f"Expected one persisted AIR movement: {movements}")
+    movement = movements[0]
+    require(movement["mode"] == "AIR", f"Transfer was not AIR: {movement}")
+    require(
+        movement["departure_date"] == start
+        and movement["arrival_date"] > movement["departure_date"],
+        f"AIR transfer did not have a future arrival: {movement}",
+    )
+    require(
+        movement["assigned_units"] == 0,
+        "AIR moved units in the pure shared-throughput bottleneck negative case; it "
+        f"must remain unused: {movement}",
+    )
+    retained_unmet = unmet_by_date(retained_result)
+    transfer_unmet = unmet_by_date(transfer_result)
+    require(
+        transfer_unmet.get(start, 0) == retained_unmet.get(start, 0),
+        "AIR capacity affected demand before its arrival date.",
+    )
+    assigned_gain = (
+        transfer_result["overview"]["kpis"]["assigned_units"]
+        - retained_result["overview"]["kpis"]["assigned_units"]
+    )
+    require(
+        assigned_gain == 0,
+        "AIR changed assigned volume in the pure shared-throughput bottleneck case. "
+        f"gain={assigned_gain} movement={movement}",
+    )
+    require(
+        transfer_unmet == retained_unmet,
+        "AIR changed dated unmet demand in the pure shared-throughput bottleneck case. "
+        f"control={retained_unmet} transfer={transfer_unmet}",
+    )
+    capacity_assigned_reduction = (
+        ux_result["overview"]["kpis"]["assigned_units"]
+        - retained_result["overview"]["kpis"]["assigned_units"]
+    )
+    require(
+        capacity_assigned_reduction > 0,
+        "Retaining 1% of Dallas capacity did not reduce assigned volume versus the control.",
+    )
+
+    note("verify positive stock replenishment, independent map percentages, and handling bypass")
+    supply_relief = verify_supply_relief(client, options, ux_result, args.timeout)
+
+    note("solve Texas depot with Model Serving and Valhalla")
+    texas_plan, texas_detail = run_depot_plan(
+        client, tariff["run_id"], args.texas_depot, args.timeout,
+        require_reachable=True,
+    )
+    texas_execution = assert_execution(texas_detail, approximate=False)
+
+    note("solve uncovered depot with Model Serving and approximation fallback")
+    fallback_plan, fallback_detail = run_depot_plan(
+        client, baseline["run_id"], args.uncovered_depot, args.timeout
+    )
+    fallback_execution = assert_execution(fallback_detail, approximate=True)
+
+    note("apply stock-relief flow and verify selected and accepted snapshot identity")
+    stock_run = client.request("GET", f"/api/network/runs/{supply_relief['relief_run_id']}")
+    proposal = client.request("POST", "/api/network/baseline/proposals",
+                              body={"run_id": supply_relief["relief_run_id"]})
+    accepted = client.request("POST", f"/api/network/baseline/proposals/{proposal['proposal_id']}/accept")
+    require(accepted["active_run_id"] == supply_relief["relief_run_id"],
+            "Applying stock-relief flow selected a different run.")
+    active = client.request("GET", "/api/network/baseline/plan-run", query={
+        "demand_plan_version_id": options["default_demand_plan_version_id"],
+        "capacity_plan_version_id": options["default_capacity_plan_version_id"],
+        "horizon_start": options["default_horizon_start"],
+        "horizon_end": (date.fromisoformat(options["default_horizon_start"]) + timedelta(days=2)).isoformat(),
+    })
+    selected = client.request("GET", f"/api/network/runs/{supply_relief['relief_run_id']}")
+    require(selected["overview"] == stock_run["overview"], "Applying flow mutated selected historical map.")
+    active_facilities = {row["facility_id"]: row for row in active["overview"]["facilities"]}
+    require(active_facilities["DC_TOLA_DALLAS"]["supply_retained_pct"] == 0
+            and active_facilities["DC_TOLA_HOUSTON"]["handling_retained_pct"] == 150,
+            "Applied baseline map lost the solved supply/handling controls.")
+    active_map = client.request("GET", "/api/network/overview", query={
+        "demand_plan_version_id": options["default_demand_plan_version_id"],
+        "capacity_plan_version_id": options["default_capacity_plan_version_id"],
+        "horizon_start": options["default_horizon_start"],
+        "horizon_end": (date.fromisoformat(options["default_horizon_start"]) + timedelta(days=2)).isoformat(),
+        "region_id": "REGION_TOLA", "lane_type": "LINEHAUL",
+    })
+    map_facilities = {row["facility_id"]: row for row in active_map["facilities"]}
+    require(map_facilities["DC_TOLA_DALLAS"]["supply_retained_pct"] == 0
+            and map_facilities["DC_TOLA_HOUSTON"]["handling_retained_pct"] == 150,
+            "Applied overview map reverted to default ring percentages.")
+    supply_relief["applied_run_identity_verified"] = True
+
+    evidence = {
+        "app_url": client.base_url,
+        "route_mode": solver["mode"],
+        "solver_endpoint": solver["endpoint"],
+        "cross_border_assigned_units": {
+            "baseline": baseline["cross_border_assigned_units"],
+            "tariff_0_10_per_case": mild_tariff["cross_border_assigned_units"],
+            "tariff_5_per_case": tariff["cross_border_assigned_units"],
+        },
+        "texas_execution": texas_execution,
+        "fallback_execution": fallback_execution,
+        "seeded_rates": baseline["scenario_rate_coverage"],
+        "depot_ux": depot_ux,
+        "retained_capacity": {
+            "request": retained,
+            "assigned_reduction_vs_control": capacity_assigned_reduction,
+        },
+        "air_transfer": {
+            **movement,
+            "assigned_gain_vs_retained_control": assigned_gain,
+            "departure_day_unmet_control": retained_unmet.get(start, 0),
+            "departure_day_unmet_with_transfer": transfer_unmet.get(start, 0),
+            "acceptance_scope": "negative_pure_shared_throughput_bottleneck",
+            "positive_air_acceptance": "verified_separately_in_supply_relief",
+        },
+        "supply_relief": supply_relief,
+        "reset_cleared": cleared,
+    }
+    cleanup_evidence = final_cleanup(strict=True)
+    client.request("GET", f"/api/depot-plans/{texas_plan['plan_set_id']}", expected=(404,))
+    client.request("GET", f"/api/depot-plans/{fallback_plan['plan_set_id']}", expected=(404,))
+    evidence["final_cleanup"] = cleanup_evidence
+    print(json.dumps(evidence, indent=2, sort_keys=True))
+    note("PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except AcceptanceFailure as exc:
+        print(f"[dev-demo] FAIL: {exc}", file=sys.stderr)
+        raise SystemExit(1)

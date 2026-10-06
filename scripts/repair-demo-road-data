@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Build and upload a nonsecret road-repair proof; never writes UC tables."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.core import Config
+from databricks.sdk.service.workspace import ImportFormat
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from backend.services.valhalla import ValhallaMatrixClient
+from backend.services.sql import _read_results
+from databricks.sdk.service.sql import Disposition, Format
+from deployment.config import DeploymentConfig
+from route_opt.network_synthetic import repair_generated_customer_reachability
+from route_opt.road_repair_proof import build_repair_proof
+
+
+def _quote(value: str) -> str:
+    return "`" + value.replace("`", "``") + "`"
+
+
+def _query_rows(client: WorkspaceClient, warehouse_id: str, table: str) -> list[dict[str, object]]:
+    response = client.statement_execution.execute_statement(
+        statement=f"SELECT * FROM {table}", warehouse_id=warehouse_id,
+        wait_timeout="50s", row_limit=100000,
+        format=Format.JSON_ARRAY, disposition=Disposition.INLINE,
+    )
+    if getattr(getattr(response, "manifest", None), "truncated", False) or "Inline byte limit exceeded" in str(getattr(getattr(response, "status", None), "error", "")):
+        response = client.statement_execution.execute_statement(
+            statement=f"SELECT * FROM {table}", warehouse_id=warehouse_id,
+            wait_timeout="50s", row_limit=100000,
+            format=Format.JSON_ARRAY, disposition=Disposition.EXTERNAL_LINKS,
+        )
+    status = str(getattr(getattr(response, "status", None), "state", ""))
+    if status and status.split(".")[-1] != "SUCCEEDED":
+        raise RuntimeError(f"SQL read for {table} ended in {status}")
+    return _read_results(client, response)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--profile", required=True)
+    parser.add_argument("--workspace-path", required=True)
+    parser.add_argument("--schema", default="route_scenario_modeling")
+    parser.add_argument("--warehouse-id")
+    parser.add_argument("--warehouse-name", default="route-scenario-modeling-rt-dev")
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+
+    deployment = DeploymentConfig.load(args.config.resolve())
+    manifest_path = Path(__file__).resolve().parents[1] / str(deployment.routing["coverage_manifest"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    coverage_id = str(deployment.routing["coverage_id"])
+    matches = [row for row in manifest["coverages"] if row.get("coverage_id") == coverage_id]
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected one coverage entry for {coverage_id!r}")
+    coverage = matches[0]
+    depot_ids = {str(value) for value in coverage["depot_ids"]}
+    if coverage.get("costing") != "truck" or coverage.get("status") != "validated":
+        raise RuntimeError("Selected coverage must be validated with truck costing")
+
+    config = Config(profile=args.profile)
+    client = WorkspaceClient(config=config)
+    warehouse_id = args.warehouse_id
+    if not warehouse_id:
+        warehouse_name = args.warehouse_name
+        matches = [warehouse for warehouse in client.warehouses.list() if warehouse.name == warehouse_name]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Expected one SQL warehouse named {warehouse_name!r}; pass --warehouse-id explicitly"
+            )
+        warehouse_id = matches[0].id
+    prefix = ".".join((_quote(deployment.variables["catalog"]), _quote(args.schema)))
+    customers = _query_rows(client, warehouse_id, f"{prefix}.{_quote('dim_network_customers')}")
+    facilities = _query_rows(client, warehouse_id, f"{prefix}.{_quote('dim_facilities')}")
+    if not customers:
+        raise RuntimeError("Customer snapshot is empty")
+    covered_customers = [
+        row for row in customers
+        if str(row.get("customer_id", "")).startswith("NET-CUST-")
+        and str(row.get("depot_id", "")) in depot_ids
+    ]
+    if not covered_customers:
+        raise RuntimeError("Selected coverage has no generated customers")
+    if not facilities:
+        raise RuntimeError("DEFAULT facility snapshot is empty")
+    validator = ValhallaMatrixClient(
+        str(coverage["endpoint_url"]), costing="truck",
+        auth_headers=config.authenticate,
+        max_snap_distance_miles=float(deployment.routing.get("max_snap_distance_miles", 0.25)),
+    )
+    repaired = repair_generated_customer_reachability(
+        customers, facilities, validator=validator.inspect_bidirectional_reachability,
+        provenance={
+            "costing": "truck", "coverage_id": coverage_id,
+            "artifact_version": str(coverage["artifact_version"]),
+        },
+        max_adjustment_miles=5.0, depot_ids=depot_ids,
+    )
+    proof = build_repair_proof(
+        source_customers=customers, repaired_customers=repaired, depot_ids=depot_ids,
+        coverage_id=coverage_id, artifact_version=str(coverage["artifact_version"]),
+    )
+    encoded = (json.dumps(proof, indent=2, sort_keys=True) + "\n").encode()
+    if args.output:
+        args.output.write_bytes(encoded)
+    if not args.workspace_path.startswith("/Workspace/"):
+        raise ValueError("--workspace-path must be an absolute /Workspace path")
+    client.workspace.upload(
+        args.workspace_path, encoded, format=ImportFormat.AUTO, overwrite=True
+    )
+    print(json.dumps({
+        "workspace_path": args.workspace_path,
+        "coverage_id": coverage_id,
+        "artifact_version": coverage["artifact_version"],
+        "depot_ids": sorted(depot_ids),
+        "validated_customers": len(proof["repaired_customers"]),
+        "source_customer_hash": proof["source_customer_hash"],
+        "repaired_customer_hash": proof["repaired_customer_hash"],
+    }, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Response, status
 
 from .baseline import router as baseline_router
+from .compute import router as compute_router
 from .data_editor import router as data_editor_router
 from .depot_plans import router as depot_plans_router
 from .meta import router as meta_router
@@ -32,6 +33,7 @@ def ready(response: Response) -> dict:
 
 
 router.include_router(meta_router)
+router.include_router(compute_router)
 router.include_router(network_router)
 router.include_router(network_baseline_router)
 router.include_router(depot_plans_router)

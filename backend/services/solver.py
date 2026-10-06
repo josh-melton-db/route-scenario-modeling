@@ -23,6 +23,7 @@ from ..config import (
     get_route_solver_endpoint,
     get_valhalla_app_url,
     get_valhalla_costing,
+    get_valhalla_max_snap_distance_miles,
     get_workspace_client,
 )
 from ..models import ComparisonResult, ScenarioDefinition
@@ -353,6 +354,7 @@ class SolverService:
             return ValhallaMatrixClient(
                 valhalla_url,
                 costing=get_valhalla_costing(),
+                max_snap_distance_miles=get_valhalla_max_snap_distance_miles(),
             ).build_travel_matrix(
                 scenario_id=scenario_id,
                 depot=depot,

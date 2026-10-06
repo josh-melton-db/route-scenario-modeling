@@ -1,12 +1,34 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from datetime import date
+from pydantic import BaseModel, ConfigDict
 
 from ..baseline_models import BaselineProposalRequest, BaselineProposalResponse, BaselineState
 from ..models import NetworkScenarioResult
 from ..services.baseline_service import baseline_service
+from ..services.demo_reset import demo_reset_service
+from ..services.solver_warmup import solver_warmup_service
 
 router = APIRouter(prefix="/network/baseline", tags=["network-baseline"])
+
+
+class PrepareDepotRoutesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    service_date: date | None = None
+
+
+@router.post("/depot-routes/prepare", status_code=202)
+def prepare_depot_routes(request: PrepareDepotRoutesRequest) -> dict:
+    from ..services.depot_route_preparation import depot_route_preparation_manager
+    return depot_route_preparation_manager.start(
+        request.service_date.isoformat() if request.service_date else None)
+
+
+@router.get("/depot-routes/preparations/{preparation_id}")
+def depot_route_preparation_status(preparation_id: str) -> dict:
+    from ..services.depot_route_preparation import depot_route_preparation_manager
+    return depot_route_preparation_manager.status(preparation_id)
 
 
 @router.get("", response_model=BaselineState)
@@ -39,6 +61,14 @@ def accept_baseline(proposal_id: str) -> BaselineState:
     return baseline_service.accept(proposal_id)
 
 
-@router.post("/reset", response_model=BaselineState)
-def reset_baseline() -> BaselineState:
-    return baseline_service.reset()
+@router.post("/reset")
+def reset_baseline() -> dict[str, object]:
+    return demo_reset_service.reset()
+
+
+@router.get("/reset/status")
+def reset_status() -> dict[str, object]:
+    return {
+        "reset": demo_reset_service.status(),
+        "solver_warmup": solver_warmup_service.status(),
+    }

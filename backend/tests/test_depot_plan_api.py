@@ -200,6 +200,10 @@ class FakeDepotPlanService:
         self._call("optimize_day", plan_set_id, service_date, request)
         return _day_detail(request.route_scenario_id)
 
+    def solve_day(self, plan_set_id: str, service_date: str) -> dict[str, object]:
+        self._call("solve_day", plan_set_id, service_date)
+        return _day_detail("default")
+
     def reset_day_override(
         self, plan_set_id: str, route_scenario_id: str, service_date: str
     ) -> dict[str, object]:
@@ -258,6 +262,11 @@ def test_depot_plan_routes_delegate_with_exact_contract(
     )
     assert optimized.status_code == 202
     assert optimized.json()["override_status"] == "queued"
+
+    solved = client.post("/api/depot-plans/DPS-1/days/2026-09-30/solve")
+    assert solved.status_code == 202
+    # Terminal default solves are idempotent and remain selected.
+    assert solved.json()["default_status"] == "completed"
 
     reset = client.delete(
         "/api/depot-plans/DPS-1/scenarios/SCN-1/days/2026-09-30"

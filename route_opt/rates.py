@@ -204,6 +204,19 @@ def contract_summary(detail: dict[str, object], service_date: str) -> dict[str, 
     commitments = detail.get("capacity_commitments") or []
     commitment = commitments[0] if commitments and isinstance(commitments[0], dict) else {}
     status = contract_status(detail, service_date)
+    lane_rules = [row for row in detail.get("lane_rates") or [] if isinstance(row, dict)]
+    lane_types = sorted({str(row.get("lane_type") or "LAST_MILE") for row in lane_rules})
+    # Only DELIVERY lane origins represent local-delivery depot scope.
+    # MARKET lanes are legacy templates hardcoded to DPT_NORTH and must not
+    # scope a contract to a single depot.  LINEHAUL origins are distribution
+    # centers, not local-delivery depots, so they are excluded as well.
+    applicable_depot_ids = sorted({
+        str(row.get("origin_endpoint_id") or row.get("origin"))
+        for row in lane_rules
+        if str(row.get("lane_type") or "").upper() == "DELIVERY"
+        and str(row.get("origin_endpoint_type") or "").lower() == "facility"
+        and str(row.get("origin_endpoint_id") or row.get("origin") or "") not in {"", "*"}
+    })
     return {
         "contract_id": detail["contract_id"],
         "carrier_id": detail["carrier_id"],
@@ -217,6 +230,11 @@ def contract_summary(detail: dict[str, object], service_date: str) -> dict[str, 
         "committed_quantity": float(commitment.get("committed_quantity", 0)),
         "capacity_quantity": float(commitment.get("capacity_quantity", 0)),
         "current_utilization": float(commitment.get("current_utilization", 0)),
+        "commitment_period": str(commitment.get("period", "month")),
+        "commitment_unit": str(commitment.get("unit", "stops")),
+        "lane_types": lane_types,
+        "applicable_depot_ids": applicable_depot_ids,
+        "applicable_region_ids": [],
         "coverage_status": "covered" if status == "published" and detail.get("lane_rates") else "unavailable",
         "freshness_at": detail["freshness_at"],
     }

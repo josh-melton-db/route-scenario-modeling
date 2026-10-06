@@ -11,6 +11,7 @@ const ContractDetailPage = lazy(() => import('./pages/ContractDetailPage'))
 const NetworkPage = lazy(() => import('./pages/NetworkPage'))
 const DcPage = lazy(() => import('./pages/DcPage'))
 const NetworkScenarioDetailPage = lazy(() => import('./pages/NetworkScenarioDetailPage'))
+const SetupPage = lazy(() => import('./pages/SetupPage'))
 
 export default function App() {
   return (
@@ -33,6 +34,7 @@ export default function App() {
           <Route path="/rates/contracts/:contractId/versions/:versionId/:tab?" element={<ContractDetailPage />} />
           <Route path="/data-editor" element={<DataEditorPage />} />
           <Route path="/runs/:runId" element={<OptimizationRunsPage />} />
+          <Route path="/setup" element={<SetupPage />} />
           <Route path="/comparison/:scenarioId" element={<LegacyComparisonRedirect />} />
           </Routes>
         </Suspense>

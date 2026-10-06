@@ -23,6 +23,7 @@ from .baseline_repository import (
 )
 from .network_overview import NetworkRows, network_overview_service
 from .network_assignment_projection import projected_demand_rows
+from .sql import AnalyticsDataMissingError
 
 
 def _now() -> str:
@@ -46,43 +47,120 @@ class BaselineService:
             if self.repository.is_initialized():
                 self._seeded = True
                 return
-            rows = deepcopy(network_overview_service._load_rows())  # canonical, unfiltered snapshot
-            # New original revisions freeze rates once, just like accepted
-            # revisions. Reconstructing a baseline planning run after eviction
-            # must not consult a subsequently edited rate book.
-            from ..models import NetworkPricingContext
-            from .rates import list_rate_contract_details
-            from .store_provider import get_store
-
-            contracts = list_rate_contract_details(get_store())
-            existing_metadata = rows.get("baseline_revision_metadata", [])
-            metadata = deepcopy(existing_metadata[0]) if existing_metadata else {}
-            metadata.setdefault("route_coverage", self._coverage(rows).model_dump(mode="json"))
-            metadata.setdefault("tariffs", [])
-            metadata["network_pricing_context"] = NetworkPricingContext(
-                pricing_basis="comparable_pinned_dated_contracts_v1",
-                contract_snapshots=[row.model_dump(mode="json") for row in contracts],
-                contract_version_ids=sorted({row.version.version_id for row in contracts}),
-                objective_cost_basis="baseline_snapshot_no_reoptimization",
-            ).model_dump(mode="json")
-            rows["baseline_revision_metadata"] = [metadata]
-            identity = {
-                "demand": rows.get("demand_plan_versions", []),
-                "capacity": rows.get("capacity_plan_versions", []),
-            }
-            digest = hashlib.sha256(
-                json.dumps(identity, sort_keys=True, default=str).encode()
-            ).hexdigest()[:16]
-            self.repository.seed(
-                BaselineRevision(
-                    revision_id=f"baseline-original-{digest}",
-                    source_revision_id=None,
-                    run_id=None,
-                    accepted_at=None,
-                    rows=rows,
-                )
-            )
+            self.repository.seed(self._canonical_revision())
             self._seeded = True
+
+    def _canonical_revision(self) -> BaselineRevision:
+        try:
+            option_rows = deepcopy(network_overview_service._load_option_rows())
+            demand_id, capacity_id = self._plan_ids(option_rows)
+            demand_version = next(
+                (
+                    row for row in option_rows.get("demand_plan_versions", [])
+                    if str(row.get("plan_version_id")) == demand_id
+                ),
+                None,
+            )
+            capacity_version = next(
+                (
+                    row for row in option_rows.get("capacity_plan_versions", [])
+                    if str(row.get("plan_version_id")) == capacity_id
+                ),
+                None,
+            )
+            if not demand_id or not capacity_id or not demand_version or not capacity_version:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Canonical network plan metadata is not bootstrapped.",
+                )
+            horizon_start = max(
+                date.fromisoformat(str(demand_version["horizon_start"])[:10]),
+                date.fromisoformat(str(capacity_version["horizon_start"])[:10]),
+            )
+            horizon_end = min(
+                date.fromisoformat(str(demand_version["horizon_end"])[:10]),
+                date.fromisoformat(str(capacity_version["horizon_end"])[:10]),
+            )
+            if horizon_end < horizon_start:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Canonical demand and capacity plan horizons do not overlap.",
+                )
+            rows = deepcopy(network_overview_service._load_rows(
+                demand_plan_version_id=demand_id,
+                capacity_plan_version_id=capacity_id,
+                horizon_start=horizon_start,
+                horizon_end=horizon_end,
+            ))
+        except AnalyticsDataMissingError:
+            raise
+        except HTTPException:
+            raise
+        except Exception:
+            raise
+        required = (
+            "dim_network_lanes", "demand_plan_versions", "capacity_plan_versions",
+            "demand_plan_daily", "baseline_network_flow_daily",
+        )
+        missing = [name for name in required if not rows.get(name)]
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Canonical network data is not bootstrapped; run the configured "
+                    f"network bootstrap job before reset. Missing: {', '.join(missing)}."
+                ),
+            )
+        # New original revisions freeze rates once, just like accepted
+        # revisions. Reconstructing a baseline planning run after eviction
+        # must not consult a subsequently edited rate book.
+        from ..models import NetworkPricingContext
+        from .rates import list_rate_contract_details
+        from .store_provider import get_store
+
+        contracts = list_rate_contract_details(get_store())
+        if not contracts:
+            raise HTTPException(
+                status_code=409,
+                detail="Lakebase rate contracts are not seeded for the demo baseline.",
+            )
+        existing_metadata = rows.get("baseline_revision_metadata", [])
+        metadata = deepcopy(existing_metadata[0]) if existing_metadata else {}
+        metadata.setdefault("route_coverage", self._coverage(rows).model_dump(mode="json"))
+        metadata.setdefault("tariffs", [])
+        metadata["network_pricing_context"] = NetworkPricingContext(
+            pricing_basis="comparable_pinned_dated_contracts_v1",
+            contract_snapshots=[row.model_dump(mode="json") for row in contracts],
+            contract_version_ids=sorted({row.version.version_id for row in contracts}),
+            objective_cost_basis="baseline_snapshot_no_reoptimization",
+        ).model_dump(mode="json")
+        rows["baseline_revision_metadata"] = [metadata]
+        identity = {
+            "demand": rows.get("demand_plan_versions", []),
+            "capacity": rows.get("capacity_plan_versions", []),
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+        return BaselineRevision(
+            revision_id=f"baseline-original-{digest}",
+            source_revision_id=None,
+            run_id=None,
+            accepted_at=None,
+            rows=rows,
+        )
+
+    def canonical_revision(self) -> BaselineRevision:
+        """Load and validate the current deterministic canonical UC snapshot."""
+        return self._canonical_revision()
+
+    def install_canonical_revision(self, revision: BaselineRevision) -> BaselineState:
+        self._ensure_seeded()
+        self.repository.replace_original(revision)
+        with self._plan_cache_lock:
+            self._plan_run_cache.clear()
+        network_overview_service._options_cache = None
+        return self.get_state()
 
     def get_revision(self, revision_id: str | None = None) -> BaselineRevision:
         """Read-only revision snapshot for Stream B scenario provenance/comparison."""
@@ -381,7 +459,9 @@ class BaselineService:
         def matching_version(table: str, row: dict[str, Any]) -> bool:
             if table == "demand_plan_daily":
                 return str(row.get("demand_plan_version_id")) == scenario.demand_plan_version_id
-            if table in {"facility_capacity_daily", "lane_capacity_daily"}:
+            if table in {
+                "facility_capacity_daily", "facility_supply_daily", "lane_capacity_daily"
+            }:
                 return str(row.get("capacity_plan_version_id")) == scenario.capacity_plan_version_id
             return True
 
@@ -389,6 +469,7 @@ class BaselineService:
             "demand_plan_daily": ("demand_plan_version_id", "service_date", "region_id",
                                   "distribution_center_id", "depot_id", "market_id", "customer_id"),
             "facility_capacity_daily": ("capacity_plan_version_id", "service_date", "facility_id"),
+            "facility_supply_daily": ("capacity_plan_version_id", "service_date", "facility_id"),
             "lane_capacity_daily": ("capacity_plan_version_id", "service_date", "lane_id"),
         }
         for table, keys in key_fields.items():
@@ -491,6 +572,15 @@ class BaselineService:
              str(row["facility_id"])): int(row["capacity_units"])
             for row in rows.get("facility_capacity_daily", [])
         }
+        metadata_rows = rows.get("baseline_revision_metadata", [])
+        transfer_movements = (
+            metadata_rows[0].get("transfer_movements", []) if metadata_rows else []
+        )
+        transfer_by_lane_day = {
+            (str(row.get("lane_id")), str(row.get("departure_date"))[:10]): row
+            for row in transfer_movements
+            if int(row.get("assigned_units", 0)) > 0
+        }
         facility_flow: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
         for row in rows.get("baseline_network_flow_daily", []):
             lane = lanes.get(str(row["lane_id"]))
@@ -501,7 +591,11 @@ class BaselineService:
             day = str(row["service_date"])[:10]
             units = int(row.get("assigned_units", 0))
             facility_flow[(demand_version, capacity_version, day, str(lane["origin_endpoint_id"]))] += units
-            facility_flow[(demand_version, capacity_version, day, str(lane["destination_endpoint_id"]))] += units
+            # AIR replenishment is processed at its origin on departure. At
+            # the destination it enters inventory and consumes handling only
+            # when it is later sent on a permitted outbound lane.
+            if (str(row["lane_id"]), day) not in transfer_by_lane_day:
+                facility_flow[(demand_version, capacity_version, day, str(lane["destination_endpoint_id"]))] += units
         if any(
             units > facility_capacity.get((capacity_id, day, facility_id), -1)
             for (_, capacity_id, day, facility_id), units in facility_flow.items()
@@ -509,13 +603,74 @@ class BaselineService:
         ):
             raise HTTPException(status_code=409, detail="Proposed baseline exceeds facility capacity.")
 
+        facility_supply = {
+            (str(row.get("capacity_plan_version_id", "")), str(row["service_date"])[:10],
+             str(row["facility_id"])): int(row["supply_units"])
+            for row in rows.get("facility_supply_daily", [])
+        }
+        dc_ids = {
+            facility_id for facility_id, facility in facilities_by_id.items()
+            if str(facility.get("facility_type")) == "distribution_center"
+        }
+        outbound: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
+        arrivals: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
+        for row in flow_rows:
+            lane = lanes.get(str(row["lane_id"]))
+            if not lane or str(lane.get("lane_type")) != "LINEHAUL":
+                continue
+            units = int(row.get("assigned_units", 0))
+            if units <= 0:
+                continue
+            demand_id = str(row.get("demand_plan_version_id", ""))
+            capacity_id = str(row.get("capacity_plan_version_id", ""))
+            day = str(row["service_date"])[:10]
+            origin = str(lane["origin_endpoint_id"])
+            if origin in dc_ids:
+                outbound[(demand_id, capacity_id, day, origin)] += units
+            movement = transfer_by_lane_day.get((str(row["lane_id"]), day))
+            if movement:
+                arrivals[(
+                    demand_id,
+                    capacity_id,
+                    str(movement["arrival_date"])[:10],
+                    str(movement["destination_dc_id"]),
+                )] += units
+        inventory: defaultdict[tuple[str, str, str], int] = defaultdict(int)
+        for demand_id, capacity_id in {
+            (key[0], key[1]) for key in set(outbound) | set(arrivals)
+        }:
+            dates = sorted({
+                key[2] for key in set(outbound) | set(arrivals)
+                if key[:2] == (demand_id, capacity_id)
+            })
+            for day in dates:
+                for dc_id in dc_ids:
+                    stock_key = (demand_id, capacity_id, dc_id)
+                    imported = inventory[stock_key] + arrivals[(demand_id, capacity_id, day, dc_id)]
+                    local = facility_supply.get((capacity_id, day, dc_id))
+                    if local is None:
+                        local = facility_capacity.get((capacity_id, day, dc_id), 0)
+                    shipped = outbound[(demand_id, capacity_id, day, dc_id)]
+                    if shipped > local + imported:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Proposed baseline exceeds distribution-center supply.",
+                        )
+                    inventory[stock_key] = max(0, imported - max(0, shipped - local))
+
         demand: defaultdict[tuple[str, str, str], int] = defaultdict(int)
         for row in rows.get("demand_plan_daily", []):
             demand[(str(row.get("demand_plan_version_id", "")),
                     str(row["service_date"])[:10], str(row["depot_id"]))] += int(row["demand_units"])
         lane_dest = {
             str(row["lane_id"]): str(row["destination_endpoint_id"])
-            for row in rows.get("dim_network_lanes", []) if str(row.get("lane_type")) == "LINEHAUL"
+            for row in rows.get("dim_network_lanes", [])
+            if str(row.get("lane_type")) == "LINEHAUL"
+            and str(
+                facilities_by_id.get(str(row.get("destination_endpoint_id")), {}).get(
+                    "facility_type"
+                )
+            ) == "depot"
         }
         assigned: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
         represented: set[tuple[str, str, str, str]] = set()
@@ -620,6 +775,19 @@ class BaselineService:
         metadata["capacity_plan_version_id"] = snapshot.scenario.capacity_plan_version_id
         metadata['tariffs'] = [rule.model_dump(mode='json') for rule in snapshot.scenario.assumptions.tariffs]
         metadata["network_pricing_context"] = snapshot.result.pricing_context.model_dump(mode="json")
+        metadata["facility_capacity_retained_pct"] = {
+            **snapshot.scenario.assumptions.facility_capacity_retained_pct,
+            **{facility_id: 0 for facility_id in snapshot.scenario.assumptions.disabled_facility_ids},
+        }
+        metadata["facility_supply_retained_pct"] = dict(
+            snapshot.scenario.assumptions.facility_supply_retained_pct
+        )
+        metadata["transfer_movements"] = [
+            row.model_dump(mode="json") for row in snapshot.result.transfer_movements
+        ]
+        metadata["dc_transfer_requests"] = [
+            row.model_dump(mode="json") for row in snapshot.scenario.assumptions.dc_transfer_requests
+        ]
         rows["baseline_revision_metadata"] = [metadata]
         self._validate(rows)
         coverage = self._coverage(rows)
@@ -652,9 +820,16 @@ class BaselineService:
         network_overview_service._options_cache = None
         return self.get_state()
 
-    def reset(self) -> BaselineState:
+    def reset(
+        self, *, clear_history: bool = False, refresh_canonical: bool = False
+    ) -> BaselineState:
         self._ensure_seeded()
-        self.repository.reset()
+        if refresh_canonical:
+            self.repository.replace_original(self._canonical_revision())
+        else:
+            self.repository.reset(clear_history=clear_history)
+        with self._plan_cache_lock:
+            self._plan_run_cache.clear()
         network_overview_service._options_cache = None
         return self.get_state()
 
@@ -679,6 +854,7 @@ class BaselineService:
             RateContractDetail,
             NetworkScenario,
             NetworkScenarioAssumptions,
+            NetworkScenarioException,
             NetworkScenarioKpiDeltas,
             NetworkScenarioResult,
         )
@@ -745,6 +921,8 @@ class BaselineService:
         generated_at = str(demand_version.get("published_at") or demand_version.get("as_of_date"))
         metadata = option_rows.get('baseline_revision_metadata', [])
         baseline_tariffs = metadata[0].get('tariffs', []) if metadata else []
+        baseline_handling_pct = metadata[0].get('facility_capacity_retained_pct', {}) if metadata else {}
+        baseline_supply_pct = metadata[0].get('facility_supply_retained_pct', {}) if metadata else {}
         scenario = NetworkScenario(
             scenario_id=scenario_id, scenario_name="Active baseline child-planning snapshot",
             source_baseline_revision_id=target_revision_id,
@@ -755,6 +933,9 @@ class BaselineService:
             assumptions=NetworkScenarioAssumptions.model_validate({
                 'source_baseline_revision_id': target_revision_id,
                 'tariffs': baseline_tariffs,
+                'facility_capacity_retained_pct': baseline_handling_pct,
+                'facility_supply_retained_pct': baseline_supply_pct,
+                'dc_transfer_requests': metadata[0].get('dc_transfer_requests', []) if metadata else [],
             }),
         )
         context = NetworkOverviewContext(
@@ -796,8 +977,75 @@ class BaselineService:
         comparable_rows["baseline_network_flow_daily"] = flow_rows
         comparable_rows["network_flow_cost_daily"] = cost_rows
         overview = network_overview_service.build_overview(
-            comparable_rows, context=context, scenario_id=scenario_id
+            comparable_rows,
+            context=context,
+            scenario_id=scenario_id,
+            facility_capacity_retained_pct=baseline_handling_pct,
+            facility_supply_retained_pct=baseline_supply_pct,
         )
+        dated_demand = [
+            row for row in projected_demand_rows(network_rows, demand_id, capacity_id)
+            if start <= str(row.get("service_date", ""))[:10] <= end
+        ]
+        lane_by_id = {
+            str(row.get("lane_id")): row
+            for row in network_rows.get("dim_network_lanes", [])
+        }
+        demand_by_date_depot: defaultdict[tuple[str, str], int] = defaultdict(int)
+        assigned_by_date_depot: defaultdict[tuple[str, str], int] = defaultdict(int)
+        for row in dated_demand:
+            demand_by_date_depot[
+                (str(row["service_date"])[:10], str(row["depot_id"]))
+            ] += int(row.get("demand_units", 0))
+        for row in flow_rows:
+            lane = lane_by_id.get(str(row.get("lane_id")), {})
+            if str(lane.get("lane_type")) != "LINEHAUL":
+                continue
+            assigned_by_date_depot[
+                (
+                    str(row["service_date"])[:10],
+                    str(lane.get("destination_endpoint_id")),
+                )
+            ] += int(row.get("assigned_units", 0))
+        exceptions = []
+        for (service_date, depot_id), demand_units in sorted(demand_by_date_depot.items()):
+            assigned_units = min(demand_units, assigned_by_date_depot[(service_date, depot_id)])
+            unmet_units = demand_units - assigned_units
+            if unmet_units <= 0:
+                continue
+            exceptions.append(NetworkScenarioException(
+                exception_id=f"BASELINE_UNMET_{service_date}_{depot_id}",
+                exception_type="unmet_demand",
+                severity="critical",
+                service_date=service_date,
+                entity_type="facility",
+                entity_id=depot_id,
+                message=(
+                    f"{unmet_units:,} cases are unassigned in the published dated "
+                    "baseline flow."
+                ),
+                demand_units=demand_units,
+                assigned_units=assigned_units,
+                unmet_units=unmet_units,
+                shortage_cause="unknown",
+            ))
+        facility_by_id = {
+            str(row["facility_id"]): row for row in network_rows.get("dim_facilities", [])
+        }
+        cross_border_cases = 0
+        for row in flow_rows:
+            lane = lane_by_id.get(str(row.get("lane_id")), {})
+            origin = facility_by_id.get(str(lane.get("origin_endpoint_id")), {})
+            destination = facility_by_id.get(str(lane.get("destination_endpoint_id")), {})
+            if (
+                lane.get("lane_type") == "LINEHAUL"
+                and origin.get("facility_type") == "distribution_center"
+                and destination.get("facility_type") == "depot"
+                and origin.get("country_code") and destination.get("country_code")
+                and origin["country_code"] != destination["country_code"]
+            ):
+                cross_border_cases += int(row.get("assigned_units", 0))
+        evidence_available = bool(dated_demand) or overview.kpis.demand_units == 0
         governed = [r for r in rated.charge_details if r.rate_source == "governed_contract"]
         fallback = [r for r in rated.charge_details if r.rate_source == "planning_fallback"]
         coverage = NetworkRateCoverage(
@@ -816,6 +1064,10 @@ class BaselineService:
                 cost_per_unit=0, on_time_pct=0, utilization_pct=0,
             ),
             freight_total_cost=freight_total, tariff_total_cost=tariff_total,
+            baseline_tariff_exposure=tariff_total,
+            cross_border_assigned_units=cross_border_cases,
+            baseline_cross_border_assigned_units=cross_border_cases,
+            domestic_shift_units=0,
             baseline_freight_total_cost=freight_total,
             baseline_tariff_total_cost=tariff_total,
             baseline_total_modeled_cost=round(freight_total + tariff_total, 2),
@@ -836,6 +1088,14 @@ class BaselineService:
                 scenario_tariffs=scenario.assumptions.tariffs,
                 objective_cost_basis="baseline_snapshot_no_reoptimization",
             ),
+            exception_evidence_status=(
+                "available" if evidence_available else "unavailable"
+            ),
+            exception_evidence_message=(
+                None if evidence_available else
+                "The baseline has aggregate demand but no dated demand rows for this horizon."
+            ),
+            exceptions=exceptions,
         )
         snapshot = NetworkRunSnapshot(
             scenario=scenario, result=result, network_rows=network_rows,

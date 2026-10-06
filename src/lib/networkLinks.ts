@@ -35,6 +35,26 @@ export function buildNetworkScenarioReturnHref(scenarioId: string, runId?: strin
   return runId ? `${href}?run=${encodeURIComponent(runId)}` : href
 }
 
+export function buildShortageWorkflowHref({
+  scenarioId,
+  runId,
+  depotId,
+  serviceDate,
+}: {
+  scenarioId: string
+  runId?: string | null
+  depotId?: string | null
+  serviceDate?: string | null
+}) {
+  const params = new URLSearchParams()
+  if (runId) params.set('run', runId)
+  if (depotId) params.set('shortageDepot', depotId)
+  if (serviceDate) params.set('shortageDate', serviceDate)
+  const query = params.toString()
+  const path = `/network/scenarios/${encodeURIComponent(scenarioId)}/exceptions`
+  return query ? `${path}?${query}` : path
+}
+
 export function buildRouteWorkspaceHref(
   pathname: string,
   context: ParentRouteContext,

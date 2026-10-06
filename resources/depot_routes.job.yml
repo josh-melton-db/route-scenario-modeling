@@ -1,0 +1,24 @@
+resources:
+  jobs:
+    depot_routes_morning:
+      name: route-depot-routes-morning-${bundle.target}
+      description: Prepare today's saved depot routes through the running App.
+      max_concurrent_runs: 1
+      timeout_seconds: 2100
+      schedule:
+        quartz_cron_expression: "0 0 5 * * ?"
+        timezone_id: America/Indiana/Indianapolis
+        pause_status: ${var.depot_routes_schedule_pause_status}
+      tasks:
+        - task_key: prepare_depot_routes
+          notebook_task:
+            notebook_path: ../notebooks/11_prepare_depot_routes.py
+            base_parameters:
+              app_name: ${var.app_name}
+              service_date: today
+              timezone: America/Indiana/Indianapolis
+          max_retries: 1
+          min_retry_interval_millis: 60000
+      permissions:
+        - level: CAN_VIEW
+          group_name: users

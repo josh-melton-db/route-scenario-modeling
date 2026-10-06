@@ -21,6 +21,7 @@ import {
   useDays,
   useDepots,
   useRecentScenarios,
+  useNetworkOptions,
 } from '@/api/queries'
 import type { CostOverride, DraftScenarioChange, PricingContext, ScenarioHistoryItem } from '@/api/types'
 import { useRouteContext } from '@/state/useRouteContext'
@@ -40,6 +41,7 @@ function LegacyScenarioBuilderPage() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [selectedScenarioId, setSelectedScenarioId] = useState('baseline')
   const [branchSourceId, setBranchSourceId] = useState<string | null>(null)
+  const networkOptions = useNetworkOptions()
   const depots = useDepots()
   const days = useDays()
   const carriers = useCarriers()
@@ -297,6 +299,9 @@ function LegacyScenarioBuilderPage() {
                 costDefaults={costParameters.data?.[0]}
               />
               {(draft.operatingConstraintsEnabled || draft.transportationChoicesEnabled) && <TransportationOptionsPanel
+                depotId={draft.depot_id}
+                depotRegion={selectedDepot?.region}
+                depotRegionId={networkOptions.data?.facilities.find((row) => row.facility_id === draft.depot_id)?.region_id}
                 constraints={draft.operatingConstraints}
                 choices={draft.transportationChoices}
                 pricingContext={draft.pricingContext}

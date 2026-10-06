@@ -32,6 +32,10 @@ test('shows comparable pricing and audits baseline separately from scenario', as
   }
   await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
     const path = new URL(route.request().url()).pathname
+    if (path === '/api/network/runs/run-1/charges') {
+      const side = new URL(route.request().url()).searchParams.get('side')
+      return route.fulfill({ json: { items: side === 'baseline' ? priced.baseline_charge_details : priced.charge_details, total: 1, offset: 0, limit: 100, coverage: priced.scenario_rate_coverage } })
+    }
     if (path === '/api/network/runs/run-1') return route.fulfill({ json: priced })
     if (path === '/api/network/options') return route.fulfill({ json: { regions: [{ region_id: 'ALL', region_name: 'All regions' }], facilities: [], demand_plans: [], capacity_plans: [], lane_types: ['LINEHAUL'], metrics: [], default_demand_plan_version_id: 'demand-v1', default_capacity_plan_version_id: 'capacity-v1', default_horizon_start: serviceDate, default_horizon_end: serviceDate, default_region_id: 'ALL', default_lane_type: 'LINEHAUL', default_metric: 'assigned_flow', source: 'e2e', freshness_at: `${serviceDate}T12:00:00Z` } })
     if (path === '/api/network/overview') return route.fulfill({ json: overview })
@@ -41,10 +45,10 @@ test('shows comparable pricing and audits baseline separately from scenario', as
     return route.fulfill({ status: 404, json: { detail: path } })
   })
   await page.goto(`${appUrl}/network/scenarios/network-1/flow?run=run-1`)
-  await expect(page.getByLabel('Comparison pricing basis')).toContainText('same pinned, dated rate books')
+  await expect(page.getByLabel('Comparison pricing basis')).toContainText('Pinned contracts')
   await page.getByRole('link', { name: 'Rate audit', exact: true }).click()
-  await expect(page.getByLabel('Comparison pricing basis')).toContainText('Baseline freight $450 + tariffs $30 = $480')
-  await expect(page.getByLabel('Comparison pricing basis')).toContainText('not used to calculate the comparable delta')
+  await expect(page.getByLabel('Comparison pricing basis')).toContainText('Baseline: $450 freight + $30 tariff = $480')
+  await expect(page.getByLabel('Comparison pricing basis')).toContainText('Published baseline reference: $999')
   await expect(page.getByRole('table')).toContainText('SCENARIO_LANE')
   await page.getByLabel('Audit plan').selectOption('baseline')
   await expect(page.getByRole('table')).toContainText('BASELINE_LANE')
@@ -78,7 +82,7 @@ test('main network depot links use the accepted baseline planning run and preser
   expect(params.get('networkReturn')).toContain('/network?facility=DPT_TEST')
 })
 
-test('proposes then accepts a pinned run and confirms baseline reset without changing history', async ({ page }) => {
+test('proposes then accepts a pinned run while retaining its historical view', async ({ page }) => {
   let accepted = false
   let reset = false
   const actions: string[] = []
@@ -106,12 +110,10 @@ test('proposes then accepts a pinned run and confirms baseline reset without cha
   await page.getByRole('button', { name: 'Accept as baseline' }).click()
   await expect(page.getByText('This run is the active baseline')).toBeVisible()
   await expect(page.getByText(/Local routes still need optimization/)).toBeVisible()
-  await page.getByRole('button', { name: 'Reset to original story' }).click()
-  expect(reset).toBe(false)
-  await page.getByRole('button', { name: 'Confirm reset' }).click()
-  await expect(page.getByText('Original story baseline')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Reset to original story' })).toHaveCount(0)
   await expect(page).toHaveURL(/flow\?run=run-1$/)
-  expect(actions).toEqual(['propose', 'accept', 'reset'])
+  expect(actions).toEqual(['propose', 'accept'])
+
 })
 
 test('releases assigned but route-unserved cases and explicitly reruns the parent', async ({ page }) => {
@@ -149,12 +151,13 @@ test('releases assigned but route-unserved cases and explicitly reruns the paren
     return route.fulfill({ status: 404, json: { detail: path } })
   })
   await page.goto(`${appUrl}/scenario?networkScenario=network-1&networkRun=run-1&depot=DPT_TEST&depotPlan=plan-1&routePlanScenario=named-1&date=${serviceDate}`)
+  await page.getByRole('button', { name: 'Release deliveries for reassignment', exact: true }).click()
   await page.getByLabel('Release customer').selectOption('CUST_1')
   await page.getByLabel('Release cases').fill('40')
   await page.getByRole('button', { name: 'Propose release' }).click()
   await expect(page.getByText(/1 pending release/)).toBeVisible()
   expect(rerun).toBe(false)
-  await expect(page.getByText(/Assigned 100 · routed 0 · unserved 100/)).toBeVisible()
+  await expect(page.getByText('Scenario changes', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Rerun network with releases' }).click()
   await expect(page).toHaveURL(/network\/scenarios\/network-2\/flow\?run=run-2$/)
   expect(rerun).toBe(true)

@@ -73,6 +73,8 @@ def test_rate_contract_api_exposes_versioned_rule_families() -> None:
     assert contracts
     assert contracts[0]["version"]["status"] == "published"
     assert contracts[0]["lane_count"] >= 2
+    assert contracts[0]["lane_types"]
+    assert contracts[0]["commitment_unit"] == "stops"
 
     detail = client.get(
         f"/api/rates/contracts/{contracts[0]['contract_id']}/versions/{contracts[0]['version']['version_id']}"

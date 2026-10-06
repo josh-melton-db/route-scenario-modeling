@@ -7,8 +7,12 @@ import pytest
 from backend.models import RateContractDetail
 from backend.services import network_rating
 from backend.services.network_rating import (
-    linear_objective_cost, rate_network_flows, resolve_network_tariffs,
+    has_governed_lane_rate, linear_objective_cost, rate_network_flows,
+    resolve_network_tariffs,
 )
+from backend.services.rates import canonical_rate_contract_details
+from route_opt.network_synthetic import generate_national_network_dataset
+from route_opt.synthetic import generate_depots
 from route_opt.rates import contract_detail_from_legacy
 
 
@@ -77,6 +81,29 @@ def test_fallback_and_tariff_are_symmetric_and_zero_flow_is_zero() -> None:
     )
     assert zero.cost_rows[0]["total_cost"] == 0
     assert zero.charge_details == []
+
+
+def test_scenario_air_transfer_uses_provenance_cost_without_truck_rate_warning() -> None:
+    rows = _rows()
+    rows["dim_network_lanes"][0].update({
+        "lane_id": "XFER_RELIEF",
+        "mode": "AIR",
+        "eligibility_source": "scenario_express_air_transfer_v1",
+        "planning_cost_per_case": 2.75,
+    })
+    rated = rate_network_flows(
+        rows,
+        [{"service_date": "2026-10-01", "lane_id": "XFER_RELIEF", "assigned_units": 40}],
+        {("2026-10-01", "XFER_RELIEF"): (0.5, "CA_US")},
+        contracts=[],
+    )
+
+    detail = rated.charge_details[0]
+    assert detail.freight_total == 110
+    assert detail.tariff_total == 20
+    assert detail.total_cost == 130
+    assert detail.charge_lines[0].rule_id == "SCENARIO_EXPRESS_AIR_TRANSFER_V1"
+    assert rated.missing_rate_lane_ids == ()
 
 
 def test_partial_loads_use_whole_load_contract_basis_and_reconcile(
@@ -157,3 +184,33 @@ def test_tariff_date_boundaries_are_inclusive() -> None:
     )
 
     assert set(resolved) == {("2026-10-02", "LANE"), ("2026-10-03", "LANE")}
+
+
+def test_canonical_rate_books_cover_every_national_linehaul_on_published_date() -> None:
+    rows = generate_national_network_dataset(generate_depots(), seed=42)
+    facilities = {
+        str(row["facility_id"]): row for row in rows["dim_facilities"]
+    }
+    linehaul = [
+        row for row in rows["dim_network_lanes"] if row["lane_type"] == "LINEHAUL"
+    ]
+    contracts = canonical_rate_contract_details()
+
+    missing = [
+        str(lane["lane_id"])
+        for lane in linehaul
+        if not has_governed_lane_rate(contracts, "2026-10-06", lane, facilities)
+    ]
+
+    assert missing == []
+    without_southeast = [
+        row for row in contracts if row.contract_id != "SE_STANDARD_2026"
+    ]
+    assert any(
+        not has_governed_lane_rate(
+            without_southeast, "2026-10-06", lane, facilities
+        )
+        for lane in linehaul
+        if facilities[str(lane["origin_endpoint_id"])]["region_id"]
+        == "REGION_SOUTHEAST"
+    )
