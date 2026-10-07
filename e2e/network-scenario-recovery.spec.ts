@@ -51,3 +51,16 @@ test('restores network parameters after a backend reset without restoring a stal
     assumptions: { unmet_penalty_per_case: 250, tariffs: original.assumptions.tariffs } })
   expect(runCalls).toBe(0)
 })
+
+test('network back link leaves scenario tabs even with a saved scenario return destination', async ({ page }) => {
+  await page.route(/^https?:\/\/[^/]+\/api\//, (route) => route.fulfill({
+    status: 404, json: { detail: 'Unavailable in navigation fixture' },
+  }))
+  const scenarioPath = '/network/scenarios/navigation-demo/flow'
+  await page.goto(`${scenarioPath}?networkScenario=navigation-demo&networkReturn=${encodeURIComponent(scenarioPath)}`)
+  await expect(page.getByRole('link', { name: 'Plan flow', exact: true })).toBeVisible()
+  await page.locator('nav').getByRole('link', { name: 'Network', exact: true }).click()
+  await expect(page).toHaveURL(/\/network$/)
+  await expect(page.getByRole('link', { name: 'Plan flow', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'Lane changes', exact: true })).toHaveCount(0)
+})

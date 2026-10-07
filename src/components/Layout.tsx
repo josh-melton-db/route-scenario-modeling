@@ -102,7 +102,7 @@ export function Layout({ children }: { children: ReactNode }) {
             {activeScenarioId ? (
               <>
                 <NavLink
-                  to={networkHref}
+                  to="/network"
                   className="flex shrink-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:px-3"
                 >
                   <ArrowLeft className="h-4 w-4 text-muted-foreground" />
