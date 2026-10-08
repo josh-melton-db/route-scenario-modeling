@@ -95,6 +95,10 @@ export default function NetworkFlowMap({
     () => Math.max(1, ...mapLanes.map((lane) => Math.max(lane.capacity_units, lane.assigned_units))),
     [mapLanes],
   )
+  const maxLaneVolume = useMemo(
+    () => Math.max(1, ...mapLanes.map((lane) => lane.assigned_units)),
+    [mapLanes],
+  )
   const maxFacilityFlow = useMemo(
     () => Math.max(1, ...facilities.map((facility) => facility.assigned_units)),
     [facilities],
@@ -121,7 +125,7 @@ export default function NetworkFlowMap({
       const flowColor = (lane: NetworkLaneAggregate): Rgba =>
         laneUtilizationColor(lane.utilization_pct)
       const arcWidth = (lane: NetworkLaneAggregate) => {
-        const base = 2 + Math.sqrt(lane.assigned_units / maxFlow) * 6
+        const base = 2 + Math.sqrt(lane.assigned_units / maxLaneVolume) * 12
         return lane.lane_id === selectedLaneId ? base * 1.2 : base
       }
       const activeLanes = mapLanes.filter((lane) => lane.assigned_units > 0)
@@ -143,12 +147,12 @@ export default function NetworkFlowMap({
           getTilt: 15,
           widthUnits: 'pixels',
           widthMinPixels: 2,
-          widthMaxPixels: 10,
+          widthMaxPixels: 17,
           pickable: true,
           autoHighlight: true,
           greatCircle: true,
           updateTriggers: {
-            getWidth: [maxFlow, selectedLaneId],
+            getWidth: [maxLaneVolume, selectedLaneId],
             getHeight: [maxFlow],
             getSourceColor: [colors],
             getTargetColor: [colors],
@@ -198,6 +202,7 @@ export default function NetworkFlowMap({
       mapLanes,
       maxFacilityFlow,
       maxFlow,
+      maxLaneVolume,
       selectedFacilityId,
       selectedLaneId,
       unmetByFacility,
