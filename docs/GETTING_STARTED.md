@@ -29,7 +29,10 @@ The bundle includes `depot_routes_morning`, a serverless Databricks Job schedule
 for 5:00 AM America/Indiana/Indianapolis. Its notebook calls the running App's
 route-preparation API and polls for completion, so compute uses the App's
 Lakebase identity and routing configuration. Grant the Job's run-as identity
-`CAN_USE` on the App. The App must be running and accessible from job compute.
+`CAN_USE` on the App. The notebook exchanges its ephemeral job token for an
+OAuth token scoped to the App client ID and refreshes it in memory. No stored
+personal token or client secret is required. The App must be running and
+accessible from job compute.
 
 The schedule is enabled at 5 AM, including the dev target. Run it manually after deployment to prepare today's routes immediately:
 

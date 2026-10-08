@@ -21,6 +21,11 @@ dbutils.widgets.text("schema", "route_scenario_modeling")  # type: ignore[name-d
 dbutils.widgets.dropdown("publish_daily_plans", "true", ["true", "false"])  # type: ignore[name-defined]
 dbutils.widgets.text("timezone", "America/Indiana/Indianapolis")  # type: ignore[name-defined]
 
+notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()  # type: ignore[name-defined]
+root = str(PurePosixPath(notebook_path).parent.parent)
+sys.path.insert(0, root if root.startswith("/Workspace/") else "/Workspace" + root)
+from route_opt.app_notebook_auth import NotebookAppAuth
+
 workspace = WorkspaceClient()
 app = workspace.apps.get(name=dbutils.widgets.get("app_name"))  # type: ignore[name-defined]
 app_url = str(app.url or "").rstrip("/")
@@ -39,9 +44,6 @@ if publish_daily:
         raise ValueError("Daily publication requires an explicit date or today.")
     # Resolve the generation anchor before importing modules that freeze IDs.
     os.environ["DEMO_DATE_ANCHOR"] = selected_date
-    notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()  # type: ignore[name-defined]
-    root = str(PurePosixPath(notebook_path).parent.parent)
-    sys.path.insert(0, root if root.startswith("/Workspace/") else "/Workspace" + root)
     from route_opt.network_synthetic import national_dataset_cached
     from route_opt.network_bootstrap import publish_daily_network_plans
     publication = publish_daily_network_plans(
@@ -51,10 +53,12 @@ if publish_daily:
     print(json.dumps(publication, indent=2))
 
 
+app_auth = NotebookAppAuth(workspace, str(app.oauth2_app_client_id or ""))
+
 def request(method, path, body=None):
     # Refresh auth headers on each poll; never print credentials or response HTML.
     response = requests.request(method, f"{app_url}/api/network/baseline/{path}",
-        headers=workspace.config.authenticate(), json=body, timeout=30, allow_redirects=False)
+        headers=app_auth.headers(), json=body, timeout=30, allow_redirects=False)
     if response.status_code not in {200, 202}:
         raise RuntimeError(f"App request failed: HTTP {response.status_code}. Job run-as identity needs CAN_USE on the App.")
     if "application/json" not in response.headers.get("content-type", ""):
