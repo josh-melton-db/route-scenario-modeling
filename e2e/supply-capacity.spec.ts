@@ -212,3 +212,50 @@ test('location shortage rolls up child demand rather than DC outbound volume', a
   await expect(page.getByText('Depot fill · unmet demand at target')).toBeVisible()
   await expect(page.getByText('Lane color · utilization of capacity')).toBeVisible()
 })
+
+for (const mode of ['AIR', 'LINEHAUL'] as const) {
+  test(`${mode} resolution updates the current scenario and opens its new solved run`, async ({ page }) => {
+    let current = scenario('network-transfer')
+    let saved: Record<string, unknown> | null = null
+    const aggregates = [facilityAggregate('Alpha', 100, 100), facilityAggregate('Donor', 100, 100), {
+      ...facilityAggregate('Depot', 100, 100), facility_id: 'DPT_ALPHA', facility_name: 'Alpha Depot', facility_type: 'depot', parent_facility_id: 'DC_ALPHA',
+    }]
+    const original = { ...result(current.scenario_id, 3, 'old-run', aggregates[0]), exceptions: [{ exception_id: 'short', exception_type: 'unmet_demand', severity: 'warning', entity_type: 'facility', entity_id: 'DPT_ALPHA', service_date: horizonEnd, shortage_cause: 'supply', unmet_units: 20, demand_units: 100, assigned_units: 80, message: 'Stock shortage' }] }
+    original.overview.facilities = aggregates
+    let latest = original
+    await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/network/options') return route.fulfill({ json: { ...options, facilities: aggregates } })
+      if (await commonRoute(route)) return
+      if (path === '/api/network/scenarios/network-transfer' && route.request().method() === 'PATCH') {
+        saved = route.request().postDataJSON().assumptions
+        current = { ...current, revision: 4, assumptions: saved as typeof current.assumptions }
+        return route.fulfill({ json: current })
+      }
+      if (path.endsWith('/validate')) return route.fulfill({ json: { ...current, validation: { valid: true, summary: 'Ready', issues: [] } } })
+      if (path.endsWith('/run')) {
+        expect(route.request().postDataJSON().expected_revision).toBe(4)
+        latest = { ...original, revision: 4, run_id: 'new-run', exceptions: [] }
+        latest.overview = { ...original.overview, kpis: { ...original.overview.kpis, unmet_units: 0 }, facilities: aggregates.map((f) => ({ ...f, assigned_units: 100 })) }
+        return route.fulfill({ json: { status: 'succeeded', run_id: 'new-run' } })
+      }
+      if (path === '/api/network/scenarios/network-transfer') return route.fulfill({ json: current })
+      if (path === '/api/network/runs/old-run') return route.fulfill({ json: original })
+      if (path.endsWith('/result') || path === '/api/network/runs/new-run') return route.fulfill({ json: latest })
+      if (path === '/api/network/scenarios') return route.fulfill({ json: [current] })
+      return route.fulfill({ status: 404, json: { detail: path } })
+    })
+    await page.goto(`${appUrl}/network/scenarios/network-transfer/exceptions?run=old-run`)
+    await page.getByRole('button', { name: 'Reallocate supply', exact: true }).click()
+    if (mode === 'LINEHAUL') await page.getByRole('radio', { name: /Bypass constrained DC/ }).click()
+    await page.getByRole('button', { name: 'Save and solve', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Compare solved plan', exact: true })).toBeVisible()
+    expect(saved).toMatchObject({ dc_transfer_requests: [{ mode, origin_dc_id: 'DC_DONOR', destination_dc_id: 'DC_ALPHA', ...(mode === 'LINEHAUL' ? { destination_depot_id: 'DPT_ALPHA' } : {}) }] })
+    await page.getByRole('button', { name: 'Compare solved plan', exact: true }).click()
+    await expect(page).toHaveURL(/network\/scenarios\/network-transfer\/flow\?run=new-run$/)
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await expect(page.getByRole('heading', { name: 'Baseline vs. scenario', exact: true })).toBeVisible()
+    await expect(page.getByLabel('Facility unmet demand details')).toContainText('Alpha Depot, depot: 0 unmet cases')
+    await expect(page.getByText('Pinned contracts', { exact: true })).toBeHidden()
+  })
+}

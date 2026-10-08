@@ -1274,6 +1274,14 @@ class NetworkScenarioService:
                             message="DC transfer endpoints must be canonical distribution centers.",
                         )
                     )
+            if transfer.mode == "LINEHAUL":
+                depot = facilities.get(transfer.destination_depot_id or "")
+                if depot is None or depot.get("facility_type") != "depot" or depot.get("parent_facility_id") != transfer.destination_dc_id:
+                    issues.append(NetworkScenarioValidationIssue(
+                        severity="error", code="invalid_bypass_depot", scope="facility",
+                        entity_id=transfer.destination_depot_id,
+                        message="Linehaul bypass must serve a depot of the selected destination DC.",
+                    ))
             if not scenario.horizon_start <= transfer.departure_date <= scenario.horizon_end:
                 issues.append(
                     NetworkScenarioValidationIssue(

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Trash2 } from 'lucide-react'
 import type { NetworkCountryCode, NetworkTariffRule } from '@/api/types'
 
@@ -68,7 +69,7 @@ export default function NetworkTariffChangeCard({
                   <input type="date" value={rule.effective_end} onChange={(event) => update(rule.rule_id, { effective_end: event.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm" />
                 </Field>
                 <Field label="USD / case">
-                  <input type="number" min={0} step="0.01" value={rule.amount_per_case} onChange={(event) => update(rule.rule_id, { amount_per_case: Number(event.target.value) || 0 })} className="h-9 rounded-md border border-border bg-background px-2 text-sm" />
+                  <TariffAmountInput value={rule.amount_per_case} onCommit={(amount) => update(rule.rule_id, { amount_per_case: amount })} />
                 </Field>
                 <button type="button" aria-label={`Remove tariff ${rule.rule_id}`} onClick={() => onChange(rules.filter((item) => item.rule_id !== rule.rule_id))} className="mt-5 inline-flex h-9 items-center gap-1 rounded-md border border-border px-2 text-xs text-muted-foreground hover:text-destructive">
                   <Trash2 className="h-3.5 w-3.5" /> Remove
@@ -87,4 +88,47 @@ export default function NetworkTariffChangeCard({
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="flex flex-col gap-1 text-xs font-medium"><span>{label}</span>{children}</label>
+}
+
+function TariffAmountInput({ value, onCommit }: { value: number; onCommit: (amount: number) => void }) {
+  const [text, setText] = useState(String(value))
+  const [focused, setFocused] = useState(false)
+
+  useEffect(() => {
+    if (!focused) setText(String(value))
+  }, [value, focused])
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={text}
+      onFocus={() => setFocused(true)}
+      onChange={(event) => {
+        const next = event.target.value
+        if (/^\d*(\.\d*)?$/.test(next)) setText(next)
+      }}
+      onBlur={() => {
+        setFocused(false)
+        const amount = Number(text)
+        if (text.trim() && Number.isFinite(amount) && amount >= 0) {
+          setText(String(amount))
+          if (amount !== value) onCommit(amount)
+        } else {
+          setText(String(value))
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          event.currentTarget.blur()
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setText(String(value))
+        }
+      }}
+      className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+    />
+  )
 }

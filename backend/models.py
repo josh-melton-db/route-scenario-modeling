@@ -921,6 +921,8 @@ class NetworkReleaseOverlay(StrictModel):
 
 
 class NetworkDcTransferRequest(StrictModel):
+    mode: Literal["AIR", "LINEHAUL"] = "AIR"
+    destination_depot_id: str | None = None
     transfer_id: str = Field(min_length=1)
     origin_dc_id: str = Field(min_length=1)
     destination_dc_id: str = Field(min_length=1)
@@ -929,6 +931,10 @@ class NetworkDcTransferRequest(StrictModel):
 
     @model_validator(mode="after")
     def validate_transfer(self) -> "NetworkDcTransferRequest":
+        if self.mode == "LINEHAUL" and not self.destination_depot_id:
+            raise ValueError("Linehaul bypass requires a destination depot.")
+        if self.mode == "AIR" and self.destination_depot_id:
+            raise ValueError("AIR replenishment must arrive at the destination DC.")
         if self.origin_dc_id == self.destination_dc_id:
             raise ValueError("Transfer origin and destination must differ.")
         try:
@@ -1182,7 +1188,8 @@ class NetworkTransferMovement(StrictModel):
     destination_dc_id: str
     departure_date: str
     arrival_date: str
-    mode: Literal["AIR"] = "AIR"
+    mode: Literal["AIR", "LINEHAUL"] = "AIR"
+    destination_depot_id: str | None = None
     capacity_units: int = Field(gt=0)
     assigned_units: int = Field(ge=0)
     distance_miles: float = Field(ge=0)

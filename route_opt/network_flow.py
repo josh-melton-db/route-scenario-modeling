@@ -63,12 +63,12 @@ def materialize_express_air_transfers(
     *,
     capacity_plan_version_id: str,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Return detached lane/capacity rows for scenario-owned express-air arcs."""
+    """Materialize dated AIR replenishment or direct linehaul bypass routes."""
 
     facilities = {str(row["facility_id"]): row for row in rows["dim_facilities"]}
     lanes = [
         dict(row) for row in rows["dim_network_lanes"]
-        if str(row.get("eligibility_source", "")) != "scenario_express_air_transfer_v1"
+        if str(row.get("eligibility_source", "")) not in {"scenario_express_air_transfer_v1", "scenario_linehaul_bypass_v1"}
     ]
     capacities = [
         dict(row) for row in rows["lane_capacity_daily"]
@@ -93,33 +93,43 @@ def materialize_express_air_transfers(
             for facility in (origin, destination)
         ):
             raise ValueError(f"Transfer {transfer_id} endpoints must be distribution centers.")
-        distance = round(_distance_miles(origin, destination), 1)
+        mode = str(request.get("mode", "AIR"))
+        target = destination
+        if mode == "LINEHAUL":
+            target = facilities.get(str(request.get("destination_depot_id", "")))
+            if target is None or target["facility_type"] != "depot" or target.get("parent_facility_id") != destination_id:
+                raise ValueError("Linehaul bypass destination must be a depot of the selected DC.")
+        distance = round(_distance_miles(origin, target), 1)
         # Includes airport handling at both ends plus straight-line flight time.
         transit_minutes = max(240, int(math.ceil(180 + distance / 500 * 60)))
         planning_cost = round(max(2.0, 1.25 + distance * 0.004), 4)
+        if mode == "LINEHAUL":
+            distance = round(distance * 1.2, 1)
+            transit_minutes = max(60, int(math.ceil(60 + distance / 50 * 60)))
+            planning_cost = round(max(450, distance * 3.4) * 1.12 / 900, 4)
         lane_id = f"XFER_{transfer_id}"
         if lane_id in existing_lane_ids:
             raise ValueError(f"Transfer lane ID collides with an existing lane: {lane_id}.")
         lane = {
             "lane_id": lane_id,
-            "lane_name": f"Express air {origin_id} to {destination_id}",
+            "lane_name": f"{'Express air' if mode == 'AIR' else 'Linehaul bypass'} {origin_id} to {target['facility_id']}",
             "lane_type": "LINEHAUL",
             "origin_endpoint_id": origin_id,
             "origin_endpoint_type": "facility",
-            "destination_endpoint_id": destination_id,
+            "destination_endpoint_id": str(target["facility_id"]),
             "destination_endpoint_type": "facility",
-            "mode": "AIR",
+            "mode": mode,
             "distance_miles": distance,
             "transit_minutes": transit_minutes,
             "planning_cost_per_case": planning_cost,
             "active": True,
-            "eligibility_source": "scenario_express_air_transfer_v1",
+            "eligibility_source": "scenario_express_air_transfer_v1" if mode == "AIR" else "scenario_linehaul_bypass_v1",
             "synthetic_provenance": {
                 "kind": "scenario_dc_transfer",
                 "transfer_id": transfer_id,
-                "distance_basis": "great_circle_miles",
-                "transit_basis": "180_minute_handling_plus_500_mph_flight",
-                "cost_basis": "max_2_or_1_25_plus_0_004_per_mile_per_case",
+                "distance_basis": "great_circle_miles" if mode == "AIR" else "great_circle_miles_times_1_2",
+                "transit_basis": "180_minute_handling_plus_500_mph_flight" if mode == "AIR" else "60_minute_handling_plus_50_mph_drive",
+                "cost_basis": "max_2_or_1_25_plus_0_004_per_mile_per_case" if mode == "AIR" else "estimated_linehaul_900_case_load",
             },
         }
         lanes.append(lane)
@@ -673,6 +683,7 @@ def _solve_time_expanded_transfers(
         if str(lane["lane_type"]) == "LINEHAUL"
         and str(lane["origin_endpoint_id"]) in dcs
         and str(lane["destination_endpoint_id"]) in depots
+        and lane_id not in requests
     }
     market_by_depot = {
         str(lane["origin_endpoint_id"]): lane_id for lane_id, lane in lanes.items()
@@ -808,14 +819,15 @@ def _solve_time_expanded_transfers(
         cost = base * (1 + float(lane_cost_adjustments_pct.get(lane_id, 0)) / 100) + float(tariff_per_case_by_date_lane.get((departure, lane_id), 0))
         arc = solver.add_arc_with_capacity_and_unit_cost(
             node(f"outbound:{departure}:{origin_id}"),
-            node(f"inventory:{arrival}:{destination_id}"),
+            node(f"assigned:{arrival}:{request['destination_depot_id']}") if request.get("mode") == "LINEHAUL" else node(f"inventory:{arrival}:{destination_id}"),
             cap, max(1, int(round(cost * 100))),
         )
         tracked_transfer[arc] = {
             "transfer_id": str(request["transfer_id"]), "lane_id": lane_id,
             "origin_dc_id": origin_id, "destination_dc_id": destination_id,
             "departure_date": departure, "arrival_date": arrival,
-            "mode": "AIR", "capacity_units": int(request["capacity_units"]),
+            "mode": request.get("mode", "AIR"), "capacity_units": int(request["capacity_units"]),
+            **({"destination_depot_id": request["destination_depot_id"]} if request.get("mode") == "LINEHAUL" else {}),
             "distance_miles": float(lane["distance_miles"]),
             "transit_minutes": int(lane["transit_minutes"]),
             "provenance": dict(lane["synthetic_provenance"]),
@@ -843,9 +855,11 @@ def _solve_time_expanded_transfers(
         assigned = int(solver.flow(arc))
         flow_by_key[(movement["departure_date"], movement["lane_id"])]["assigned_units"] = assigned
         transfer_movements.append({**movement, "assigned_units": assigned})
+        if movement["mode"] == "LINEHAUL":
+            assigned_by_date_depot[(movement["arrival_date"], movement["destination_depot_id"])] += assigned
         allocation_rows.append({
-            "service_date": movement["departure_date"], "lane_id": movement["lane_id"],
-            "depot_id": movement["destination_dc_id"], "assigned_units": assigned,
+            "service_date": movement["arrival_date"] if movement["mode"] == "LINEHAUL" else movement["departure_date"], "lane_id": movement["lane_id"],
+            "depot_id": movement.get("destination_depot_id", movement["destination_dc_id"]), "assigned_units": assigned,
             "capacity_units": movement["capacity_units"],
             "transfer_id": movement["transfer_id"],
             "origin_dc_id": movement["origin_dc_id"],

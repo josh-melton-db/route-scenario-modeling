@@ -310,3 +310,30 @@ def test_cross_border_transfer_uses_normal_dated_tariff_resolution() -> None:
     )
 
     assert resolved == {(DAYS[0], "XFER_TARIFF"): (3.0, "CA_US")}
+
+
+def test_linehaul_bypass_serves_depot_without_using_constrained_dc_handling():
+    rows = _rows({DAYS[1]: 5})
+    rows["dim_facilities"].append({"facility_id": "UNUSED", "facility_type": "depot", "region_id": "R", "parent_facility_id": "DC_SHORT", "lat": 40, "lng": -83})
+    next(row for row in rows["dim_facilities"] if row["facility_id"] == "DPT")["parent_facility_id"] = "DC_SHORT"
+    request = {"transfer_id": "GROUND", "origin_dc_id": "DC_DONOR", "destination_dc_id": "DC_SHORT", "destination_depot_id": "DPT", "mode": "LINEHAUL", "departure_date": DAYS[0], "capacity_units": 5}
+    result = solve_fixed_capacity_network(rows, demand_plan_version_id="D", capacity_plan_version_id="P", horizon_start=DAYS[0], horizon_end=DAYS[2], region_id="ALL", dc_transfer_requests=[request])
+    movement = result["transfer_movements"][0]
+    assert movement["mode"] == "LINEHAUL"
+    assert movement["assigned_units"] == 5
+    assert movement["arrival_date"] == DAYS[1]
+    assert next(row for row in result["unmet_rows"] if row["service_date"] == DAYS[1] and row["depot_id"] == "DPT")["unmet_units"] == 0
+    for row in rows["facility_capacity_daily"]:
+        if row["facility_id"] == "DPT": row["capacity_units"] = 2
+    capped = solve_fixed_capacity_network(rows, demand_plan_version_id="D", capacity_plan_version_id="P", horizon_start=DAYS[0], horizon_end=DAYS[2], region_id="ALL", dc_transfer_requests=[request])
+    assert capped["transfer_movements"][0]["assigned_units"] == 2
+    assert next(row for row in capped["unmet_rows"] if row["service_date"] == DAYS[1] and row["depot_id"] == "DPT")["unmet_units"] == 3
+
+
+def test_linehaul_bypass_cannot_create_donor_stock():
+    rows = _rows({DAYS[1]: 5})
+    next(row for row in rows["dim_facilities"] if row["facility_id"] == "DPT")["parent_facility_id"] = "DC_SHORT"
+    rows["facility_supply_daily"] = [{"capacity_plan_version_id": "P", "service_date": DAYS[0], "facility_id": "DC_DONOR", "supply_units": 2}]
+    result = solve_fixed_capacity_network(rows, demand_plan_version_id="D", capacity_plan_version_id="P", horizon_start=DAYS[0], horizon_end=DAYS[2], region_id="ALL", dc_transfer_requests=[{"transfer_id": "LIMITED", "origin_dc_id": "DC_DONOR", "destination_dc_id": "DC_SHORT", "destination_depot_id": "DPT", "mode": "LINEHAUL", "departure_date": DAYS[0], "capacity_units": 5}])
+    assert result["transfer_movements"][0]["assigned_units"] == 2
+    assert next(row for row in result["unmet_rows"] if row["service_date"] == DAYS[1] and row["depot_id"] == "DPT")["unmet_units"] == 3

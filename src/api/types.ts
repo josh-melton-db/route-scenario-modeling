@@ -255,6 +255,8 @@ export interface NetworkTariffRule {
 }
 
 export interface NetworkDcTransferRequest {
+  mode?: 'AIR' | 'LINEHAUL'
+  destination_depot_id?: string | null
   transfer_id: string
   origin_dc_id: string
   destination_dc_id: string
@@ -377,7 +379,8 @@ export interface NetworkTransferMovement {
   destination_dc_id: string
   departure_date: string
   arrival_date: string
-  mode: 'AIR'
+  mode: 'AIR' | 'LINEHAUL'
+  destination_depot_id?: string | null
   capacity_units: number
   assigned_units: number
   distance_miles: number

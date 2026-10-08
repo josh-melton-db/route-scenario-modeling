@@ -569,7 +569,7 @@ function ScenarioTab({
   scenario: NetworkScenario
   draft: NetworkDraft | null
   onDraftChange: (draft: NetworkDraft | null) => void
-  facilities: { facility_id: string; facility_name: string; facility_type: string; region_id: string }[]
+  facilities: { facility_id: string; facility_name: string; facility_type: string; region_id: string; parent_facility_id?: string | null }[]
   regions: { region_id: string; region_name: string }[]
   lanes: NetworkLaneAggregate[]
 }) {
@@ -909,7 +909,7 @@ function ScenarioTab({
             <div className="flex flex-col gap-3 rounded-md border border-border/70 p-3">
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <span className="text-sm font-semibold">Express AIR transfers</span>
+                  <span className="text-sm font-semibold">Supply routes</span>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Capacity departs the origin DC on the selected date. Arrival, cost, and served shortage are determined only by the solved plan.
                   </p>
@@ -935,10 +935,12 @@ function ScenarioTab({
                           </select>
                         </label>
                         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                          Destination DC
-                          <select value={request.destination_dc_id} onChange={(event) => updateTransfer(request.transfer_id, { destination_dc_id: event.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground">
+                          {request.mode === 'LINEHAUL' ? 'Destination depot' : 'Destination DC'}
+                          {request.mode === 'LINEHAUL' ? <select value={request.destination_depot_id ?? ''} onChange={(event) => updateTransfer(request.transfer_id, { destination_depot_id: event.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground">
+                            {facilities.filter((row) => row.facility_type === 'depot' && row.parent_facility_id === request.destination_dc_id).map((row) => <option key={row.facility_id} value={row.facility_id}>{row.facility_name}</option>)}
+                          </select> : <select value={request.destination_dc_id} onChange={(event) => updateTransfer(request.transfer_id, { destination_dc_id: event.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground">
                             {dcs.filter((dc) => dc.facility_id !== request.origin_dc_id).map((dc) => <option key={dc.facility_id} value={dc.facility_id}>{dc.facility_name}</option>)}
-                          </select>
+                          </select>}
                         </label>
                         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                           Departure date
@@ -948,7 +950,7 @@ function ScenarioTab({
                           Capacity units
                           <input type="number" min={1} step={1} value={request.capacity_units} onChange={(event) => updateTransfer(request.transfer_id, { capacity_units: Math.max(1, Math.floor(Number(event.target.value) || 1)) })} className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground" />
                         </label>
-                        <button type="button" aria-label="Remove express AIR transfer" onClick={() => touchAssumptions({ ...assumptions, dc_transfer_requests: transferRequests.filter((row) => row.transfer_id !== request.transfer_id) })} className="self-end rounded-md p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+                        <button type="button" aria-label="Remove supply route" onClick={() => touchAssumptions({ ...assumptions, dc_transfer_requests: transferRequests.filter((row) => row.transfer_id !== request.transfer_id) })} className="self-end rounded-md p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
                           <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
@@ -1333,7 +1335,7 @@ function FlowTab({
           />
         ))}
       </div>
-      <NetworkPricingNote result={result.data} />
+
 
 
       <div className="grid overflow-hidden rounded-lg border border-border bg-card sm:grid-cols-2 lg:grid-cols-5">
@@ -1351,19 +1353,6 @@ function FlowTab({
           This plan was generated before tariff metrics were available. Rerun the plan to see them.
         </div>
       )}
-      <p className="text-xs text-muted-foreground">
-        Scenario vs. source baseline · plan generated{' '}
-        {new Date(result.data.generated_at).toLocaleString()} · baseline demand{' '}
-        {formatNumber(baseline_overview.kpis.demand_units)} cases
-      </p>
-      <NetworkBaselineActions runId={pinnedRunId} />
-      {(scenario.assumptions.tariffs ?? []).length > 0 && (
-        <p className="text-xs text-muted-foreground">
-          {result.data.revision === scenario.revision ? 'Applied tariff' : 'Current scenario tariff (may differ from displayed run)'}: {(scenario.assumptions.tariffs ?? []).map((rule) =>
-            `${rule.origin_country} → ${rule.destination_country} · ${rule.amount_per_case.toLocaleString(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })} / case`
-          ).join('; ')}
-        </p>
-      )}
       <div className="grid min-h-0 gap-4 xl:h-[calc(100svh-20rem)] xl:min-h-[720px] xl:grid-cols-[minmax(0,1fr)_340px]">
         <NetworkFlowMap
           facilities={overview.facilities}
@@ -1378,6 +1367,7 @@ function FlowTab({
         />
         <div className="rounded-lg border border-border bg-card p-4">
           <h2 className="text-sm font-semibold">Baseline vs. scenario</h2>
+          <div className="mt-3 border-b border-border pb-3"><NetworkBaselineActions runId={result.data.run_id} /></div>
           <ul className="mt-2 flex flex-col gap-2 text-sm">
             <CompareRow
               label="Assigned cases"
@@ -2069,7 +2059,7 @@ export function ReallocateSupplyModal({
   })
   const [originDcId, setOriginDcId] = useState(rankedDonors[0]?.facility_id ?? '')
   const [capacityUnits, setCapacityUnits] = useState(Math.max(1, Math.floor(shortage.unmet_units ?? 1)))
-  const [scenarioName, setScenarioName] = useState(scenario.scenario_name)
+  const scenarioName = scenario.scenario_name
   const [strategy, setStrategy] = useState<'replenish' | 'bypass'>(directDc ? 'replenish' : suggestedShortageStrategy(shortage.shortage_cause))
   const [departureDate, setDepartureDate] = useState(() => directDc && !shortage.service_date ? '' : suggestedDepartureDate(shortage.service_date, scenario.horizon_start))
   const [solved, setSolved] = useState<Awaited<ReturnType<ReturnType<typeof useRunNetworkScenario>['mutateAsync']>> | null>(null)
@@ -2080,37 +2070,37 @@ export function ReallocateSupplyModal({
   const run = useRunNetworkScenario(scenario.scenario_id)
   const busy = update.isPending || validate.isPending || run.isPending
   const destinationDc = dcs.find((row) => row.facility_id === destinationDcId)
-  const directAlternatives = lanes.filter((lane) =>
-    lane.mode.toUpperCase() !== 'AIR' &&
-    lane.lane_type === 'LINEHAUL' &&
-    !scenario.assumptions.disabled_lane_ids.includes(lane.lane_id) &&
-    (lane.destination_endpoint_id === shortage.entity_id || lane.destination_endpoint_id === destinationDcId) &&
-    lane.origin_endpoint_id !== destinationDcId
-  )
+  const targetDepots = facilities.filter((row) => row.facility_type === 'depot' && row.parent_facility_id === destinationDcId)
+  const [destinationDepotId, setDestinationDepotId] = useState(directDc ? targetDepots[0]?.facility_id ?? '' : shortage.entity_id ?? '')
+  const [workingScenario, setWorkingScenario] = useState(scenario)
   const solvedMovement = solved?.result.transfer_movements?.find(
     (movement) => movement.transfer_id === submittedTransferId,
   )
 
   async function solveTransfer() {
-    if (!departureDate || !originDcId || !destinationDcId) return
+    if (!departureDate || !originDcId || !destinationDcId || (strategy === 'bypass' && !destinationDepotId)) return
     setError(null)
     setSolved(null)
     const transfer: NetworkDcTransferRequest = {
-      transfer_id: globalThis.crypto?.randomUUID?.() ?? `transfer-${Date.now()}`,
+      transfer_id: submittedTransferId ?? globalThis.crypto?.randomUUID?.() ?? `transfer-${Date.now()}`,
       origin_dc_id: originDcId,
       destination_dc_id: destinationDcId,
       departure_date: departureDate,
       capacity_units: capacityUnits,
+      mode: strategy === 'replenish' ? 'AIR' : 'LINEHAUL',
+      ...(strategy === 'bypass' ? { destination_depot_id: destinationDepotId } : {}),
     }
     try {
       const updated = await update.mutateAsync({
-        expected_revision: scenario.revision,
+        expected_revision: workingScenario.revision,
         scenario_name: scenarioName.trim() || scenario.scenario_name,
         assumptions: {
-          ...scenario.assumptions,
-          dc_transfer_requests: [...(scenario.assumptions.dc_transfer_requests ?? []), transfer],
+          ...workingScenario.assumptions,
+          dc_transfer_requests: [...(workingScenario.assumptions.dc_transfer_requests ?? []).filter((row) => row.transfer_id !== transfer.transfer_id), transfer],
         },
       })
+      setWorkingScenario(updated)
+      setSubmittedTransferId(transfer.transfer_id)
       const validated = await validate.mutateAsync()
       if (!validated.validation?.valid) {
         throw new Error(validated.validation?.summary ?? 'The transfer request did not validate.')
@@ -2124,35 +2114,35 @@ export function ReallocateSupplyModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm" onMouseDown={onClose}>
-      <section role="dialog" aria-modal="true" aria-labelledby="reallocate-title" className="w-full max-w-2xl rounded-lg border border-border bg-card shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm" onMouseDown={() => { if (!busy) onClose() }}>
+      <section role="dialog" aria-modal="true" aria-labelledby="reallocate-title" className="max-h-[calc(100svh-2rem)] w-full max-w-2xl overflow-y-auto rounded-lg border border-border bg-card shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
         <div className="flex items-start justify-between border-b border-border p-4">
           <div>
             <h2 id="reallocate-title" className="font-semibold">Resolve shortage</h2>
-            <p className="mt-1 text-xs text-muted-foreground">Choose whether the constraint is missing stock or insufficient local handling.</p>
+            <p className="mt-1 text-xs text-muted-foreground">Update this plan and solve it again. Published baselines require an editable copy.</p>
           </div>
-          <button type="button" aria-label="Close reallocate supply" onClick={onClose} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent"><X className="h-4 w-4" /></button>
+          <button type="button" aria-label="Close reallocate supply" disabled={busy} onClick={onClose} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent"><X className="h-4 w-4" /></button>
         </div>
-        <div className="space-y-4 p-4">
+        <fieldset disabled={busy} className="space-y-4 p-4">
           <div className="grid gap-3 rounded-md border border-border bg-background/40 p-3 sm:grid-cols-3">
             <ReallocationMetric label="Shortage location" value={destinationDepot?.facility_name ?? shortage.entity_id ?? 'Unknown'} />
             <ReallocationMetric label="Service date" value={shortage.service_date ?? (directDc ? 'Choose departure below' : 'Missing')} />
             <ReallocationMetric label="Shortage" value={`${formatNumber(shortage.unmet_units ?? 0)} cases`} />
           </div>
           <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Shortage resolution strategy">
-            <button type="button" role="radio" aria-checked={strategy === 'replenish'} onClick={() => setStrategy('replenish')} className={cn('rounded-md border p-3 text-left', strategy === 'replenish' ? 'border-primary bg-primary/5' : 'border-border')}>
+            <button type="button" role="radio" aria-checked={strategy === 'replenish'} onClick={() => { setStrategy('replenish'); setSolved(null) }} className={cn('rounded-md border p-3 text-left', strategy === 'replenish' ? 'border-primary bg-primary/5' : 'border-border')}>
               <span className="text-sm font-semibold">Replenish available supply via AIR</span>
               <span className="mt-1 block text-xs text-muted-foreground">Move conserved stock between DCs. This does not increase destination handling capacity.</span>
             </button>
-            <button type="button" role="radio" aria-checked={strategy === 'bypass'} onClick={() => setStrategy('bypass')} className={cn('rounded-md border p-3 text-left', strategy === 'bypass' ? 'border-primary bg-primary/5' : 'border-border')}>
-              <span className="text-sm font-semibold">Bypass constrained handling</span>
-              <span className="mt-1 block text-xs text-muted-foreground">Use an eligible direct linehaul or reassign demand through existing network and customer-release controls.</span>
+            <button type="button" role="radio" aria-checked={strategy === 'bypass'} onClick={() => { setStrategy('bypass'); setSolved(null) }} className={cn('rounded-md border p-3 text-left', strategy === 'bypass' ? 'border-primary bg-primary/5' : 'border-border')}>
+              <span className="text-sm font-semibold">Bypass constrained DC via linehaul</span>
+              <span className="mt-1 block text-xs text-muted-foreground">Add a direct route from the donor DC to a depot, bypassing this DC’s handling.</span>
             </button>
           </div>
-          {strategy === 'replenish' ? <>
+          <>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">Donor DC · horizon headroom
-              <select value={originDcId} onChange={(event) => setOriginDcId(event.target.value)} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground">
+              <select value={originDcId} onChange={(event) => { setOriginDcId(event.target.value); setSolved(null) }} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground">
                 {rankedDonors.map((row) => {
                   const aggregate = facilityAggregates.find((candidate) => candidate.facility_id === row.facility_id)
                   const spareSupply = aggregate?.supply_available_units == null ? null : Math.max(0, aggregate.supply_available_units - aggregate.assigned_units)
@@ -2164,17 +2154,20 @@ export function ReallocateSupplyModal({
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">Destination DC
               <input readOnly value={destinationDc?.facility_name ?? destinationDcId} className="h-10 rounded-md border border-border bg-muted/40 px-3 text-sm text-foreground" />
             </label>
+            {strategy === 'bypass' && <label className="flex flex-col gap-1 text-xs text-muted-foreground">Destination depot
+              <select value={destinationDepotId} onChange={(event) => { setDestinationDepotId(event.target.value); setSolved(null) }} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground">
+                {targetDepots.map((depot) => <option key={depot.facility_id} value={depot.facility_id}>{depot.facility_name}</option>)}
+              </select>
+            </label>}
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">Transfer capacity
-              <input type="number" min={1} step={1} value={capacityUnits} onChange={(event) => setCapacityUnits(Math.max(1, Math.floor(Number(event.target.value) || 1)))} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground" />
+              <input type="number" min={1} step={1} value={capacityUnits} onChange={(event) => { setCapacityUnits(Math.max(1, Math.floor(Number(event.target.value) || 1))); setSolved(null) }} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground" />
             </label>
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">{directDc ? 'Departure date' : 'Departure date · before shortage'}
-              <input type="date" min={scenario.horizon_start} max={scenario.horizon_end} value={departureDate} onChange={(event) => setDepartureDate(event.target.value)} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground" />
+              <input type="date" min={scenario.horizon_start} max={scenario.horizon_end} value={departureDate} onChange={(event) => { setDepartureDate(event.target.value); setSolved(null) }} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground" />
             </label>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">Scenario name
-              <input value={scenarioName} onChange={(event) => setScenarioName(event.target.value)} className="h-10 rounded-md border border-border bg-background px-3 text-sm text-foreground" />
-            </label>
+
           </div>
-          <p className="text-xs text-muted-foreground">Headroom summarizes the whole horizon. The solve verifies available stock on the departure date, arrival timing, and destination handling; a transfer may not resolve a handling shortage.</p>
+          <p className="text-xs text-muted-foreground">Headroom covers the whole horizon; this route has one departure. The solve checks stock and handling on that date and serves demand after arrival. AIR uses destination DC handling; linehaul bypasses it but still respects depot capacity.</p>
           {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
           {solved && (
             <div className="rounded-md border border-success/40 bg-success/5 p-3">
@@ -2182,7 +2175,7 @@ export function ReallocateSupplyModal({
               {solvedMovement ? (
                 <div className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
                   <ReallocationMetric label="Arrival" value={solvedMovement.arrival_date} />
-                  <ReallocationMetric label="AIR assigned" value={`${formatNumber(solvedMovement.assigned_units)} / ${formatNumber(solvedMovement.capacity_units)}`} />
+                  <ReallocationMetric label={`${solvedMovement.mode} assigned`} value={`${formatNumber(solvedMovement.assigned_units)} / ${formatNumber(solvedMovement.capacity_units)}`} />
                   <ReallocationMetric label="Transit" value={`${formatNumber(solvedMovement.distance_miles, 1)} mi · ${formatNumber(solvedMovement.transit_minutes)} min`} />
                   <ReallocationMetric label="Transfer cost" value={formatCurrency(solvedMovement.total_cost)} />
                 </div>
@@ -2197,37 +2190,18 @@ export function ReallocateSupplyModal({
                 <ReallocationMetric label="Cost change" value={signedCurrency(solved.result.kpi_deltas.total_cost)} />
                 <ReallocationMetric label="Run" value={solved.result.run_id ?? 'Completed'} />
               </div>
-              <p className="mt-2 text-xs text-muted-foreground">These are solved network deltas. Inspect the flow and exception details before using this scenario operationally.</p>
+              <p className="mt-2 text-xs text-muted-foreground">Compare this solved run with the source baseline. Remaining shortages may reflect stock, handling, arrival timing, or depot capacity.</p>
             </div>
           )}
-          </> : (
-            <div className="space-y-3 rounded-md border border-border bg-background/40 p-3">
-              <div>
-                <div className="text-sm font-semibold">Eligible existing direct lanes</div>
-                <p className="mt-1 text-xs text-muted-foreground">These are permitted, active linehaul links in this solved network. The next solve decides assignment under published lane and customer-release contracts.</p>
-              </div>
-              {directAlternatives.length ? (
-                <ul className="space-y-1.5 text-xs">
-                  {directAlternatives.map((lane) => <li key={lane.lane_id} className="flex items-center justify-between gap-3 rounded border border-border px-2.5 py-2"><span>{lane.origin_endpoint_name} → {lane.destination_endpoint_name}</span><span className="text-muted-foreground">{formatNumber(lane.capacity_units)} capacity · {formatPercent(lane.utilization_pct)} used</span></li>)}
-                </ul>
-              ) : (
-                <p className="rounded-md border border-warning/40 bg-warning/5 p-2 text-xs text-muted-foreground">No eligible direct lane is present in this result. Review lane controls or open the depot workspace to release and reassign customer demand.</p>
-              )}
-              <div className="flex flex-wrap gap-2">
-                <button type="button" onClick={() => navigate(`/network/scenarios/${encodeURIComponent(scenario.scenario_id)}/scenario`)} className="rounded-md border border-border px-3 py-2 text-xs font-medium">Review lane & handling controls</button>
-                {destinationDepot && buildDepotAnalysisHref(destinationDepot.facility_id, scenario.horizon_start, scenario.horizon_end, scenario.scenario_id, solved?.result.run_id) && (
-                  <button type="button" onClick={() => navigate(buildDepotAnalysisHref(destinationDepot.facility_id, scenario.horizon_start, scenario.horizon_end, scenario.scenario_id, solved?.result.run_id)!)} className="rounded-md border border-border px-3 py-2 text-xs font-medium">Open depot release workspace</button>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+          </>
+
+        </fieldset>
         <div className="flex justify-end gap-2 border-t border-border p-4">
-          <button type="button" onClick={onClose} className="rounded-md border border-border px-3 py-2 text-sm">Cancel</button>
-          {strategy === 'bypass' ? null : solved ? (
-            <button type="button" onClick={() => navigate(`/network/scenarios/${encodeURIComponent(scenario.scenario_id)}/flow${solved.result.run_id ? `?run=${encodeURIComponent(solved.result.run_id)}` : ''}`)} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Compare solved plan</button>
+          <button type="button" disabled={busy} onClick={onClose} className="rounded-md border border-border px-3 py-2 text-sm">Cancel</button>
+          {solved ? (
+            <button type="button" onClick={() => { onClose(); navigate(`/network/scenarios/${encodeURIComponent(solved.result.scenario_id)}/flow${solved.result.run_id ? `?run=${encodeURIComponent(solved.result.run_id)}` : ''}`) }} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Compare solved plan</button>
           ) : (
-            <button type="button" disabled={busy || !originDcId || !destinationDcId || !departureDate} onClick={() => void solveTransfer()} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">
+            <button type="button" disabled={busy || !originDcId || !destinationDcId || !departureDate || (strategy === 'bypass' && !destinationDepotId)} onClick={() => void solveTransfer()} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">
               {busy && <Loader2 className="h-4 w-4 animate-spin" />}{busy ? 'Saving and solving…' : 'Save and solve'}
             </button>
           )}
