@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import requests
 from databricks.sdk import WorkspaceClient
 
+dbutils.widgets.text("app_auth_secret_scope", "route-scenario-modeling-depot-job")  # type: ignore[name-defined]
 dbutils.widgets.text("app_name", "route-scenario-modeling")  # type: ignore[name-defined]
 dbutils.widgets.text("service_date", "today")  # type: ignore[name-defined]
 dbutils.widgets.text("catalog", "demos")  # type: ignore[name-defined]
@@ -53,17 +54,29 @@ if publish_daily:
     print(json.dumps(publication, indent=2))
 
 
-app_auth = NotebookAppAuth(
-    workspace, str(app.oauth2_app_client_id or ""),
-    # The documented exchange uses the notebook context PAT specifically.
-    # Serverless SDK native credentials need not be this same token type.
-    notebook_token=lambda: dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get(),  # type: ignore[name-defined]
-)
+app_auth_secret_scope = dbutils.widgets.get("app_auth_secret_scope").strip()  # type: ignore[name-defined]
+if app_auth_secret_scope:
+    # Dedicated automation identity: App access only. The job's native identity
+    # still publishes UC plans; credentials stay in the configured secret scope.
+    app_client = WorkspaceClient(
+        host=workspace.config.host, auth_type="oauth-m2m",
+        client_id=dbutils.secrets.get(scope=app_auth_secret_scope, key="client-id"),  # type: ignore[name-defined]
+        client_secret=dbutils.secrets.get(scope=app_auth_secret_scope, key="client-secret"),  # type: ignore[name-defined]
+    )
+    app_auth_headers = app_client.config.authenticate
+else:
+    # Optional notebook-token flow for workspaces that support this exchange.
+    app_auth = NotebookAppAuth(
+        workspace, str(app.oauth2_app_client_id or ""),
+        notebook_token=lambda: dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get(),  # type: ignore[name-defined]
+    )
+    app_auth_headers = app_auth.headers
+
 
 def request(method, path, body=None):
     # Refresh auth headers on each poll; never print credentials or response HTML.
     response = requests.request(method, f"{app_url}/api/network/baseline/{path}",
-        headers=app_auth.headers(), json=body, timeout=30, allow_redirects=False)
+        headers=app_auth_headers(), json=body, timeout=30, allow_redirects=False)
     if response.status_code not in {200, 202}:
         raise RuntimeError(f"App request failed: HTTP {response.status_code}. Job run-as identity needs CAN_USE on the App.")
     if "application/json" not in response.headers.get("content-type", ""):

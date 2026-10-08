@@ -28,11 +28,19 @@ remain available for the next attempt.
 The bundle includes `depot_routes_morning`, a serverless Databricks Job scheduled
 for 5:00 AM America/Indiana/Indianapolis. Its notebook calls the running App's
 route-preparation API and polls for completion, so compute uses the App's
-Lakebase identity and routing configuration. Grant the Job's run-as identity
-`CAN_USE` on the App. The notebook exchanges its ephemeral job token for an
-OAuth token scoped to the App client ID and refreshes it in memory. No stored
-personal token or client secret is required. The App must be running and
-accessible from job compute.
+Lakebase identity and routing configuration. The job's run-as identity publishes
+Unity Catalog data. App API requests use a dedicated automation service principal
+with only `CAN_USE` on this App. Store its OAuth client ID and secret under
+`client-id` and `client-secret` in the secret scope configured by
+`depot_routes_app_auth_secret_scope` (default `route-scenario-modeling-depot-job`).
+Give the Job run-as identity `READ` on that scope; keep secret administration
+restricted to the operator. OAuth tokens refresh automatically through the SDK.
+Credentials are never stored in source code or printed. The App must be running
+and accessible from job compute. Rotate the OAuth secret before it expires.
+
+For workspaces that support notebook-to-App token exchange, explicitly set
+`app_auth_secret_scope` to an empty string on a manual run to use an ephemeral
+notebook token instead. The scheduled job uses the dedicated OAuth identity.
 
 The schedule is enabled at 5 AM, including the dev target. Run it manually after deployment to prepare today's routes immediately:
 

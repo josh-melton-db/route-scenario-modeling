@@ -17,6 +17,7 @@ resources:
               catalog: ${var.catalog}
               schema: ${resources.schemas.route_scenario_modeling_schema.name}
               publish_daily_plans: "true"
+              app_auth_secret_scope: ${var.depot_routes_app_auth_secret_scope}
               app_name: ${var.app_name}
               service_date: today
               timezone: America/Indiana/Indianapolis

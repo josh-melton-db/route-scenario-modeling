@@ -22,6 +22,9 @@ sync:
     - /tailwind.config.ts
 
 variables:
+  depot_routes_app_auth_secret_scope:
+    description: Secret scope containing the dedicated depot preparation identity client-id and client-secret
+    default: route-scenario-modeling-depot-job
   depot_routes_schedule_pause_status:
     description: Set UNPAUSED to prepare today's routes daily at 5 AM Indianapolis time
     default: UNPAUSED
