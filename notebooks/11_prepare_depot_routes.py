@@ -53,7 +53,12 @@ if publish_daily:
     print(json.dumps(publication, indent=2))
 
 
-app_auth = NotebookAppAuth(workspace, str(app.oauth2_app_client_id or ""))
+app_auth = NotebookAppAuth(
+    workspace, str(app.oauth2_app_client_id or ""),
+    # The documented exchange uses the notebook context PAT specifically.
+    # Serverless SDK native credentials need not be this same token type.
+    notebook_token=lambda: dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get(),  # type: ignore[name-defined]
+)
 
 def request(method, path, body=None):
     # Refresh auth headers on each poll; never print credentials or response HTML.

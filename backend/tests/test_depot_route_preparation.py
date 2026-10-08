@@ -99,3 +99,44 @@ def test_advance_daily_baseline_keeps_prior_revisions_and_proposals(monkeypatch)
     assert repository.ids() == ("today", "today")
     assert repository.revision("old").revision_id == "old"
     assert repository._proposals["proposal"] == proposal
+
+
+def test_daily_canonical_pins_route_policy_and_changes_identity_without_mutating_history(monkeypatch):
+    from copy import deepcopy
+    from backend.services import baseline_service as module
+    from backend.services import rates, store_provider
+    from backend.baseline_models import BaselineRouteCoverage
+
+    plans = {
+        "demand_plan_versions": [{"plan_version_id": "D", "horizon_start": "2026-10-08", "horizon_end": "2026-11-04"}],
+        "capacity_plan_versions": [{"plan_version_id": "C", "horizon_start": "2026-10-08", "horizon_end": "2026-11-04"}],
+        "dim_network_lanes": [{"lane_id": "L"}],
+        "demand_plan_daily": [{"service_date": "2026-10-08", "depot_id": "DEPOT"}],
+        "baseline_network_flow_daily": [{"lane_id": "L"}],
+    }
+    resources = {
+        "fleet": [{"vehicle_id": "V", "depot_id": "DEPOT", "capacity_cases": 700}],
+        "operating_parameters": [{"parameter_set_id": "default", "max_stops_per_route": 12}],
+        "cost_parameters": [{"parameter_set_id": "default", "cost_per_mile": 2}],
+    }
+    monkeypatch.setattr(module.network_overview_service, "_load_option_rows", lambda: deepcopy(plans))
+    monkeypatch.setattr(module.network_overview_service, "_load_rows", lambda **kwargs: deepcopy(plans))
+    monkeypatch.setattr(store_provider, "get_store", lambda: SimpleNamespace(load_solver_base_tables=lambda: resources))
+    monkeypatch.setattr(rates, "list_rate_contract_details", lambda store: rates.canonical_rate_contract_details())
+    monkeypatch.setattr(module.BaselineService, "_coverage", lambda self, rows: BaselineRouteCoverage(ready=False, covered_dates=0, expected_dates=1, covered_depots=0, expected_depots=1, message="pending"))
+    service = module.BaselineService()
+    legacy = service._canonical_revision()
+    first = service._canonical_revision(include_route_resources=True)
+    repeat = service._canonical_revision(include_route_resources=True)
+    assert first.revision_id == repeat.revision_id
+    assert first.revision_id != legacy.revision_id
+    assert "dim_fleet_assets" not in legacy.rows
+    assert first.rows["dim_fleet_assets"][0]["max_stops_per_route"] == 12
+    assert "max_stops_per_route" not in resources["fleet"][0]
+    resources["operating_parameters"][0]["max_stops_per_route"] = 15
+    second = service._canonical_revision(include_route_resources=True)
+    assert second.revision_id != first.revision_id
+    assert first.rows["operating_parameters"][0]["max_stops_per_route"] == 12
+    assert second.rows["dim_fleet_assets"][0]["max_stops_per_route"] == 15
+    assert first.rows["route_cost_parameters"] == resources["cost_parameters"]
+    assert first.rows["baseline_revision_metadata"][0]["route_resource_policy"]["resource_sha256"] != second.rows["baseline_revision_metadata"][0]["route_resource_policy"]["resource_sha256"]

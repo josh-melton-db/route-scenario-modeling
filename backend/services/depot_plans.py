@@ -1028,7 +1028,16 @@ def _default_fleet_provider(
             if str(row.get("depot_id")) == depot_id
         ]
         if supplied:
-            return supplied, f"snapshot:{table_name}", snapshot_costs, snapshot_cost_source
+            operating_rows = network_rows.get("operating_parameters", [])
+            policy_source = f"snapshot:{table_name}"
+            if any(row.get("max_stops_per_route") is None for row in supplied) and not operating_rows:
+                loader = getattr(get_store(), "load_solver_base_tables", None)
+                operating_rows = loader().get("operating_parameters", []) if callable(loader) else []
+                policy_source += ":configured_store:operating_parameters"
+            supplied, policy_source = _bind_fleet_operating_policy(
+                supplied, operating_rows, policy_source
+            )
+            return supplied, policy_source, snapshot_costs, snapshot_cost_source
     store = get_store()
     loader = getattr(store, "load_solver_base_tables", None)
     configured_costs: list[dict[str, object]] = []
@@ -1050,9 +1059,14 @@ def _default_fleet_provider(
                 for row in supplied
             )
             label = "demo_fixture" if fixture else "master_data"
+            supplied, resource_source = _bind_fleet_operating_policy(
+                supplied,
+                base.get("operating_parameters", []),
+                f"configured_store:solver_base:fleet:{label}",
+            )
             return (
                 supplied,
-                f"configured_store:solver_base:fleet:{label}",
+                resource_source,
                 configured_costs or snapshot_costs,
                 "configured_store:solver_base:cost_parameters"
                 if configured_costs else snapshot_cost_source,
@@ -1077,6 +1091,34 @@ def _default_fleet_provider(
         "configured_store:solver_base:cost_parameters"
         if configured_costs else snapshot_cost_source,
     )
+
+
+
+def _bind_fleet_operating_policy(
+    fleet: Sequence[Mapping[str, object]],
+    operating_rows: Sequence[Mapping[str, object]],
+    source: str,
+) -> tuple[list[dict[str, object]], str]:
+    """Pin absent vehicle stop limits to the explicitly configured default policy."""
+    copied = [dict(row) for row in fleet]
+    missing = [row for row in copied if row.get("max_stops_per_route") is None]
+    if not missing:
+        return copied, source
+    defaults = [row for row in operating_rows if str(row.get("parameter_set_id")) == "default"]
+    if len(defaults) != 1:
+        raise ValueError("Fleet stop limits require exactly one explicit default operating parameter set.")
+    value = defaults[0].get("max_stops_per_route")
+    try:
+        limit = int(value)
+        valid = not isinstance(value, bool) and float(value) == limit and limit > 0
+    except (TypeError, ValueError, OverflowError):
+        valid = False
+    if not valid:
+        raise ValueError("Default operating max_stops_per_route must be a positive integer.")
+    for row in missing:
+        row["max_stops_per_route"] = limit
+        row["max_stops_policy_source"] = "operating_parameters:default"
+    return copied, f"{source}:operating_parameters:default:max_stops_per_route:{limit}"
 
 
 def _fleet_content_hash(fleet: Sequence[Mapping[str, object]]) -> str:

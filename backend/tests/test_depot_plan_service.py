@@ -972,3 +972,45 @@ def test_time_window_change_can_combine_with_other_changes() -> None:
         row["customer_id"] == "DAILY-X"
         for row in inputs["network_rows"]["dim_network_customers"]
     )
+
+
+def test_configured_fleet_pins_default_operating_stop_policy_without_mutating_history(monkeypatch):
+    import backend.services.depot_plans as module
+
+    monkeypatch.setenv("ROUTE_EXECUTION_MODE", "strict_serving_road")
+    base = {
+        "fleet": [
+            {"vehicle_id": "VEH-POLICY", "depot_id": DEPOT_ID, "capacity_cases": 500, "max_route_minutes": 600},
+            {"vehicle_id": "VEH-EXPLICIT", "depot_id": DEPOT_ID, "capacity_cases": 500, "max_route_minutes": 600, "max_stops_per_route": 3},
+        ],
+        "operating_parameters": [
+            {"parameter_set_id": "other", "max_stops_per_route": 99},
+            {"parameter_set_id": "default", "max_stops_per_route": 8},
+        ],
+        "cost_parameters": [],
+    }
+    monkeypatch.setattr(module, "get_store", lambda: SimpleNamespace(load_solver_base_tables=lambda: deepcopy(base)))
+    repository = FakeRepository()
+    service = DepotPlanService(repository=repository, snapshot_provider=lambda _: deepcopy(_snapshot()), job_manager=DepotPlanJobManager(max_workers=1, start_workers=False))
+    plan = _payload(service.get_or_create_plan("RUN-POLICY", DEPOT_ID))
+    historical = repository.get(plan["plan_set_id"])
+    fleet = historical["fleet"]
+    assert [row["max_stops_per_route"] for row in fleet] == [8, 3]
+    assert fleet[0]["max_stops_policy_source"] == "operating_parameters:default"
+    assert "operating_parameters:default:max_stops_per_route:8" in historical["resource_source"]
+    _verify_fleet_snapshot(fleet, historical["fleet_snapshot"])
+    assert "max_stops_per_route" not in base["fleet"][0]
+    base["operating_parameters"][1]["max_stops_per_route"] = 10
+    service.get_or_create_plan("RUN-POLICY", DEPOT_ID)
+    assert repository.get(plan["plan_set_id"])["fleet_snapshot"] == historical["fleet_snapshot"]
+    assert repository.get(plan["plan_set_id"])["fleet"] == fleet
+    next_plan = _payload(service.get_or_create_plan("RUN-POLICY-NEXT", DEPOT_ID))
+    assert repository.get(next_plan["plan_set_id"])["fleet"][0]["max_stops_per_route"] == 10
+
+
+@pytest.mark.parametrize("policy", [[], [{"parameter_set_id": "other", "max_stops_per_route": 8}], [{"parameter_set_id": "default", "max_stops_per_route": 0}], [{"parameter_set_id": "default", "max_stops_per_route": 2.5}]])
+def test_absent_vehicle_stop_limit_requires_valid_explicit_default_policy(policy):
+    from backend.services.depot_plans import _bind_fleet_operating_policy
+
+    with pytest.raises(ValueError, match="default operating|positive integer"):
+        _bind_fleet_operating_policy([{"vehicle_id": "VEH-1"}], policy, "configured_store:fleet")

@@ -50,7 +50,7 @@ class BaselineService:
             self.repository.seed(self._canonical_revision())
             self._seeded = True
 
-    def _canonical_revision(self) -> BaselineRevision:
+    def _canonical_revision(self, *, include_route_resources: bool = False) -> BaselineRevision:
         try:
             option_rows = deepcopy(network_overview_service._load_option_rows())
             demand_id, capacity_id = self._plan_ids(option_rows)
@@ -139,6 +139,42 @@ class BaselineService:
             "demand": rows.get("demand_plan_versions", []),
             "capacity": rows.get("capacity_plan_versions", []),
         }
+        if include_route_resources:
+            # Daily route caches must be pinned to the operational policy used
+            # to build their fleet, not to mutable tables consulted after capture.
+            from .depot_plans import _bind_fleet_operating_policy
+
+            store = get_store()
+            loader = getattr(store, "load_solver_base_tables", None)
+            if not callable(loader):
+                raise HTTPException(status_code=409, detail="Daily baseline requires configured route resource tables.")
+            resource_tables = loader()
+            operating = deepcopy(resource_tables.get("operating_parameters", []))
+            fleet = deepcopy(resource_tables.get("fleet", []))
+            if not fleet:
+                raise HTTPException(status_code=409, detail="Daily baseline requires configured fleet assets.")
+            fleet, fleet_source = _bind_fleet_operating_policy(
+                fleet, operating, "daily_canonical:configured_store"
+            )
+            costs = deepcopy(resource_tables.get("cost_parameters", []))
+            rows["dim_fleet_assets"] = fleet
+            rows["operating_parameters"] = operating
+            rows["route_cost_parameters"] = costs
+            resources = {
+                "policy_version": "daily_route_resources.v1",
+                "fleet": sorted(fleet, key=lambda row: str(row.get("vehicle_id", ""))),
+                "operating_parameters": sorted(operating, key=lambda row: str(row.get("parameter_set_id", ""))),
+                "cost_parameters": sorted(costs, key=lambda row: str(row.get("parameter_set_id", ""))),
+            }
+            resource_digest = hashlib.sha256(
+                json.dumps(resources, sort_keys=True, default=str).encode()
+            ).hexdigest()
+            metadata["route_resource_policy"] = {
+                "policy_version": resources["policy_version"],
+                "resource_sha256": resource_digest,
+                "fleet_source": fleet_source,
+            }
+            identity["route_resource_policy"] = metadata["route_resource_policy"]
         digest = hashlib.sha256(
             json.dumps(identity, sort_keys=True, default=str).encode()
         ).hexdigest()[:16]
@@ -165,7 +201,7 @@ class BaselineService:
     def advance_daily_baseline(self) -> BaselineState:
         """Adopt the newly published daily input, preserving historical snapshots."""
         self._ensure_seeded()
-        revision = self._canonical_revision()
+        revision = self._canonical_revision(include_route_resources=True)
         self.repository.advance_original(revision)
         network_overview_service._options_cache = None
         return self.get_state()

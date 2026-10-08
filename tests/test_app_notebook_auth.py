@@ -40,3 +40,28 @@ def test_token_exchange_error_exposes_only_status_not_payload():
 def test_notebook_auth_requires_app_audience():
     with pytest.raises(ValueError, match="OAuth client ID"):
         NotebookAppAuth(None, "")
+
+
+def test_exchange_reads_explicit_notebook_context_token():
+    calls = []
+    workspace = SimpleNamespace(config=SimpleNamespace(host="https://workspace"))
+    def post(url, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status_code=200, json=lambda: {"access_token": "app", "expires_in": 300})
+    auth = NotebookAppAuth(workspace, "app-id", notebook_token=lambda: "context-ephemeral",
+        post=post)
+    assert auth.headers() == {"Authorization": "Bearer app"}
+    assert calls[0]["data"]["subject_token"] == "context-ephemeral"
+
+
+def test_exchange_error_diagnostics_classify_without_echoing_tokens():
+    workspace = SimpleNamespace(config=SimpleNamespace(host="https://workspace"))
+    response = SimpleNamespace(status_code=400, json=lambda: {
+        "error": "invalid_request", "error_description": "invalid subject_token_type for secret-example-token"})
+    auth = NotebookAppAuth(workspace, "app-id", notebook_token=lambda: "context-ephemeral",
+        post=lambda *args, **kwargs: response)
+    with pytest.raises(RuntimeError) as exc:
+        auth.headers()
+    assert 'invalid_request' in str(exc.value)
+    assert 'subject token type rejected' in str(exc.value)
+    assert 'secret-example-token' not in str(exc.value)
