@@ -121,8 +121,8 @@ export default function NetworkFlowMap({
       const flowColor = (lane: NetworkLaneAggregate): Rgba =>
         laneUtilizationColor(lane.utilization_pct)
       const arcWidth = (lane: NetworkLaneAggregate) => {
-        const base = 5 + Math.sqrt(lane.assigned_units / maxFlow) * 11
-        return lane.lane_id === selectedLaneId ? base + 3 : base
+        const base = 2 + Math.sqrt(lane.assigned_units / maxFlow) * 6
+        return lane.lane_id === selectedLaneId ? base * 1.2 : base
       }
       const activeLanes = mapLanes.filter((lane) => lane.assigned_units > 0)
       const depots = facilities.filter((facility) => facility.facility_type === 'depot')
@@ -134,19 +134,22 @@ export default function NetworkFlowMap({
           getSourcePosition: (lane) => [lane.origin_location.lng, lane.origin_location.lat],
           getTargetPosition: (lane) => [lane.destination_location.lng, lane.destination_location.lat],
           getSourceColor: flowColor,
-          getTargetColor: flowColor,
+          getTargetColor: (lane) => {
+            const color = flowColor(lane)
+            return [color[0], color[1], color[2], 120]
+          },
           getWidth: arcWidth,
-          getHeight: (lane) => lane.lane_id === selectedLaneId ? 1.35 : 0.9 + laneOffset(lane.lane_id) * 0.35,
-          getTilt: (lane) => 28 + laneOffset(lane.lane_id) * 34,
+          getHeight: (lane) => 0.3 + Math.min(1, lane.assigned_units / maxFlow) * 0.3,
+          getTilt: 15,
           widthUnits: 'pixels',
-          widthMinPixels: 5,
-          widthMaxPixels: 19,
+          widthMinPixels: 2,
+          widthMaxPixels: 10,
           pickable: true,
           autoHighlight: true,
-          greatCircle: false,
+          greatCircle: true,
           updateTriggers: {
             getWidth: [maxFlow, selectedLaneId],
-            getHeight: [selectedLaneId],
+            getHeight: [maxFlow],
             getSourceColor: [colors],
             getTargetColor: [colors],
           },
@@ -331,12 +334,6 @@ function supplySourceLabel(source: string) {
   if (source === 'canonical_daily_supply') return 'Canonical daily supply'
   if (source === 'legacy_handling_capacity_fallback') return 'Legacy fallback derived from handling capacity'
   return source
-}
-
-function laneOffset(laneId: string) {
-  let hash = 0
-  for (const character of laneId) hash = (hash * 31 + character.charCodeAt(0)) | 0
-  return (Math.abs(hash) % 1000) / 999
 }
 
 function fitView(
