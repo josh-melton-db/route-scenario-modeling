@@ -2,7 +2,7 @@ resources:
   jobs:
     depot_routes_morning:
       name: route-depot-routes-morning-${bundle.target}
-      description: Prepare today's saved depot routes through the running App.
+      description: Publish today's dated demo plans and cache depot routes through the running App.
       max_concurrent_runs: 1
       timeout_seconds: 2100
       schedule:
@@ -14,6 +14,9 @@ resources:
           notebook_task:
             notebook_path: ../notebooks/11_prepare_depot_routes.py
             base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.route_scenario_modeling_schema.name}
+              publish_daily_plans: "true"
               app_name: ${var.app_name}
               service_date: today
               timezone: America/Indiana/Indianapolis

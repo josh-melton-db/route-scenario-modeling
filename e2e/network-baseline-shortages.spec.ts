@@ -89,26 +89,36 @@ test('missing dated evidence does not claim the baseline has no exceptions', asy
   await expect(page.getByText('No exceptions')).toHaveCount(0)
 })
 
-test('starts an editable tariff what-if from the visible baseline action', async ({ page }) => {
+test('starts a DC supply transfer from the baseline without editing the published plan', async ({ page }) => {
   await mockBaseline(page, 'available')
-  await page.route('**/api/network/overview**', (route) => route.fulfill({ json: { ...overview, facilities: [{
-    facility_id: 'DPT_ALPHA', facility_name: 'Alpha Depot', facility_type: 'depot', region_id: 'ALL', parent_facility_id: null,
-    location: { lat: 40, lng: -86 }, demand_units: 100, assigned_units: 80, capacity_units: 200, utilization_pct: 40,
-    total_cost: 500, cost_per_unit: 6.25, on_time_pct: 100, connected_facility_count: 1, depot_count: 1, depot_analysis_available: true,
-  }] } }))
-  let payload: Record<string, unknown> | null = null
+  const base = {
+    region_id: 'ALL', location: { lat: 40, lng: -86 }, demand_units: 0,
+    assigned_units: 80, capacity_units: 200, utilization_pct: 40, total_cost: 500,
+    cost_per_unit: 6.25, on_time_pct: 100, connected_facility_count: 1, depot_count: 1,
+    depot_analysis_available: false, supply_available_units: 300, handling_available_units: 300,
+  }
+  const facilities = [
+    { ...base, facility_id: 'DC_ALPHA', facility_name: 'Alpha DC', facility_type: 'distribution_center', parent_facility_id: null },
+    { ...base, facility_id: 'DC_DONOR', facility_name: 'Donor DC', facility_type: 'distribution_center', parent_facility_id: null },
+    { ...base, facility_id: 'DPT_ALPHA', facility_name: 'Alpha Depot', facility_type: 'depot', parent_facility_id: 'DC_ALPHA', demand_units: 100 },
+  ]
+  await page.route('**/api/network/options', (route) => route.fulfill({ json: { ...options, facilities } }))
+  await page.route('**/api/network/overview**', (route) => route.fulfill({ json: { ...overview, facilities } }))
   await page.route('**/api/network/baseline/plan-run**', (route) => route.fulfill({ json: { scenario_id: baselineScenarioId, run_id: baselineRunId } }))
+  let payload: Record<string, unknown> | null = null
   await page.route('**/api/network/scenarios', async (route) => {
     if (route.request().method() !== 'POST') return route.fallback()
     payload = route.request().postDataJSON()
-    return route.fulfill({ status: 201, json: { ...scenario, scenario_id: 'NSC_TARIFF', status: 'draft' } })
+    return route.fulfill({ status: 201, json: { ...scenario, scenario_id: 'NSC_SUPPLY', status: 'draft' } })
   })
-  await page.goto(`${appUrl}/network`)
-  await expect(page.getByText('Mexico → US · $5 / case')).toBeVisible()
-  await page.getByRole('button', { name: 'Simulate tariffs', exact: true }).click()
-  await expect.poll(() => payload).toMatchObject({
-    source_baseline_revision_id: 'original',
-    assumptions: { tariffs: [{ origin_country: 'MX', destination_country: 'US', amount_per_case: 5, effective_start: serviceDate, effective_end: serviceDate }] },
-  })
-  await expect(page).toHaveURL(/network\/scenarios\/NSC_TARIFF\/scenario$/)
+  await page.goto(`${appUrl}/network?facility=DC_ALPHA`)
+  await page.getByRole('button', { name: 'Assign supply from another DC' }).click()
+  await expect(page.getByRole('heading', { name: 'Resolve shortage', exact: true })).toBeVisible()
+  expect(payload).toMatchObject({ source_baseline_revision_id: 'original', scenario_name: 'Supply for Alpha DC' })
+  await expect(page.getByLabel('Donor DC · horizon headroom')).toContainText('Donor DC · spare supply 220 · handling 220')
+  await expect(page.getByLabel('Destination DC', { exact: true })).toHaveValue('Alpha DC')
+  const solve = page.getByRole('button', { name: 'Save and solve', exact: true })
+  await expect(solve).toBeDisabled()
+  await page.getByLabel('Departure date', { exact: true }).fill(serviceDate)
+  await expect(solve).toBeEnabled()
 })

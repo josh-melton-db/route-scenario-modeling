@@ -14,6 +14,7 @@ import {
   useSolveDepotPlanDay,
   queryKeys,
 } from '@/api/queries'
+import { defaultDepotServiceDate } from '@/lib/networkLinks'
 import ErrorState from './ErrorState'
 import KpiDeltaGrid from './KpiDeltaGrid'
 import MapView from './MapView'
@@ -26,14 +27,12 @@ import DepotOperationalOverrideForm, {
 } from './DepotOperationalOverrideForm'
 import { useRoutePlanDrafts } from '@/state/useRoutePlanDrafts'
 import { useRouteContext } from '@/state/useRouteContext'
-import ShortageWorkflowLink from './ShortageWorkflowLink'
 
 export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenario' }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
   const runId = searchParams.get('networkRun') ?? ''
-  const networkScenarioId = searchParams.get('networkScenario') ?? ''
   const depotId = searchParams.get('depot') ?? ''
   const requestedPlanId = searchParams.get('depotPlan') ?? ''
   const requestedDate = searchParams.get('date') ?? ''
@@ -42,7 +41,7 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
   const planSetId = requestedPlanId || bootstrap.data?.plan_set_id || ''
   const plan = useDepotPlan(planSetId, routeScenarioId)
   const planData = plan.data ?? bootstrap.data
-  const selectedDate = requestedDate || planData?.horizon_start || ''
+  const selectedDate = requestedDate || (planData ? defaultDepotServiceDate(planData.horizon_start, planData.horizon_end) : '')
   const day = useDepotPlanDay(planSetId, selectedDate, routeScenarioId)
   const createScenario = useCreateDepotPlanScenario(planSetId)
   const optimize = useOptimizeDepotPlanDay(planSetId, selectedDate)
@@ -72,7 +71,7 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
       changed = true
     }
     if (!requestedDate) {
-      next.set('date', planData.horizon_start)
+      next.set('date', defaultDepotServiceDate(planData.horizon_start, planData.horizon_end))
       changed = true
     }
     if (!searchParams.get('routePlanScenario')) {
@@ -248,13 +247,6 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
       {currentResult && currentResult.unserved_cases > 0 && (
         <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/35 bg-destructive/5 px-3 py-2">
           <p className="text-xs text-muted-foreground">Unserved: {currentResult.unserved_cases} cases</p>
-          {networkScenarioId && <ShortageWorkflowLink
-            scenarioId={networkScenarioId}
-            runId={runId}
-            depotId={depotId}
-            serviceDate={selectedDate}
-            className="shrink-0"
-          />}
         </div>
       )}
       {day.data?.default_result && day.data.selected_result && day.data.selected_result.result_id !== day.data.default_result.result_id ? (

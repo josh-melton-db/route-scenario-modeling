@@ -109,3 +109,34 @@ def test_bootstrap_adds_only_missing_supply_table(monkeypatch):
         "supply_units": 122,
     }]
     assert existing_rows["dim_facilities"][0]["lat"] == 31.1
+
+
+def test_daily_publication_appends_facts_preserves_dimensions_and_publishes_metadata_last(monkeypatch):
+    dataset = {name: [{"id": name}] for name in bootstrap.NETWORK_TABLES}
+    for name, key in (("dim_facilities", "facility_id"), ("dim_network_customers", "customer_id"),
+                      ("dim_network_lanes", "lane_id")):
+        dataset[name] = [{key: name}]
+    monkeypatch.setattr(bootstrap, "assert_valid_network_dataset", lambda rows: None)
+    statements = []
+    def table(full_name):
+        name = full_name.split(".")[-1].strip("`")
+        return SimpleNamespace(select=lambda key: SimpleNamespace(collect=lambda: dataset[name]))
+    spark = SimpleNamespace(catalog=SimpleNamespace(tableExists=lambda _: True), table=table,
+        createDataFrame=lambda rows: SimpleNamespace(createOrReplaceTempView=lambda _: None),
+        sql=lambda statement: statements.append(statement))
+    result = bootstrap.publish_daily_network_plans(spark, dataset, catalog="demo", schema="routes")
+    assert len(statements) == 7
+    assert all("WHEN NOT MATCHED THEN INSERT *" in sql for sql in statements)
+    assert all("UPDATE" not in sql and "DELETE" not in sql and "dim_" not in sql for sql in statements)
+    assert result["published"][-2:] == ["demand_plan_versions", "capacity_plan_versions"]
+
+
+def test_daily_publication_rejects_unknown_customer_ids_before_writing(monkeypatch):
+    dataset = {name: [{"id": name}] for name in bootstrap.NETWORK_TABLES}
+    dataset["dim_facilities"] = [{"facility_id": "known"}]
+    dataset["dim_network_customers"] = [{"customer_id": "new"}]
+    monkeypatch.setattr(bootstrap, "assert_valid_network_dataset", lambda rows: None)
+    spark = SimpleNamespace(catalog=SimpleNamespace(tableExists=lambda _: True),
+        table=lambda _: SimpleNamespace(select=lambda key: SimpleNamespace(collect=lambda: [{key: "known"}])) )
+    with pytest.raises(ValueError, match="unknown IDs in dim_network_customers"):
+        bootstrap.publish_daily_network_plans(spark, dataset, catalog="demo", schema="routes")

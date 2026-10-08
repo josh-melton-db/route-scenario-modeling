@@ -74,6 +74,16 @@ export function buildRouteWorkspaceHref(
   return search ? `${path}?${search}` : path
 }
 
+/** Prefer today's operational date, keeping historic plans inside their own horizon. */
+export function defaultDepotServiceDate(start: string, end: string, now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Indiana/Indianapolis', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(now)
+  const part = (type: string) => parts.find((value) => value.type === type)?.value ?? ''
+  const today = `${part('year')}-${part('month')}-${part('day')}`
+  return today < start ? start : today > end ? end : today
+}
+
 /** Deep link from the network plan into the existing depot route workspace. */
 export function buildDepotAnalysisHref(
   depotId: string,
@@ -85,7 +95,7 @@ export function buildDepotAnalysisHref(
 ) {
   // Pinned plans solve every exact date; Tuesday is only a legacy API constraint.
   const serviceDate = networkRun
-    ? (horizonStart <= horizonEnd ? horizonStart : null)
+    ? (horizonStart <= horizonEnd ? defaultDepotServiceDate(horizonStart, horizonEnd) : null)
     : firstWeekdayInRange(horizonStart, horizonEnd, 2)
   if (!serviceDate) return null
   return buildRouteWorkspaceHref('/analyze', {

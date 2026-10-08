@@ -259,3 +259,47 @@ def bootstrap_network_tables(spark, dataset, *, catalog: str, schema: str) -> di
         if counts[name] != len(rows):
             raise RuntimeError(f"Published row count mismatch for {full_name}")
     return {"created": create_names, "existing": existing, "row_counts": counts}
+
+
+def publish_daily_network_plans(spark, dataset, *, catalog: str, schema: str) -> dict:
+    """Append immutable dated plans while retaining repaired dimensions and history.
+
+    Publish metadata last: partially written daily facts cannot become the default
+    plan. Retrying a job inserts only missing facts and never replaces old rows.
+    """
+    assert_valid_network_dataset(dataset)
+    keys = {
+        "demand_plan_daily": ("demand_plan_version_id", "service_date", "customer_id"),
+        "facility_capacity_daily": ("capacity_plan_version_id", "service_date", "facility_id"),
+        "facility_supply_daily": ("capacity_plan_version_id", "service_date", "facility_id"),
+        "lane_capacity_daily": ("capacity_plan_version_id", "service_date", "lane_id"),
+        "baseline_network_flow_daily": ("demand_plan_version_id", "capacity_plan_version_id", "service_date", "lane_id"),
+        "demand_plan_versions": ("plan_version_id",),
+        "capacity_plan_versions": ("plan_version_id",),
+    }
+    def quoted(value):
+        if not value:
+            raise ValueError("Catalog and schema must be nonempty")
+        return "`" + value.replace("`", "``") + "`"
+    prefix = ".".join(quoted(value) for value in (catalog, schema))
+    missing = [name for name in NETWORK_TABLES
+               if not spark.catalog.tableExists(f"{prefix}.{quoted(name)}")]
+    if missing:
+        raise ValueError("Bootstrap the network before daily publication: " + ", ".join(missing))
+    # Daily facts rely on stable IDs. Keep verified access coordinates and
+    # network dimensions unchanged rather than replacing them with generated ones.
+    for table, key in (("dim_facilities", "facility_id"), ("dim_network_customers", "customer_id"),
+                       ("dim_network_lanes", "lane_id")):
+        existing = {str(row[key]) for row in spark.table(f"{prefix}.{quoted(table)}").select(key).collect()}
+        generated = {str(row[key]) for row in dataset[table]}
+        if generated - existing:
+            raise ValueError(f"Daily generation introduced unknown IDs in {table}; bootstrap deliberately first.")
+    counts = {}
+    for table, columns in keys.items():
+        view = "_network_daily_" + table
+        spark.createDataFrame(_normalize_rows(dataset[table])).createOrReplaceTempView(view)
+        condition = " AND ".join(f"target.{quoted(key)} = source.{quoted(key)}" for key in columns)
+        spark.sql(f"MERGE INTO {prefix}.{quoted(table)} target USING {quoted(view)} source "
+                  f"ON {condition} WHEN NOT MATCHED THEN INSERT *")
+        counts[table] = len(dataset[table])
+    return {"published": list(keys), "source_row_counts": counts}

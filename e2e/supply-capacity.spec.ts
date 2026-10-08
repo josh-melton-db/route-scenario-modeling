@@ -145,7 +145,7 @@ test('edits available supply and handling capacity independently', async ({ page
   await expect(page.getByLabel('Alpha Depot handling capacity percent exact value')).toHaveValue('100')
 })
 
-test('uses the selected scenario result, blocks stale latest data, and labels pinned history', async ({ page }) => {
+test('uses the selected scenario result, keeps previous solved data visible, and labels pinned history', async ({ page }) => {
   const alphaCurrent = scenario('network-alpha', 3)
   const betaCurrent = scenario('network-beta', 2)
   const staleAlpha = result('network-alpha', 2, 'alpha-stale', facilityAggregate('Alpha', 42, 88))
@@ -166,7 +166,8 @@ test('uses the selected scenario result, blocks stale latest data, and labels pi
 
   await page.goto(`${appUrl}/network/scenarios/network-alpha/flow`)
   await expect(page.getByText('This result is stale for the selected scenario')).toBeVisible()
-  await expect(page.getByLabel('Facility unmet demand details')).toHaveCount(0)
+  await expect(page.getByLabel('Facility unmet demand details')).toContainText('Alpha DC')
+  await expect(page.getByText(/The previous solved plan remains visible below/)).toBeVisible()
 
   await page.goto(`${appUrl}/network/scenarios/network-alpha/flow?run=alpha-history`)
   await expect(page.getByText(/Viewing pinned historical run/)).toContainText('alpha-history')
@@ -208,6 +209,6 @@ test('location shortage rolls up child demand rather than DC outbound volume', a
   const details = page.getByLabel('Facility unmet demand details')
   await expect(details).toContainText('Alpha DC, distribution center: 0 unmet cases at this target.')
   await expect(details).toContainText('Alpha Depot, depot: 0 unmet cases at this target.')
-  await expect(page.getByText('Location fill · unmet demand at target')).toBeVisible()
+  await expect(page.getByText('Depot fill · unmet demand at target')).toBeVisible()
   await expect(page.getByText('Lane color · utilization of capacity')).toBeVisible()
 })

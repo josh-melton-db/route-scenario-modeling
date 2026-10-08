@@ -162,6 +162,14 @@ class BaselineService:
         network_overview_service._options_cache = None
         return self.get_state()
 
+    def advance_daily_baseline(self) -> BaselineState:
+        """Adopt the newly published daily input, preserving historical snapshots."""
+        self._ensure_seeded()
+        revision = self._canonical_revision()
+        self.repository.advance_original(revision)
+        network_overview_service._options_cache = None
+        return self.get_state()
+
     def get_revision(self, revision_id: str | None = None) -> BaselineRevision:
         """Read-only revision snapshot for Stream B scenario provenance/comparison."""
         self._ensure_seeded()

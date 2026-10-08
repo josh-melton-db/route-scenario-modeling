@@ -73,10 +73,12 @@ def prepare_depot_routes(
     }
 
 
-def prepare_active_depot_routes(**kwargs: Any) -> dict[str, Any]:
+def prepare_active_depot_routes(*, refresh_daily_baseline: bool = False, **kwargs: Any) -> dict[str, Any]:
     from .baseline_service import baseline_service
     from .depot_plans import depot_plan_service
 
+    if refresh_daily_baseline:
+        baseline_service.advance_daily_baseline()
     return prepare_depot_routes(baseline=baseline_service, plans=depot_plan_service, **kwargs)
 
 
@@ -88,21 +90,21 @@ class DepotRoutePreparationManager:
         self._lock = threading.RLock()
         self._status: dict[str, Any] = {}
 
-    def start(self, service_date: str | None = None) -> dict[str, Any]:
+    def start(self, service_date: str | None = None, *, refresh_daily_baseline: bool = False) -> dict[str, Any]:
         from fastapi import HTTPException
         from .demo_state_gate import demo_state_gate
 
         with demo_state_gate.admission(), self._lock:
             if self._status.get("state") == "running":
-                if self._status["service_date"] != service_date:
+                if self._status["service_date"] != service_date or self._status.get("refresh_daily_baseline", False) != refresh_daily_baseline:
                     raise HTTPException(status_code=409, detail="Another route preparation is running.")
                 return dict(self._status)
             preparation_id = str(uuid.uuid4())
             self._status = {
                 "preparation_id": preparation_id, "state": "running",
-                "service_date": service_date, "report": None, "error": None,
+                "service_date": service_date, "refresh_daily_baseline": refresh_daily_baseline, "report": None, "error": None,
             }
-            threading.Thread(target=self._run, args=(service_date,),
+            threading.Thread(target=self._run, args=(service_date, refresh_daily_baseline),
                 name="depot-route-preparation", daemon=True).start()
             return dict(self._status)
 
@@ -118,9 +120,12 @@ class DepotRoutePreparationManager:
         with self._lock:
             return self._status.get("state") == "running"
 
-    def _run(self, service_date: str | None) -> None:
+    def _run(self, service_date: str | None, refresh_daily_baseline: bool = False) -> None:
         try:
-            report = self.prepare(service_date=service_date)
+            kwargs = {"service_date": service_date}
+            if refresh_daily_baseline:
+                kwargs["refresh_daily_baseline"] = True
+            report = self.prepare(**kwargs)
             with self._lock:
                 self._status.update(state="failed" if report["failed"] else "completed", report=report)
         except Exception as exc:

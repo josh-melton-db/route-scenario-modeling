@@ -30,6 +30,7 @@ interface NetworkDetailDrawerProps {
   onSelectFacility: (facilityId: string) => void
   shortageScenarioId?: string | null
   shortageRunId?: string | null
+  onRequestDcTransfer?: (facility: NetworkFacilityAggregate) => void
 }
 
 export default function NetworkDetailDrawer({
@@ -43,6 +44,7 @@ export default function NetworkDetailDrawer({
   onSelectFacility,
   shortageScenarioId,
   shortageRunId,
+  onRequestDcTransfer,
 }: NetworkDetailDrawerProps) {
   if (!facility && !lane) return null
 
@@ -93,7 +95,10 @@ export default function NetworkDetailDrawer({
         </div>
 
         <div className="space-y-2 border-t border-border p-4">
-          {facility && facility.demand_units > facility.assigned_units && shortageScenarioId ? (
+          {facility?.facility_type === 'distribution_center' && (unmetByFacility?.[facility.facility_id] ?? Math.max(0, facility.demand_units - facility.assigned_units)) > 0 && onRequestDcTransfer && (
+            <button type="button" onClick={() => onRequestDcTransfer(facility)} className="flex w-full items-center justify-center rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Assign supply from another DC</button>
+          )}
+          {facility?.facility_type === 'depot' && facility.demand_units > facility.assigned_units && shortageScenarioId ? (
             <ShortageWorkflowLink
               scenarioId={shortageScenarioId}
               runId={shortageRunId}
@@ -142,6 +147,10 @@ function FacilityDetails({ facility }: { facility: NetworkFacilityAggregate }) {
         <Metric label="Assigned flow" value={`${formatNumber(facility.assigned_units)} cases`} />
         <Metric label="Supplied capacity" value={`${formatNumber(facility.capacity_units)} cases`} />
         <Metric label="Utilization" value={formatPercent(facility.utilization_pct)} />
+        {facility.facility_type === 'distribution_center' && <>
+          <Metric label="Spare supply · horizon" value={facility.supply_available_units == null ? 'Not reported' : `${formatNumber(Math.max(0, facility.supply_available_units - facility.assigned_units))} cases`} />
+          <Metric label="Spare handling · horizon" value={facility.handling_available_units == null ? 'Not reported' : `${formatNumber(Math.max(0, facility.handling_available_units - facility.assigned_units))} cases`} />
+        </>}
         <Metric label="Modeled cost" value={formatCurrency(facility.total_cost)} />
         <Metric label="On-time outlook" value={formatPercent(facility.on_time_pct)} />
       </div>

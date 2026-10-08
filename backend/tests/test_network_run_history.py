@@ -115,3 +115,34 @@ def test_historical_lookup_survives_scenario_deletion_and_missing_run_is_404() -
     assert historical.json() == compact_result
     assert client.get(f"/api/network/scenarios/{scenario_id}/result").status_code == 404
     assert client.get("/api/network/runs/does-not-exist").status_code == 404
+
+
+def test_name_only_update_preserves_solved_revision_and_result() -> None:
+    scenario = _create_scenario("Name does not change the plan")
+    scenario_id = str(scenario["scenario_id"])
+    result = _run(scenario_id)["result"]
+    response = client.patch(f"/api/network/scenarios/{scenario_id}", json={
+        "expected_revision": scenario["revision"],
+        "scenario_name": "Renamed solved plan",
+    })
+    assert response.status_code == 200
+    assert response.json()["revision"] == result["revision"]
+    assert response.json()["status"] == "solved"
+    assert client.get(f"/api/network/scenarios/{scenario_id}/result").json()["run_id"] == result["run_id"]
+
+
+def test_parameter_edit_keeps_last_solved_result_until_recalculated() -> None:
+    scenario = _create_scenario("Keep last result on parameter edit")
+    scenario_id = str(scenario["scenario_id"])
+    result = _run(scenario_id)["result"]
+    response = client.patch(f"/api/network/scenarios/{scenario_id}", json={
+        "expected_revision": scenario["revision"],
+        "assumptions": {"unmet_penalty_per_case": 999},
+    })
+    assert response.status_code == 200
+    assert response.json()["revision"] == result["revision"] + 1
+    assert response.json()["status"] == "draft"
+    previous = client.get(f"/api/network/scenarios/{scenario_id}/result")
+    assert previous.status_code == 200
+    assert previous.json()["run_id"] == result["run_id"]
+    assert previous.json()["revision"] == result["revision"]

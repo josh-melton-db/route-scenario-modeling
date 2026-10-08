@@ -144,7 +144,7 @@ def _copy_checkout(repo: Path, output: Path) -> None:
     )
     # Preserve declared sync-exclude anchors so strict bundle validation does
     # not turn their intentional absence in the staging tree into warnings.
-    for excluded in ("node_modules", ".pytest_cache"):
+    for excluded in ("node_modules", ".pytest_cache", "__pycache__"):
         directory = output / excluded
         directory.mkdir()
         (directory / ".deployment-placeholder").touch()

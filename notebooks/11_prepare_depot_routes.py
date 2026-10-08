@@ -1,7 +1,13 @@
 # Databricks notebook source
+# MAGIC %pip install faker==40.38.0
+
+# COMMAND ----------
 """Request saved routes through the App, using its existing Lakebase/solver setup."""
 from datetime import date, datetime
 import json
+import os
+import sys
+from pathlib import PurePosixPath
 import time
 from zoneinfo import ZoneInfo
 
@@ -10,6 +16,9 @@ from databricks.sdk import WorkspaceClient
 
 dbutils.widgets.text("app_name", "route-scenario-modeling")  # type: ignore[name-defined]
 dbutils.widgets.text("service_date", "today")  # type: ignore[name-defined]
+dbutils.widgets.text("catalog", "demos")  # type: ignore[name-defined]
+dbutils.widgets.text("schema", "route_scenario_modeling")  # type: ignore[name-defined]
+dbutils.widgets.dropdown("publish_daily_plans", "true", ["true", "false"])  # type: ignore[name-defined]
 dbutils.widgets.text("timezone", "America/Indiana/Indianapolis")  # type: ignore[name-defined]
 
 workspace = WorkspaceClient()
@@ -22,6 +31,24 @@ if selected_date == "today":
     selected_date = datetime.now(ZoneInfo(dbutils.widgets.get("timezone"))).date().isoformat()  # type: ignore[name-defined]
 elif selected_date != "first":
     selected_date = date.fromisoformat(selected_date).isoformat()
+
+
+publish_daily = dbutils.widgets.get("publish_daily_plans").lower() == "true"  # type: ignore[name-defined]
+if publish_daily:
+    if selected_date == "first":
+        raise ValueError("Daily publication requires an explicit date or today.")
+    # Resolve the generation anchor before importing modules that freeze IDs.
+    os.environ["DEMO_DATE_ANCHOR"] = selected_date
+    notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()  # type: ignore[name-defined]
+    root = str(PurePosixPath(notebook_path).parent.parent)
+    sys.path.insert(0, root if root.startswith("/Workspace/") else "/Workspace" + root)
+    from route_opt.network_synthetic import national_dataset_cached
+    from route_opt.network_bootstrap import publish_daily_network_plans
+    publication = publish_daily_network_plans(
+        spark, national_dataset_cached(),  # type: ignore[name-defined]
+        catalog=dbutils.widgets.get("catalog"), schema=dbutils.widgets.get("schema"),  # type: ignore[name-defined]
+    )
+    print(json.dumps(publication, indent=2))
 
 
 def request(method, path, body=None):
@@ -37,6 +64,7 @@ def request(method, path, body=None):
 
 status = request("POST", "depot-routes/prepare", {
     "service_date": None if selected_date == "first" else selected_date,
+    "refresh_daily_baseline": publish_daily,
 })
 preparation_id = status["preparation_id"]
 deadline = time.monotonic() + 1900

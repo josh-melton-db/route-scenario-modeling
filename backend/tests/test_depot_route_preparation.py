@@ -70,3 +70,32 @@ def test_preparation_api_validates_dates_and_returns_pollable_id(monkeypatch):
     assert response.json()["service_date"] == "2026-10-06"
     assert client.get("/api/network/baseline/depot-routes/preparations/prep").json()["state"] == "completed"
     assert client.post("/api/network/baseline/depot-routes/prepare", json={"service_date": "invalid"}).status_code == 422
+
+
+def test_daily_preparation_refreshes_before_building_plan(monkeypatch):
+    from backend.services import baseline_service as baseline_module
+    from backend.services import depot_plans as plans_module
+    from backend.services import depot_route_preparation as module
+    calls = []
+    monkeypatch.setattr(baseline_module, "baseline_service", SimpleNamespace(
+        advance_daily_baseline=lambda: calls.append("refresh")))
+    monkeypatch.setattr(plans_module, "depot_plan_service", "plans")
+    monkeypatch.setattr(module, "prepare_depot_routes", lambda **kwargs: calls.append(kwargs) or {"failed": 0})
+    module.prepare_active_depot_routes(service_date="2026-10-08", refresh_daily_baseline=True)
+    assert calls[0] == "refresh"
+    assert calls[1]["service_date"] == "2026-10-08"
+
+
+def test_advance_daily_baseline_keeps_prior_revisions_and_proposals(monkeypatch):
+    from backend.services import baseline_repository as module
+    monkeypatch.setattr(module, "get_data_backend", lambda: "stub")
+    repository = module.BaselineRepository()
+    old = module.BaselineRevision("old", None, None, None, {"dim_facilities": []})
+    new = module.BaselineRevision("today", None, None, None, {"dim_facilities": []})
+    repository.seed(old)
+    proposal = module.BaselineProposalRecord("proposal", "run", "old", old)
+    repository._proposals["proposal"] = proposal
+    repository.advance_original(new)
+    assert repository.ids() == ("today", "today")
+    assert repository.revision("old").revision_id == "old"
+    assert repository._proposals["proposal"] == proposal

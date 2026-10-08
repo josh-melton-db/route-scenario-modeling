@@ -183,6 +183,7 @@ test('renders the 28-day pinned horizon and completes then resets a non-Tuesday 
   await expect(page).toHaveURL(/analyze\?/ )
   await expect(page.getByText('Selected override (infeasible)', { exact: true })).toBeVisible({ timeout: 10_000 })
   await expect(page.getByText(/Unserved: 5 cases/)).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Reallocate supply' })).toHaveCount(0)
   await page.getByRole('link', { name: 'Scenarios' }).click()
   await expect(page.getByLabel('Driver delta')).toHaveValue('-1')
 
@@ -276,4 +277,32 @@ test('dated scenario selects a delivery before editing its window', async ({ pag
   })
   await expect(page).toHaveURL(/analyze\?/)
   await expect(page.getByText('2026-09-01 routes')).toBeVisible()
+})
+
+test('opens today in Indianapolis and reuses its saved default without a solve request', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-09-04T14:00:00Z') })
+  const writes: string[] = []
+  const reads: string[] = []
+  await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() !== 'GET') writes.push(path)
+    if (path === '/api/depot-plans/plan-28') return route.fulfill({ json: planSet(28) })
+    if (path.startsWith('/api/depot-plans/plan-28/days/')) {
+      const serviceDate = path.split('/').at(-1)!
+      reads.push(serviceDate)
+      return route.fulfill({ json: {
+        plan_set_id: 'plan-28', service_date: serviceDate, route_scenario_id: 'default',
+        default_status: 'completed', override_status: null,
+        default_result: result(serviceDate, 'saved-today'), selected_result: result(serviceDate, 'saved-today'),
+        error: null,
+      } })
+    }
+    return route.fulfill({ status: 404, json: { detail: path } })
+  })
+  await page.goto(`${appUrl}/analyze?networkRun=run-28&depot=DPT_NORTH&depotPlan=plan-28`)
+  await expect(page).toHaveURL(/date=2026-09-04/)
+  await expect(page.getByText('2026-09-04 routes')).toBeVisible()
+  expect(reads).toContain('2026-09-04')
+  expect(writes).toEqual([])
 })

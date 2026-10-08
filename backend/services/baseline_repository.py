@@ -164,6 +164,28 @@ class BaselineRepository:
                 ("network", revision.revision_id, revision.revision_id), connection=connection,
             )
 
+    def advance_original(self, revision: BaselineRevision) -> None:
+        """Advance the daily baseline without deleting prior plans or proposals."""
+        self._ensure_lakebase()
+        if not self.uses_lakebase:
+            with self._lock:
+                self._revisions.setdefault(revision.revision_id, revision.copy())
+                self._original_id = self._active_id = revision.revision_id
+            return
+        with lakebase_store.postgres.transaction() as connection:
+            lakebase_store.postgres.execute(
+                f"INSERT INTO {self._table('network_baseline_revisions')} VALUES (%s,%s,%s,%s,%s) ON CONFLICT (revision_id) DO NOTHING",
+                (revision.revision_id, None, None, None, lakebase_store.postgres.jsonb(revision.rows)), connection=connection,
+            )
+            lakebase_store.postgres.execute(
+                f"INSERT INTO {self._table('network_baseline_option_revisions')} VALUES (%s,%s) ON CONFLICT (revision_id) DO NOTHING",
+                (revision.revision_id, lakebase_store.postgres.jsonb(self._option_payload(revision.rows))), connection=connection,
+            )
+            lakebase_store.postgres.execute(
+                f"UPDATE {self._table('network_baseline_state')} SET original_revision_id = %s, active_revision_id = %s WHERE singleton_key = %s",
+                (revision.revision_id, revision.revision_id, "network"), connection=connection,
+            )
+
     def replace_original(self, revision: BaselineRevision) -> None:
         """Atomically replace all revision history with a refreshed canonical seed."""
         self._ensure_lakebase()

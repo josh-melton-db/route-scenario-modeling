@@ -24,7 +24,7 @@ sync:
 variables:
   depot_routes_schedule_pause_status:
     description: Set UNPAUSED to prepare today's routes daily at 5 AM Indianapolis time
-    default: PAUSED
+    default: UNPAUSED
   catalog:
     description: Unity Catalog catalog (required)
   schema:

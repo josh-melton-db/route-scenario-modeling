@@ -30,7 +30,7 @@ def test_minimal_render_excludes_optional_resources(tmp_path: Path) -> None:
     morning_job = yaml.safe_load((output / "resources/depot_routes.job.yml").read_text())["resources"]["jobs"]["depot_routes_morning"]
     assert morning_job["schedule"]["timezone_id"] == "America/Indiana/Indianapolis"
     assert morning_job["schedule"]["pause_status"] == "${var.depot_routes_schedule_pause_status}"
-    assert bundle["variables"]["depot_routes_schedule_pause_status"]["default"] == "PAUSED"
+    assert bundle["variables"]["depot_routes_schedule_pause_status"]["default"] == "UNPAUSED"
     assert (output / "notebooks/11_prepare_depot_routes.py").is_file()
     app = bundle["resources"]["apps"]["route_scenario_modeling_app"]
     assert {resource["name"] for resource in app["resources"]} == {

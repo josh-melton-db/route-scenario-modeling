@@ -1,11 +1,13 @@
-import { useEffect, useMemo } from 'react'
+import { lazy, Suspense, useEffect, useMemo } from 'react'
 import { Loader2 } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '@/api/client'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type {
   NetworkOverviewParams,
   NetworkOptions,
+  NetworkFacilityAggregate,
+  NetworkScenarioException,
 } from '@/api/types'
 import { useNetworkOptions, useNetworkOverview } from '@/api/queries'
 import EmptyState from '@/components/EmptyState'
@@ -17,6 +19,8 @@ import NetworkInsightRail from '@/components/NetworkInsightRail'
 import NetworkKpiStrip from '@/components/NetworkKpiStrip'
 import NetworkBaselineActions from '@/components/NetworkBaselineActions'
 import { buildDepotAnalysisHref, buildRouteWorkspaceHref } from '@/lib/networkLinks'
+
+const ReallocateSupplyModal = lazy(() => import('./NetworkScenarioDetailPage').then((module) => ({ default: module.ReallocateSupplyModal })))
 
 const queryNames: Record<keyof NetworkOverviewParams, string> = {
   demand_plan_version_id: 'demandPlan',
@@ -41,6 +45,45 @@ export default function NetworkPage() {
     queryKey: ['network-baseline-plan-run', context],
     queryFn: () => api.networkBaselinePlanRun(context!),
     enabled: Boolean(context),
+  })
+  const unmetByFacility = useMemo(() => {
+    const facilities = overview.data?.facilities ?? []
+    const inbound = new Map<string, number>()
+    for (const lane of overview.data?.lanes ?? []) {
+      if (lane.lane_type !== 'LINEHAUL') continue
+      inbound.set(lane.destination_endpoint_id, (inbound.get(lane.destination_endpoint_id) ?? 0) + lane.assigned_units)
+    }
+    const unmet = Object.fromEntries(facilities.filter((row) => row.facility_type === 'depot')
+      .map((row) => [row.facility_id, Math.max(0, row.demand_units - (inbound.get(row.facility_id) ?? row.assigned_units))]))
+    for (const dc of facilities.filter((row) => row.facility_type === 'distribution_center')) {
+      unmet[dc.facility_id] = facilities.filter((row) => row.parent_facility_id === dc.facility_id)
+        .reduce((sum, depot) => sum + (unmet[depot.facility_id] ?? 0), 0)
+    }
+    return unmet
+  }, [overview.data])
+  const transfer = useMutation({
+    mutationFn: async (facility: NetworkFacilityAggregate) => {
+      if (!baselinePlan.data) throw new Error('The baseline planning context is still loading.')
+      const source = await api.networkScenario(baselinePlan.data.scenario_id)
+      const scenario = await api.createNetworkScenario({
+        scenario_name: `Supply for ${facility.facility_name}`,
+        baseline_scenario_id: source.baseline_scenario_id,
+        source_baseline_revision_id: source.source_baseline_revision_id,
+        demand_plan_version_id: source.demand_plan_version_id,
+        capacity_plan_version_id: source.capacity_plan_version_id,
+        horizon_start: source.horizon_start,
+        horizon_end: source.horizon_end,
+        region_id: source.region_id,
+        assumptions: source.assumptions,
+      })
+      const shortage: NetworkScenarioException = {
+        exception_id: `dc-supply-${facility.facility_id}`, exception_type: 'unmet_demand', severity: 'warning',
+        service_date: null, entity_type: 'facility', entity_id: facility.facility_id,
+        message: 'Unmet demand across this distribution center’s depots.',
+        unmet_units: unmetByFacility[facility.facility_id] ?? 0,
+      }
+      return { scenario, shortage }
+    },
   })
 
   useEffect(() => {
@@ -178,6 +221,8 @@ export default function NetworkPage() {
       <NetworkBaselineActions />
       {baselinePlan.isLoading && <p className="text-xs text-muted-foreground">Preparing the baseline's immutable depot-planning context…</p>}
       {baselinePlan.error && <p role="alert" className="text-xs text-destructive">Depot planning context could not be loaded: {String(baselinePlan.error)}</p>}
+      {transfer.isPending && <p role="status" className="text-xs text-muted-foreground">Preparing an editable supply scenario…</p>}
+      {transfer.error && <p role="alert" className="text-xs text-destructive">{String(transfer.error)}</p>}
       {overview.data.is_partial && (
         <div className="rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-xs text-warning">
           This view is partial. Available facts are shown with their latest published freshness.
@@ -202,6 +247,8 @@ export default function NetworkPage() {
         facility={selectedFacility}
         lane={selectedLane}
         facilities={facilities}
+        unmetByFacility={unmetByFacility}
+        onRequestDcTransfer={(facility) => { if (!transfer.isPending) transfer.mutate(facility) }}
         depotAnalysisHref={depotAnalysisHref}
         dcAnalysisHref={dcAnalysisHref}
         onClose={() => {
@@ -214,6 +261,18 @@ export default function NetworkPage() {
         shortageScenarioId={baselinePlan.data?.scenario_id}
         shortageRunId={baselinePlan.data?.run_id}
       />
+      {transfer.data && (
+        <Suspense fallback={<p role="status">Loading supply options…</p>}>
+          <ReallocateSupplyModal
+            shortage={transfer.data.shortage}
+            scenario={transfer.data.scenario}
+            facilities={options.data.facilities}
+            lanes={overview.data.lanes}
+            facilityAggregates={facilities}
+            onClose={() => transfer.reset()}
+          />
+        </Suspense>
+      )}
     </div>
   )
 }

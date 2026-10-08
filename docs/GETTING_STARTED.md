@@ -31,21 +31,21 @@ route-preparation API and polls for completion, so compute uses the App's
 Lakebase identity and routing configuration. Grant the Job's run-as identity
 `CAN_USE` on the App. The App must be running and accessible from job compute.
 
-The schedule defaults to paused. After deploying and validating a manual run:
+The schedule is enabled at 5 AM, including the dev target. Run it manually after deployment to prepare today's routes immediately:
 
 ```bash
 databricks bundle run depot_routes_morning -t <target> --profile <profile>
 ```
 
-Unpause it in Jobs, or set the bundle variable
-`depot_routes_schedule_pause_status=UNPAUSED` for subsequent deployments.
-Development-mode bundles also pause schedules by default; use a production
-target for an active recurring schedule. Always choose your own CLI profile.
+Each run appends a dated 28-day demand/capacity snapshot before preparing today's
+routes. Existing dimensions (including repaired road access coordinates), prior
+input versions, baseline snapshots, and user scenarios are retained. The baseline
+home advances to the new daily snapshot; old scenario links keep their own saved
+inputs and results. Depot entry defaults to today in Indianapolis when the saved
+horizon includes it, or the nearest date in historical/future horizons. Set
+`publish_daily_plans=false` for a manual cache-only invocation. To disable the
+schedule, deploy with `depot_routes_schedule_pause_status=PAUSED`.
 
-This job prepares routes for the active baseline; it does not generate new
-demand or advance the finite demo horizon. Today's date must fall inside that
-horizon. Changed inputs require a new baseline/run rather than overwriting a
-previously saved plan. No live schedule is created by editing these files.
 
 ## 1. Prerequisites
 

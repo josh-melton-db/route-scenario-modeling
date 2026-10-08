@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import DeckGL from '@deck.gl/react'
-import { ArcLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
+import { ArcLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import { Map as MapLibreMap } from 'react-map-gl/maplibre'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type {
@@ -125,37 +125,12 @@ export default function NetworkFlowMap({
         return lane.lane_id === selectedLaneId ? base + 3 : base
       }
       const activeLanes = mapLanes.filter((lane) => lane.assigned_units > 0)
-      const expressAir = activeLanes.filter((lane) => lane.mode.toUpperCase() === 'AIR')
-      const linehaul = activeLanes.filter(
-        (lane) => lane.lane_type === 'LINEHAUL' && lane.mode.toUpperCase() !== 'AIR',
-      )
       const depots = facilities.filter((facility) => facility.facility_type === 'depot')
       const distributionCenters = facilities.filter((facility) => facility.facility_type === 'distribution_center')
       return [
-        new PathLayer<NetworkLaneAggregate>({
-          id: 'network-linehaul-lines',
-          data: linehaul,
-          getPath: (lane) => [
-            [lane.origin_location.lng, lane.origin_location.lat],
-            [lane.destination_location.lng, lane.destination_location.lat],
-          ],
-          getColor: flowColor,
-          getWidth: arcWidth,
-          widthUnits: 'pixels',
-          widthMinPixels: 5,
-          widthMaxPixels: 19,
-          capRounded: true,
-          jointRounded: true,
-          pickable: true,
-          autoHighlight: true,
-          updateTriggers: {
-            getColor: [colors],
-            getWidth: [maxFlow, selectedLaneId],
-          },
-        }),
         new ArcLayer<NetworkLaneAggregate>({
-          id: 'network-express-air-arcs',
-          data: expressAir,
+          id: 'network-flow-arcs',
+          data: activeLanes,
           getSourcePosition: (lane) => [lane.origin_location.lng, lane.origin_location.lat],
           getTargetPosition: (lane) => [lane.destination_location.lng, lane.destination_location.lat],
           getSourceColor: flowColor,
@@ -175,25 +150,6 @@ export default function NetworkFlowMap({
             getSourceColor: [colors],
             getTargetColor: [colors],
           },
-        }),
-        new TextLayer<NetworkLaneAggregate>({
-          id: 'network-express-air-labels',
-          data: expressAir,
-          getPosition: (lane) => [
-            (lane.origin_location.lng + lane.destination_location.lng) / 2,
-            (lane.origin_location.lat + lane.destination_location.lat) / 2,
-          ],
-          getText: (lane) =>
-            `${lane.origin_endpoint_name} → ${lane.destination_endpoint_name} · AIR · ${formatCurrency(lane.total_cost)}`,
-          getColor: colors.foreground,
-          getSize: 12,
-          sizeUnits: 'pixels',
-          getPixelOffset: [0, -14],
-          background: true,
-          getBackgroundColor: [15, 23, 42, 220],
-          backgroundPadding: [5, 3],
-          billboard: true,
-          pickable: false,
         }),
         new ScatterplotLayer<NetworkFacilityAggregate>({
           id: 'network-depot-dots',
@@ -336,20 +292,6 @@ export default function NetworkFlowMap({
           </span>
           <span className="flex items-center gap-1.5">
             <span className="h-1.5 w-4 rounded bg-destructive" /> ≥10%
-          </span>
-        </div>
-        <div className="mt-2 flex flex-col gap-1 border-t border-border pt-2 text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden>
-              <line x1="1" y1="8" x2="17" y2="8" stroke="currentColor" strokeWidth="2" />
-            </svg>
-            Linehaul freight · flat
-          </span>
-          <span className="flex items-center gap-1.5">
-            <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden>
-              <path d="M1 9 Q9 -3 17 9" fill="none" stroke="currentColor" strokeWidth="2" />
-            </svg>
-            Express AIR · elevated arc →
           </span>
         </div>
         <div className="mt-2 flex items-center gap-2 border-t border-border pt-2 text-muted-foreground">

@@ -1092,7 +1092,7 @@ class NetworkScenarioService:
                 "parent_run_id": scenario.assumptions.parent_run_id,
                 "release_overlays": scenario.assumptions.release_overlays,
             })
-        changed = name != scenario.scenario_name or (
+        changed = (
             requested_assumptions is not None
             and requested_assumptions != scenario.assumptions
         )
@@ -1109,7 +1109,7 @@ class NetworkScenarioService:
         )
         self._validate_input_references(updated)
         self.repository.save(
-            updated, clear_result=changed, expected_revision=request.expected_revision
+            updated, clear_result=False, expected_revision=request.expected_revision
         )
         return updated
 

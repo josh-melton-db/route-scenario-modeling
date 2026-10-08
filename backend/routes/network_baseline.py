@@ -16,13 +16,15 @@ router = APIRouter(prefix="/network/baseline", tags=["network-baseline"])
 class PrepareDepotRoutesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     service_date: date | None = None
+    refresh_daily_baseline: bool = False
 
 
 @router.post("/depot-routes/prepare", status_code=202)
 def prepare_depot_routes(request: PrepareDepotRoutesRequest) -> dict:
     from ..services.depot_route_preparation import depot_route_preparation_manager
+    kwargs = {"refresh_daily_baseline": True} if request.refresh_daily_baseline else {}
     return depot_route_preparation_manager.start(
-        request.service_date.isoformat() if request.service_date else None)
+        request.service_date.isoformat() if request.service_date else None, **kwargs)
 
 
 @router.get("/depot-routes/preparations/{preparation_id}")
