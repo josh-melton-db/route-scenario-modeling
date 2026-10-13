@@ -37,10 +37,12 @@ class CostParameters:
         if not overrides:
             return self
         allowed = {field.name for field in fields(self)}
+        # Table rows store an all-null override column as "" and may carry
+        # numeric strings, so treat blanks as unset and keep each field's type.
         updates = {
-            key: value
+            key: type(getattr(self, key))(value)
             for key, value in overrides.items()
-            if key in allowed and value is not None
+            if key in allowed and value is not None and value != ""
         }
         return replace(self, **updates) if updates else self
 
