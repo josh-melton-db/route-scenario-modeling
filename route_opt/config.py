@@ -30,8 +30,12 @@ def get_widget_value(name: str, default: str) -> str:
     `dbutils` is not defined.
     """
 
+    # `dbutils` is a notebook global, not a module global, so read it from the
+    # notebook's IPython namespace.
     try:
-        value = dbutils.widgets.get(name)  # type: ignore[name-defined]
+        from IPython import get_ipython
+
+        value = get_ipython().user_ns["dbutils"].widgets.get(name)
     except Exception:
         return default
     return value or default

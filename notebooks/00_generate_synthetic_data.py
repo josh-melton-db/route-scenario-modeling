@@ -1,4 +1,7 @@
 # Databricks notebook source
+# MAGIC %pip install faker==40.38.0
+
+# COMMAND ----------
 import sys
 from pathlib import PurePosixPath
 
@@ -15,8 +18,7 @@ except Exception:
     pass
 
 from route_opt.config import config_from_widgets
-from route_opt.schemas import NETWORK_TABLES
-from route_opt.spark_io import write_rows_as_parquet, write_rows_as_table
+from route_opt.spark_io import write_rows_as_parquet
 from route_opt.synthetic import generate_all
 
 config = config_from_widgets()
@@ -28,18 +30,6 @@ tables = generate_all(seed=42, customer_count=250, network_scope="national")
 for table_name, rows in tables.items():
     write_rows_as_parquet(spark, rows, f"{config.raw_path}/{table_name}")
 
-gold_table_map = {
-    "dim_depots_augmented": tables["depot_master"],
-    "dim_customers_augmented": tables["location_data"],
-    "dim_customer_constraints": tables["location_data"],
-    "dim_fleet_assets": tables["fleet_assets"],
-    "dim_drivers": tables["drivers"],
-    "fact_customer_product_demand": tables["fact_customer_product_demand"],
-    "fact_delivery_orders": tables["fact_delivery_orders"],
-    "cost_parameters": tables["cost_parameters"],
-    **{table_name: tables[table_name] for table_name in NETWORK_TABLES},
-}
-for table_name, rows in gold_table_map.items():
-    write_rows_as_table(spark, rows, config.table(table_name))
-
+# The medallion pipeline owns the gold tables and network_bootstrap owns the
+# canonical network tables, so this task only lands raw data.
 print(f"Generated {len(tables)} raw datasets under {config.raw_path}")

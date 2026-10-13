@@ -1,4 +1,7 @@
 # Databricks notebook source
+# MAGIC %pip install faker==40.38.0
+
+# COMMAND ----------
 import json
 import sys
 from pathlib import PurePosixPath

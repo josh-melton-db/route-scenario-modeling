@@ -158,3 +158,39 @@ def test_materializes_resolved_schema_for_app_only(tmp_path: Path) -> None:
     assert bundle["resources"]["schemas"]["route_scenario_modeling_schema"]["name"] == "${var.schema}"
     app_env = {item["name"]: item for item in yaml.safe_load((output / "app.yaml").read_text())["env"]}
     assert app_env["DATABRICKS_SCHEMA"]["value"] == resolved
+
+
+def test_tags_apply_to_taggable_resources(tmp_path: Path) -> None:
+    config_path = tmp_path / "tagged.json"
+    raw = json.loads((ROOT / "configs/deployment/solver-provision.example.json").read_text())
+    raw["tags"] = {"mfg_subindustry": "Logistics"}
+    config_path.write_text(json.dumps(raw))
+    output = render(config_path, ROOT, tmp_path / "rendered")
+    bundle = yaml.safe_load((output / "databricks.yml").read_text())
+    assert bundle["resources"]["sql_warehouses"]["sql_warehouse"]["tags"] == {
+        "custom_tags": [{"key": "mfg_subindustry", "value": "Logistics"}]
+    }
+    lakebase = yaml.safe_load((output / "resources/lakebase.yml").read_text())["resources"]
+    assert lakebase["postgres_projects"]["route_scenario_modeling_lakebase"]["custom_tags"] == [
+        {"key": "mfg_subindustry", "value": "Logistics"}
+    ]
+    jobs = yaml.safe_load((output / "resources/jobs.yml").read_text())["resources"]["jobs"]
+    assert jobs["route_scenario_modeling_plan"]["tags"] == {"mfg_subindustry": "Logistics"}
+    pipelines = yaml.safe_load((output / "resources/pipelines.yml").read_text())["resources"]["pipelines"]
+    assert pipelines["route_scenario_modeling_pipeline"]["tags"] == {"mfg_subindustry": "Logistics"}
+
+
+def test_compute_tags_replace_ampersand(tmp_path: Path) -> None:
+    config_path = tmp_path / "tagged.json"
+    raw = json.loads((ROOT / "configs/deployment/minimal.example.json").read_text())
+    raw["tags"] = {"mfg_outcome_usecase": "Distribution & Logistics Optimization"}
+    config_path.write_text(json.dumps(raw))
+    output = render(config_path, ROOT, tmp_path / "rendered")
+    bundle = yaml.safe_load((output / "databricks.yml").read_text())
+    assert bundle["resources"]["sql_warehouses"]["sql_warehouse"]["tags"]["custom_tags"][0]["value"] == (
+        "Distribution and Logistics Optimization"
+    )
+    lakebase = yaml.safe_load((output / "resources/lakebase.yml").read_text())["resources"]
+    assert lakebase["postgres_projects"]["route_scenario_modeling_lakebase"]["custom_tags"][0]["value"] == (
+        "Distribution & Logistics Optimization"
+    )

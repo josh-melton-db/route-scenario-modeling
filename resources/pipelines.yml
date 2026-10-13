@@ -15,7 +15,7 @@ resources:
       serverless: true
       photon: true
       continuous: false
-      development: true
+      development: ${var.pipeline_development}
       channel: current
       configuration:
         catalog: ${var.catalog}

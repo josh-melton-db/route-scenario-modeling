@@ -306,9 +306,11 @@ def test_network_scenario_lifecycle() -> None:
     assert edited.status_code == 200
     assert edited.json()["revision"] == 2
     assert edited.json()["status"] == "draft"
-    assert (
-        client.get(f"/api/network/scenarios/{scenario_id}/result").status_code == 404
-    )
+    # Edits keep the last solved result for plan history; it stays pinned to
+    # the revision it solved, so it is stale relative to the edited draft.
+    retained = client.get(f"/api/network/scenarios/{scenario_id}/result")
+    assert retained.status_code == 200
+    assert retained.json()["revision"] == 1
 
     revalidated = client.post(f"/api/network/scenarios/{scenario_id}/validate").json()
     assert revalidated["validation"]["valid"] is True

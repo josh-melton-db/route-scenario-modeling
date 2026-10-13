@@ -48,6 +48,9 @@ variables:
   solver_model_alias:
     description: Alias used by the solve task when loading the route solver model
     default: champion
+  pipeline_development:
+    description: Run the medallion pipeline in development mode (production targets require false)
+    default: true
   route_solver_endpoint_name:
     description: Databricks Model Serving endpoint used for interactive route solves
     default: route-solver
@@ -93,6 +96,8 @@ targets:
     mode: production
     workspace:
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      pipeline_development: false
 
 resources:
   sql_warehouses:

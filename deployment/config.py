@@ -5,7 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +41,7 @@ class DeploymentConfig:
     preset: str
     variables: dict[str, str]
     routing: dict[str, Any]
+    tags: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> "DeploymentConfig":
@@ -87,7 +88,12 @@ class DeploymentConfig:
                 raise ValueError(f"routing.coverage_manifest is required for {mode}")
             if not routing.get("valhalla_app"):
                 raise ValueError(f"routing.valhalla_app is required for {mode}")
-        return cls(raw["name"], raw["preset"], raw["variables"], routing)
+        tags = raw.get("tags", {})
+        if not isinstance(tags, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in tags.items()
+        ):
+            raise ValueError("tags must be an object of string keys and values")
+        return cls(raw["name"], raw["preset"], raw["variables"], routing, dict(tags))
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -150,6 +156,20 @@ def _copy_checkout(repo: Path, output: Path) -> None:
         (directory / ".deployment-placeholder").touch()
 
 
+def _apply_tags(resources: dict[str, Any], tags: dict[str, str]) -> None:
+    # Apps have no tag field and UC schema tags are governed outside the
+    # bundle, so tags cover every bundle resource type that accepts them.
+    for project in resources.get("postgres_projects", {}).values():
+        project["custom_tags"] = [{"key": key, "value": value} for key, value in tags.items()]
+    # Compute tag values reject "&", which governed tag values may contain.
+    tags = {key: value.replace("&", "and") for key, value in tags.items()}
+    for warehouse in resources.get("sql_warehouses", {}).values():
+        warehouse["tags"] = {"custom_tags": [{"key": key, "value": value} for key, value in tags.items()]}
+    for kind in ("jobs", "pipelines"):
+        for resource in resources.get(kind, {}).values():
+            resource["tags"] = {**resource.get("tags", {}), **tags}
+
+
 def render(config_path: Path, repo: Path, output: Path) -> Path:
     config = DeploymentConfig.load(config_path)
     managed_root = repo / ".databricks" / "deployment-render"
@@ -206,6 +226,14 @@ def render(config_path: Path, repo: Path, output: Path) -> Path:
     manifest = config.routing.get("coverage_manifest")
     if manifest:
         env.append({"name": "ROUTING_COVERAGE_MANIFEST", "value": manifest})
+
+    if config.tags:
+        _apply_tags(bundle["resources"], config.tags)
+        for include in bundle["include"]:
+            include_path = output / include
+            included = yaml.safe_load(include_path.read_text())
+            _apply_tags(included.get("resources", {}), config.tags)
+            include_path.write_text(yaml.safe_dump(included, sort_keys=False))
 
     # Values remain CLI variables, making the rendered bundle safe to inspect.
     bundle_path.write_text(yaml.safe_dump(bundle, sort_keys=False))

@@ -41,9 +41,16 @@ def _scenario() -> dict[str, object]:
 def test_update_requires_matching_revision() -> None:
     scenario = _scenario()
     scenario_id = str(scenario["scenario_id"])
-    first = client.patch(
+    renamed = client.patch(
         f"/api/network/scenarios/{scenario_id}",
         json={"expected_revision": 1, "scenario_name": "revision two"},
+    )
+    assert renamed.status_code == 200
+    # Renames do not change solve inputs, so only assumptions advance revision.
+    assert renamed.json()["revision"] == 1
+    first = client.patch(
+        f"/api/network/scenarios/{scenario_id}",
+        json={"expected_revision": 1, "assumptions": {"unmet_penalty_per_case": 300.0}},
     )
     assert first.status_code == 200
     assert first.json()["revision"] == 2
@@ -82,7 +89,7 @@ def test_async_launch_is_idempotent_and_produces_immutable_result() -> None:
     snapshot = network_scenario_service.get_run_snapshot(run_id)
     edited = client.patch(
         f"/api/network/scenarios/{scenario_id}",
-        json={"expected_revision": 1, "scenario_name": "edited during solve"},
+        json={"expected_revision": 1, "assumptions": {"unmet_penalty_per_case": 300.0}},
     )
     assert edited.status_code == 200
     stale_result = snapshot.result.model_copy(

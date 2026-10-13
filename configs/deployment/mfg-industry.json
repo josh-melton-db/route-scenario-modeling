@@ -1,0 +1,19 @@
+{
+  "name": "mfg-industry",
+  "preset": "enhanced",
+  "variables": {
+    "catalog": "manufacturing",
+    "schema": "route_scenario_modeling",
+    "lakebase_database_owner_role_id": "josh-melton",
+    "route_solver_endpoint_name": "route-solver",
+    "depot_routes_schedule_pause_status": "PAUSED"
+  },
+  "tags": {
+    "mfg_subindustry": "Logistics",
+    "mfg_outcome_usecase": "Distribution & Logistics Optimization"
+  },
+  "routing": {
+    "mode": "approximate_development",
+    "allow_haversine_fallback": false
+  }
+}
