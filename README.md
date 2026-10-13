@@ -26,6 +26,18 @@ Model Serving / Valhalla
 
 Keeping analytical inputs, interactive state, the application, and compute services behind separate interfaces is the repository's central design lesson. Each layer can evolve independently.
 
+## What's in the App
+
+| Area | What it shows |
+|---|---|
+| **Network** | Facilities, lanes, demand, supply, and handling capacity on the flow map; baseline shortages and exceptions; network plans with tariff, supply, capacity, and DC transfer changes. Each solved plan has **Scenario**, **Plan flow**, **Lane changes**, **Rate audit**, and **Exceptions** tabs, and can be compared with the baseline, then proposed and accepted as the new baseline. |
+| **DC** | One distribution center's child depots, demand, and supply within the pinned network run. |
+| **Depot** | Dated vehicle routes for one depot, with a calendar for lazy per-day solves and a side-by-side comparison of route scenarios. |
+| **Scenarios** | Depot route scenarios: add deliveries, move the facility, change delivery windows, adjust drivers and route limits, or release deliveries back to the network for reassignment. |
+| **Rates** | Carrier contracts with immutable published versions, lane rates, and the depot rate book for the selected date. |
+| **Inputs** | The saved deliveries, fleet, and cost parameters behind the selected depot scenario and date. |
+| **Setup and readiness** | Lakebase, SQL warehouse, solver, and routing coverage checks, with pings to wake idle compute. The **As of [date]** control resets demo data. |
+
 ## Five-minute local run
 
 Prerequisites: Python 3.12, Node.js 20+, and npm.
@@ -86,15 +98,21 @@ Read [Adapting the accelerator](docs/ADAPTING.md) before replacing synthetic inp
 ## Repository map
 
 ```text
-route_opt/     reusable optimization, synthetic data, and planning logic
-backend/       FastAPI API and store/service implementations
-src/           React application
-notebooks/     data generation, planning, and publishing tasks
-pipelines/     Lakeflow pipeline definitions
-resources/     Databricks bundle resources
+route_opt/        reusable optimization, synthetic data, and planning logic
+backend/          FastAPI API, store/service implementations, and backend tests
+src/              React application
+notebooks/        data generation, planning, and publishing tasks
+pipelines/        Lakeflow pipeline definitions
+resources/        Databricks bundle resources
+deployment/       operator-config renderer behind scripts/deploy-demo
+configs/          deployment config templates (*.example.json; your own configs are Git-ignored)
+scripts/          deploy, doctor, verification, grant, and Valhalla tooling
+routing_coverage/ Valhalla coverage manifests for regional road matrices
 valhalla_service/ vendored regional matrix service and deployment tooling
-docs/          public setup, architecture, and adoption guides
-planning/      internal implementation history (not distributed)
+tests/            Python tests for route_opt and deployment rendering
+e2e/              Playwright browser tests
+docs/             public setup, architecture, and adoption guides
+planning/         internal implementation history (not distributed)
 ```
 
 ## Documentation

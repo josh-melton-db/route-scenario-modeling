@@ -13,7 +13,7 @@ This presentation tells one planning story in about 12 minutes. It emphasizes fo
 npm run verify:fast
 ```
 
-Deploy the chosen configuration with `scripts/deploy-demo --config <your-config>.json --profile <profile> --target <target>` (copy `configs/deployment/enhanced.example.json` and fill in your workspace values). Confirm the readiness page shows the expected Lakebase, warehouse, solver, and validated Texas routing coverage. Use a fixed `DEMO_DATE_ANCHOR` if the presentation requires a fixed calendar.
+Deploy the chosen configuration with `scripts/deploy-demo --config <your-config>.json --profile <profile> --target <target>` (copy a template from `configs/deployment/` and fill in your workspace values). Open **Setup and readiness** (the gear icon in the top bar) and confirm Lakebase, the SQL warehouse, and the routing mode your configuration selects. With Model Serving or Valhalla configured, also confirm the solver endpoint and validated coverage region. Use **Ping SQL warehouse** and **Ping Route solver** to wake idle compute before presenting. Use a fixed `DEMO_DATE_ANCHOR` if the presentation requires a fixed calendar.
 
 Click the **As of [date]** button and confirm the reset before presenting. This clears prior network scenarios, runs, demand changes, and depot plans; restores the generated original baseline; and starts solver endpoint warm-up in the background. Wait for warm-up to complete before the route demonstration. An active optimization must finish before reset can proceed. The minimal configuration skips remote solver warm-up.
 
@@ -26,29 +26,33 @@ Show the architecture diagram and explain the responsibility of each layer:
 - React and FastAPI form the Databricks App experience.
 - The solver and travel matrix are replaceable services.
 
-The minimal configuration uses local OR-Tools and approximate travel. The enhanced DEFAULT configuration uses Model Serving for depot solves, Valhalla truck matrices for validated Texas coverage, and labeled approximate matrices elsewhere. Network optimization uses the separate min-cost-flow optimizer.
+The minimal configuration uses local OR-Tools and approximate travel. An enhanced `serving_regional` configuration (see `configs/deployment/enhanced.example.json`) uses Model Serving for depot solves, Valhalla truck matrices inside its validated coverage region, and labeled approximate matrices elsewhere. Network optimization uses the separate min-cost-flow optimizer.
 
 ## 2. Inspect the network — 2 minutes
 
-Open the network page. Point out facilities, demand, capacity, baseline assignments, and the data-as-of date. Select a region or depot and explain that this view comes from canonical planning inputs.
+Open the network page. Point out facilities, demand, capacity, baseline assignments, and the data-as-of date. Select a region or depot and explain that this view comes from canonical planning inputs. Open a DC to show its child depots, their demand, and the pinned network run they belong to.
 
 Ask: “Where is the network under pressure, and what change should we test?”
 
 ## 3. Create and solve a scenario — 3 minutes
 
-Select TOLA, open the baseline, and create an editable copy. Add a tariff rule with Mexico as the origin and United States as the destination, effective for the full service horizon. Demo **$0.10/case** first, then **$5/case** in a separate copy of the same baseline. The generated baseline includes Monterrey-to-Dallas and Monterrey-to-San Antonio shipments with domestic alternatives. Keep the same demand, capacity versions, and service horizon for both scenarios.
+Select TOLA, open the baseline, and choose **Create editable copy**. Add a tariff rule with Mexico as the origin and United States as the destination, effective for the full service horizon. Demo **$0.10/case** first, then **$5/case** in a separate copy of the same baseline. The generated baseline includes Monterrey-to-Dallas and Monterrey-to-San Antonio shipments with domestic alternatives. Keep the same demand, capacity versions, and service horizon for both scenarios.
 
-Run the scenario. Show the durable run identity and status. Compare cross-border assigned cases, tariff cost, domestic linehaul, and unmet demand. Raising tariffs makes the foreign corridor less attractive; domestic capacity and other constraints still determine whether all cross-border shipments can disappear. Check the deployment verification report for the tariff values and observed flows used in the tested demo.
+Run the scenario. Show the durable run identity and status. Compare cross-border assigned cases, tariff cost, domestic linehaul, and unmet demand. Raising tariffs makes the foreign corridor less attractive; domestic capacity and other constraints still determine whether all cross-border shipments can disappear.
 
-DEFAULT dev acceptance on 2026-10-05 used a one-day TOLA horizon: cross-border
-assigned cases were **3,761** without tariffs, **1,791** with **$0.10/case**, and
-**zero** with **$5/case**. Use the same horizon and frozen input versions for a
-comparable demonstration; these counts are evidence for the generated demo,
-not a guarantee for other data or horizons.
+A reference run on 2026-10-05 used a one-day TOLA horizon over the generated
+demo data: cross-border assigned cases were **3,761** without tariffs, **1,791**
+with **$0.10/case**, and **zero** with **$5/case**. Use the same horizon and
+frozen input versions for a comparable demonstration; these counts are evidence
+for the generated demo, not a guarantee for other data or horizons.
 
 ## 4. Drill into a depot — 2 minutes
 
-Open Dallas or San Antonio from the solved network. The immediate service date solves automatically; the calendar in the routes header selects later dates for lazy evaluation. Inspect routes and stops. Open **Scenarios** to add deliveries, move the facility, change a delivery time window, or adjust drivers and route limits. This tab contains constraint editors. Run the named scenario to return to **Depot** for a side-by-side dated comparison. Result execution metadata remains available in the API for verifying Model Serving and Texas Valhalla coverage; execution paragraphs are omitted from the presentation UI.
+Open Dallas or San Antonio from the solved network. The immediate service date solves automatically; the calendar selects later dates for lazy evaluation. The **Depot** tab is the depot comparison: inspect routes and stops on one map, or pick a second scenario under **Compare with** for a side-by-side dated comparison.
+
+Open **Scenarios** to add deliveries, move the facility, change a delivery time window, or adjust drivers and route limits, then **Run scenario** and return to **Depot** to compare it with the default plan. **Inputs** shows the saved deliveries, fleet, and cost parameters for the selected scenario and date. **Rates** shows the depot rate book for the selected date. Result execution metadata remains available in the API for verifying Model Serving and Valhalla coverage; execution paragraphs are omitted from the presentation UI.
+
+To show feedback from depot to network, choose **Release deliveries for reassignment** in a named depot scenario, select a customer and cases, and **Propose release**. **Rerun network with releases** solves a new network plan in which another depot may serve those cases.
 
 Keep the distinction clear: network planning chooses assignments; depot routing builds the daily vehicle plan.
 
@@ -66,7 +70,7 @@ Daily availability is a simple planning input, not a perpetual inventory ledger:
 
 ## 5. Compare and persist — 2 minutes
 
-Open the comparison view. Contrast the scenario with the same frozen baseline and rate inputs. Review customer impact and operational tradeoffs, then persist or propose the decision.
+From the solved network plan, choose **Compare solved plan** to open **Baseline vs. scenario**. Contrast the scenario with the same frozen baseline and rate inputs, and review unmet demand, lane changes, the **Rate audit**, and **Exceptions**. Choose **Propose as baseline**, then **Accept as baseline**; the run becomes the active baseline, and its depots still need local route optimization.
 
 Reload or revisit history to show that the scenario, run, and decision live in Lakebase rather than browser state.
 

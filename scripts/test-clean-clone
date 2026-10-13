@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: scripts/test-clean-clone --config TRACKED_CONFIG --profile PROFILE --target TARGET" >&2
+  echo "Usage: scripts/test-clean-clone --config CONFIG --profile PROFILE --target TARGET" >&2
 }
 
 profile=""
@@ -23,13 +23,16 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-config="${config#./}"
-git ls-files --error-unmatch "$config" >/dev/null 2>&1 || {
-  echo "Clean-clone rehearsal requires a tracked repository-relative config: $config" >&2
+if [[ ! -f "$config" ]]; then
+  echo "Operator config not found: $config" >&2
   exit 2
-}
+fi
 test_root="$(mktemp -d)"
 trap 'echo "Clean-clone test directory: $test_root"' EXIT
+# Operator configs are environment-specific and Git-ignored, so stage the
+# selected file beside the clone rather than requiring it to be tracked.
+cp "$config" "$test_root/operator-config.json"
+config="$test_root/operator-config.json"
 
 git clone --quiet --no-local "$repo_root" "$test_root/checkout"
 cd "$test_root/checkout"

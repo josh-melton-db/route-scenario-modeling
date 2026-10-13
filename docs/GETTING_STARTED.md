@@ -62,7 +62,7 @@ schedule, deploy with `depot_routes_schedule_pause_status=PAUSED`.
 
 - Python 3.12
 - Node.js 20+ and npm
-- Databricks CLI 1.0.0 or newer (DEFAULT dev verified with 1.19.0)
+- Databricks CLI 1.0.0 or newer (verified with 1.19.0)
 - A workspace with Unity Catalog, serverless compute, Databricks Apps, and Lakebase Autoscaling
 - Permission to create resources in a writable catalog
 
@@ -104,9 +104,11 @@ restoring these parameters creates an editable draft, not a solved result.
 
 ## 3. Configure deployment
 
-Deployment is driven by one operator JSON file. Start with
-`configs/deployment/minimal.example.json`; copy it outside the example file and
-set the catalog and existing Lakebase owner role. The `minimal` preset creates
+Deployment is driven by one operator JSON file. Copy a template such as
+`configs/deployment/minimal.example.json` to `configs/deployment/<name>.json`
+and set the catalog and existing Lakebase owner role. Operator configs describe
+one workspace, so Git ignores every file in that directory except the
+`*.example.json` templates. The `minimal` preset creates
 only the App, SQL warehouse, schema, raw volume, required Lakebase resources,
 and the required idempotent network-bootstrap job. It does not include the full
 planning job, pipeline, Valhalla, or Model Serving.
@@ -153,6 +155,10 @@ running App service principal. A successful one-command deployment therefore
 creates canonical data without changing ownership of the App-owned Lakebase
 schema.
 Both `--profile` and `--target` are required; no workspace is inferred.
+The `dev` target uses bundle development mode, which prefixes resource names
+for the deploying user. Use `--target prod` for a shared demo workspace; it uses
+production mode and runs the medallion pipeline with `development: false`
+through the `pipeline_development` bundle variable.
 
 Changing an existing deployment from `enhanced` to `minimal` can remove optional
 resources previously owned by that bundle. Use minimal for a new deployment, or
@@ -203,7 +209,7 @@ Open the App URL returned by `databricks apps get`. For a minimal configuration,
 confirm readiness reports Lakebase connected and migrated, the SQL warehouse
 available, local OR-Tools selected, and approximate routing selected. For the
 enhanced regional configuration, confirm `serving_regional`, the configured
-Model Serving endpoint, validated Texas coverage, and the labeled approximate
+Model Serving endpoint, validated coverage for the configured region, and the labeled approximate
 fallback policy for depots outside coverage.
 
 Then complete a small scenario:
@@ -255,14 +261,15 @@ python3 scripts/grant-network-schema --profile <profile> \
 Before a release, run the deployment rehearsal from a clean copy of tracked files:
 
 ```bash
-scripts/test-clean-clone --config configs/deployment/enhanced.example.json \
+scripts/test-clean-clone --config configs/deployment/<name>.json \
   --profile <profile> --target dev
 ```
 
-The script accepts only a tracked, repository-relative operator config. It
-clones tracked files, installs dependencies, runs the verification gate, renders
-the config, and deploys through `scripts/deploy-demo`. This is intentionally a
-release rehearsal: uncommitted files are absent from the clone.
+Pass your own operator config (repository-relative or absolute); it does not
+need to be tracked. The script copies that config beside a clone of the tracked
+files, installs dependencies, runs the verification gate, renders the config,
+and deploys through `scripts/deploy-demo`. This is intentionally a release
+rehearsal: all other uncommitted files are absent from the clone.
 
 ## Troubleshooting
 
