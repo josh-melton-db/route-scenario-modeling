@@ -1,9 +1,9 @@
 {
-  "name": "dev-enhanced",
+  "name": "enhanced-example",
   "preset": "enhanced",
   "variables": {
-    "catalog": "supplychain",
-    "lakebase_database_owner_role_id": "dbrx-apps-7bf07fff-a994-41fb-91b0-1c33ab04ac25",
+    "catalog": "my_catalog",
+    "lakebase_database_owner_role_id": "dbrx-apps-REPLACE_ME",
     "route_solver_endpoint_name": "route-solver-dev"
   },
   "routing": {
@@ -13,10 +13,13 @@
       "strategy": "reuse",
       "app": "valhalla-service",
       "region": "texas",
-      "volume": "demos.route_scenario_modeling.valhalla_assets",
+      "volume": "my_catalog.route_scenario_modeling.valhalla_assets",
       "coverage_manifest": "routing_coverage/texas-service.v1.json",
       "coverage_id": "texas-delivery",
-      "smoke_points": ["32.7767,-96.7970", "29.7604,-95.3698"],
+      "smoke_points": [
+        "32.7767,-96.7970",
+        "29.7604,-95.3698"
+      ],
       "validate_on_deploy": false
     },
     "costing": "truck",

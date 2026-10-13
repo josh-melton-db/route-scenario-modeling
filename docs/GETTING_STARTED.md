@@ -255,7 +255,7 @@ python3 scripts/grant-network-schema --profile <profile> \
 Before a release, run the deployment rehearsal from a clean copy of tracked files:
 
 ```bash
-scripts/test-clean-clone --config configs/deployment/dev-enhanced.json \
+scripts/test-clean-clone --config configs/deployment/enhanced.example.json \
   --profile <profile> --target dev
 ```
 

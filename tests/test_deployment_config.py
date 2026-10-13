@@ -44,7 +44,7 @@ def test_minimal_render_excludes_optional_resources(tmp_path: Path) -> None:
 
 
 def test_enhanced_render_reuses_services_and_retains_jobs(tmp_path: Path) -> None:
-    output = render(ROOT / "configs/deployment/dev-enhanced.json", ROOT, tmp_path / "rendered")
+    output = render(ROOT / "configs/deployment/enhanced.example.json", ROOT, tmp_path / "rendered")
     bundle = yaml.safe_load((output / "databricks.yml").read_text())
     assert "resources/jobs.yml" in bundle["include"]
     assert "resources/pipelines.yml" in bundle["include"]
@@ -55,16 +55,16 @@ def test_enhanced_render_reuses_services_and_retains_jobs(tmp_path: Path) -> Non
     env = {item["name"]: item for item in app["config"]["env"]}
     assert env["ROUTE_EXECUTION_MODE"]["value"] == "serving_regional"
     assert env["DATABRICKS_ROUTE_SOLVER_ENDPOINT"]["value_from"] == "route_solver"
-    config = DeploymentConfig.load(ROOT / "configs/deployment/dev-enhanced.json")
+    config = DeploymentConfig.load(ROOT / "configs/deployment/enhanced.example.json")
     assert config.routing["valhalla_strategy"] == "reuse"
     assert config.routing["valhalla_region"] == "texas"
 
 
 def test_cli_variables_are_explicit() -> None:
-    config = DeploymentConfig.load(ROOT / "configs/deployment/dev-enhanced.json")
+    config = DeploymentConfig.load(ROOT / "configs/deployment/enhanced.example.json")
     args = variable_args(config)
-    assert "catalog=supplychain" in args
-    assert "lakebase_database_owner_role_id=dbrx-apps-7bf07fff-a994-41fb-91b0-1c33ab04ac25" in args
+    assert "catalog=my_catalog" in args
+    assert "lakebase_database_owner_role_id=dbrx-apps-REPLACE_ME" in args
 
 
 def test_render_refuses_non_owned_nonempty_output(tmp_path: Path) -> None:
@@ -110,8 +110,8 @@ def test_owned_output_can_be_re_rendered_and_excludes_secrets(tmp_path: Path) ->
 
 
 def test_bootstrap_runs_job_then_grants_app_principal(tmp_path: Path, monkeypatch) -> None:
-    output = render(ROOT / "configs/deployment/dev-enhanced.json", ROOT, tmp_path / "rendered")
-    config = DeploymentConfig.load(ROOT / "configs/deployment/dev-enhanced.json")
+    output = render(ROOT / "configs/deployment/enhanced.example.json", ROOT, tmp_path / "rendered")
+    config = DeploymentConfig.load(ROOT / "configs/deployment/enhanced.example.json")
     commands: list[list[str]] = []
 
     def fake_run(command, **kwargs):
@@ -144,7 +144,7 @@ def test_bootstrap_runs_job_then_grants_app_principal(tmp_path: Path, monkeypatc
 
 
 def test_materializes_resolved_schema_for_app_only(tmp_path: Path) -> None:
-    output = render(ROOT / "configs/deployment/dev-enhanced.json", ROOT, tmp_path / "rendered")
+    output = render(ROOT / "configs/deployment/enhanced.example.json", ROOT, tmp_path / "rendered")
     resolved = "dev_josh_melton_route_scenario_modeling"
     assert _materialize_app_schema(output, {
         "resources": {"schemas": {"route_scenario_modeling_schema": {"name": resolved}}}

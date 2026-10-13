@@ -20,7 +20,7 @@ the validated coverage manifest applies and may use the labeled approximate
 matrix outside that coverage when `allow_haversine_fallback` is true.
 
 Configure these dependencies through a deployment JSON file, not by editing
-`app.yaml`. The enhanced example is `configs/deployment/dev-enhanced.json`:
+`app.yaml`. The enhanced example is `configs/deployment/enhanced.example.json`:
 
 ```json
 {

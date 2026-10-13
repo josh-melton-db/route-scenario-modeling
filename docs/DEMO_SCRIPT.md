@@ -13,7 +13,7 @@ This presentation tells one planning story in about 12 minutes. It emphasizes fo
 npm run verify:fast
 ```
 
-Deploy the chosen configuration with `scripts/deploy-demo --config configs/deployment/dev-enhanced.json --profile DEFAULT --target dev`. Confirm the readiness page shows the expected Lakebase, warehouse, solver, and validated Texas routing coverage. Use a fixed `DEMO_DATE_ANCHOR` if the presentation requires a fixed calendar.
+Deploy the chosen configuration with `scripts/deploy-demo --config <your-config>.json --profile <profile> --target <target>` (copy `configs/deployment/enhanced.example.json` and fill in your workspace values). Confirm the readiness page shows the expected Lakebase, warehouse, solver, and validated Texas routing coverage. Use a fixed `DEMO_DATE_ANCHOR` if the presentation requires a fixed calendar.
 
 Click the **As of [date]** button and confirm the reset before presenting. This clears prior network scenarios, runs, demand changes, and depot plans; restores the generated original baseline; and starts solver endpoint warm-up in the background. Wait for warm-up to complete before the route demonstration. An active optimization must finish before reset can proceed. The minimal configuration skips remote solver warm-up.
 

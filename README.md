@@ -62,7 +62,7 @@ scripts/deploy-demo --config <operator-config.json> \
   --profile <profile> --target dev
 ```
 
-Use `configs/deployment/dev-enhanced.json` as the concrete pattern for jobs,
+Use `configs/deployment/enhanced.example.json` as the concrete pattern for jobs,
 pipeline, an existing solver endpoint, and regional Valhalla routing. See
 [Advanced routing](docs/ADVANCED_ROUTING.md) before adapting that example.
 

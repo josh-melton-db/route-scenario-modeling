@@ -20,6 +20,9 @@ planning/*
 !planning/demo-ux-and-reallocation-implementation-plan.md
 !planning/demo-ux-dev-verification.md
 examples/
+# Environment-specific deployment configs; only templates are tracked.
+configs/deployment/*.json
+!configs/deployment/*.example.json
 .databricks/deployment-render/
 
 # Playwright
