@@ -1100,6 +1100,11 @@ class NetworkRunDiagnostics(StrictModel):
     solver_day_count: int = Field(default=0, ge=0)
     summary_json_bytes: int = Field(default=0, ge=0)
     snapshot_json_bytes: int = Field(default=0, ge=0)
+    snapshot_storage_bytes: int = Field(
+        default=0, ge=0,
+        description="Compressed row envelope plus reference manifest bytes; excludes result/audit tables and shared baseline.",
+    )
+    snapshot_storage_format: str = "legacy-expanded"
     retention_pruned_runs: int = Field(default=0, ge=0)
     api_response_bytes: int = Field(default=0, ge=0)
 

@@ -1,3 +1,5 @@
+import { useSearchParams } from 'react-router-dom'
+import DepotInputsView from '@/components/DepotInputsView'
 import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -52,6 +54,11 @@ function isConflict(error: unknown): boolean {
 }
 
 export default function DataEditorPage() {
+  const [params] = useSearchParams()
+  return params.get('networkRun') ? <DepotInputsView /> : <LegacyDataEditorPage />
+}
+
+function LegacyDataEditorPage() {
   const queryClient = useQueryClient()
   const [session, setSession] = useState<EditorSession | null>(null)
   const [entityType, setEntityType] = useState<EditorEntityType>('orders')

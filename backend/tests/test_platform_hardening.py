@@ -111,7 +111,7 @@ def test_migration_takes_transaction_scoped_advisory_lock() -> None:
 
 
 def test_migration_expands_depot_plan_job_status_for_lazy_days() -> None:
-    assert lakebase_migrations.MIGRATION_VERSION.endswith("_v16")
+    assert lakebase_migrations.MIGRATION_VERSION.endswith("_v17")
     service = _MigrationService()
     statements = list(lakebase_migrations._statements(service))  # type: ignore[attr-defined,arg-type]
     status_constraints = [
@@ -120,6 +120,7 @@ def test_migration_expands_depot_plan_job_status_for_lazy_days() -> None:
     ]
     assert any("DROP CONSTRAINT IF EXISTS" in statement for statement in status_constraints)
     assert any("'not_requested'" in statement for statement in status_constraints)
+    assert any("depot_plan_results_input_hash_idx" in statement for statement in statements)
 
 
 def test_lazy_status_migration_runs_when_prior_version_is_already_recorded() -> None:

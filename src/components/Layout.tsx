@@ -68,11 +68,24 @@ const NEW_SCENARIO_VALUE = '__new__'
 
 export function Layout({ children }: { children: ReactNode }) {
   const location = useLocation()
-  const isNetworkLevel = location.pathname.startsWith('/network')
-  const scenarioMatch = location.pathname.match(
+  const isSettings = location.pathname === '/setup'
+  const settingsReturn = new URLSearchParams(location.search).get('networkReturn')
+  const settingsNetworkHref = settingsReturn && /^\/network(?:\/|\?|$)/.test(settingsReturn)
+    ? settingsReturn
+    : '/network'
+  const navigationPath = isSettings ? settingsNetworkHref.split('?')[0] : location.pathname
+  const navigationSearch = isSettings
+    ? (settingsNetworkHref.includes('?') ? settingsNetworkHref.slice(settingsNetworkHref.indexOf('?')) : '')
+    : location.search
+  const isNetworkLevel = isSettings || location.pathname.startsWith('/network')
+  const scenarioMatch = navigationPath.match(
     /^\/network\/scenarios\/([^/]+)(?:\/([^/]+))?/,
   )
   const activeScenarioId = scenarioMatch?.[1] ?? null
+  const networkHomeHref = isSettings && !activeScenarioId ? settingsNetworkHref : '/network'
+  const settingsHref = isSettings
+    ? { pathname: '/setup', search: location.search }
+    : { pathname: '/setup', search: new URLSearchParams({ networkReturn: `${location.pathname}${location.search}` }).toString() }
   const isDcLevel = location.pathname.startsWith('/dc/')
   const isRouteOptimizerLevel =
     location.pathname.startsWith('/analyze') ||
@@ -102,7 +115,7 @@ export function Layout({ children }: { children: ReactNode }) {
             {activeScenarioId ? (
               <>
                 <NavLink
-                  to="/network"
+                  to={networkHomeHref}
                   className="flex shrink-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:px-3"
                 >
                   <ArrowLeft className="h-4 w-4 text-muted-foreground" />
@@ -124,7 +137,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 <FacilityContextPicker />
               </>
             ) : (
-              <Link to="/network" className="flex min-w-0 items-center gap-2">
+              <Link to={networkHomeHref} className="flex min-w-0 items-center gap-2">
                 <div className="rounded-md bg-primary/15 p-1.5 text-primary">
                   <Route className="h-4 w-4" />
                 </div>
@@ -146,7 +159,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 {!activeScenarioId && (
                   <>
                 <NavLink
-                  to="/network"
+                  to={networkHomeHref}
                   className={({ isActive }) =>
                     cn(
                       'flex shrink-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium transition-colors md:px-3',
@@ -168,7 +181,7 @@ export function Layout({ children }: { children: ReactNode }) {
                       key={tab.id}
                       to={{
                         pathname: `/network/scenarios/${encodeURIComponent(activeScenarioId)}/${tab.id}`,
-                        search: location.search,
+                        search: navigationSearch,
                       }}
                       className={({ isActive }) =>
                         cn(
@@ -212,13 +225,13 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
 
           <div className="flex min-w-0 items-center justify-self-end gap-2 text-xs text-muted-foreground">
-            <NavLink
-              to="/setup"
+            {!isRouteOptimizerLevel && !isDcLevel && <NavLink
+              to={settingsHref}
               aria-label="Setup and readiness"
               className={({ isActive }) => cn('rounded-md p-2 hover:bg-accent hover:text-foreground', isActive && 'bg-primary/15 text-primary')}
             >
               <Settings className="h-4 w-4" />
-            </NavLink>
+            </NavLink>}
             <DemoFreshnessControl />
           </div>
         </div>

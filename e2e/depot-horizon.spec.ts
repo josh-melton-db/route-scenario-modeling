@@ -169,6 +169,7 @@ test('renders the 28-day pinned horizon and completes then resets a non-Tuesday 
   await page.getByRole('link', { name: 'Scenarios' }).click()
   await expect(page).toHaveURL(/networkRun=run-28/)
   await expect(page).toHaveURL(/depotPlan=plan-28/)
+  await page.getByRole('button', { name: '+ New scenario', exact: true }).click()
   await page.getByLabel('New route scenario name').fill('Late shift')
   await page.getByRole('button', { name: 'Create' }).click()
   await expect(page).toHaveURL(/routePlanScenario=named-1/)
@@ -181,7 +182,7 @@ test('renders the 28-day pinned horizon and completes then resets a non-Tuesday 
   await page.getByLabel('Allow overtime').check()
   await page.getByRole('button', { name: 'Run scenario', exact: true }).click()
   await expect(page).toHaveURL(/analyze\?/ )
-  await expect(page.getByText('Selected override (infeasible)', { exact: true })).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByLabel('right comparison scenario')).toHaveValue('named-1')
   await expect(page.getByText(/Unserved: 5 cases/)).toBeVisible()
   await expect(page.getByRole('link', { name: 'Reallocate supply' })).toHaveCount(0)
   await page.getByRole('link', { name: 'Scenarios' }).click()
@@ -305,4 +306,69 @@ test('opens today in Indianapolis and reuses its saved default without a solve r
   await expect(page.getByText('2026-09-04 routes')).toBeVisible()
   expect(reads).toContain('2026-09-04')
   expect(writes).toEqual([])
+})
+
+test('selects independent comparisons and hides stale results while rerunning', async ({ page }) => {
+  let pending = true
+  await page.route(/^https?:\/\/[^/]+\/api\//, async route => {
+    const url = new URL(route.request().url())
+    if (url.pathname === '/api/depot-plans/plan-1') return route.fulfill({ json: planSet(1, 'named-1') })
+    if (url.pathname.includes('/days/')) {
+      const named = url.searchParams.get('route_scenario_id') === 'named-1'
+      return route.fulfill({ json: {
+        default_status: 'completed', override_status: named ? pending ? 'running' : 'infeasible' : null,
+        default_result: result('2026-09-01', 'default'),
+        selected_result: named ? { ...result('2026-09-01', 'old', 82), unserved_orders: [{ customer_id: 'c1', customer_name: 'River Market', demand_cases: 82, reason: 'time_window_infeasible' }] } : result('2026-09-01', 'default'),
+      } })
+    }
+    return route.fulfill({ status: 404, json: { detail: url.pathname } })
+  })
+  await page.goto(`${appUrl}/analyze?networkRun=run-1&depot=DPT_NORTH&depotPlan=plan-1&date=2026-09-01&routePlanScenario=named-1`)
+  await expect(page.getByLabel('left comparison scenario')).toHaveValue('default')
+  await expect(page.getByText('Optimizing…', { exact: true })).toBeVisible()
+  await expect(page.getByText('Unserved: 82 cases')).toHaveCount(0)
+  pending = false
+  await expect(page.getByText('River Market · 82 cases · Delivery time window cannot be met')).toBeVisible()
+  await page.getByLabel('right comparison scenario').selectOption('none')
+  await expect(page.getByText('Unserved: 82 cases')).toHaveCount(0)
+  await expect(page.getByText('2026-09-01 routes')).toHaveCount(1)
+  await page.getByLabel('left comparison scenario').selectOption('named-1')
+  await expect(page.getByText('Unserved: 82 cases')).toBeVisible()
+})
+
+test('uploads quantities and uses checked road coordinates in the submitted scenario', async ({ page }) => {
+  let submitted: Record<string, unknown> | null = null
+  await page.route(/^https?:\/\/[^/]+\/api\//, async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/depot-plans/plan-1') return route.fulfill({ json: planSet(1, 'named-1') })
+    if (path.endsWith('/delivery-access')) return route.fulfill({ json: { reachable: true, road_access_lat: 40.002, road_access_lng: -86.002, road_snap_distance_miles: .05 } })
+    if (path.endsWith('/optimize')) { submitted = route.request().postDataJSON(); return route.fulfill({ json: { default_status: 'completed', override_status: 'queued', default_result: result('2026-09-01', 'default'), selected_result: result('2026-09-01', 'default') } }) }
+    if (path.includes('/days/')) return route.fulfill({ json: { default_status: 'completed', override_status: null, default_result: result('2026-09-01', 'default'), selected_result: result('2026-09-01', 'default') } })
+    return route.fulfill({ status: 404, json: { detail: path } })
+  })
+  await page.goto(`${appUrl}/scenario?networkRun=run-1&depot=DPT_NORTH&depotPlan=plan-1&date=2026-09-01&routePlanScenario=named-1`)
+  await page.getByRole('button', { name: 'Add deliveries', exact: true }).click()
+  await page.getByLabel('Upload delivery CSV').setInputFiles({ name: 'deliveries.csv', mimeType: 'text/csv', buffer: Buffer.from('lat,lng,demand_cases,customer_name\n40.001,-86.001,125,"River, Market"') })
+  await expect(page.getByText('1 deliveries checked for truck-road access; 1 snapped to the road.')).toBeVisible()
+  await page.getByRole('button', { name: 'Run scenario', exact: true }).click()
+  await expect.poll(() => submitted).toMatchObject({ changes: [{ kind: 'add_deliveries', deliveries: [{ lat: 40.002, lng: -86.002, demand_cases: 125, customer_name: 'River, Market' }] }] })
+})
+
+test('inputs display the selected depot scenario rather than global editor data', async ({ page }) => {
+  await page.route(/^https?:\/\/[^/]+\/api\//, async route => {
+    const url = new URL(route.request().url())
+    if (url.pathname === '/api/depot-plans/plan-1') return route.fulfill({ json: planSet(1, 'named-1') })
+    if (url.pathname.endsWith('/inputs')) return route.fulfill({ json: {
+      depot, parent_run_id: 'run-1', service_date: '2026-09-01',
+      deliveries: [{ customer_id: 'c1', customer_name: 'River Market', receiving_window_start: '09:30', receiving_window_end: '11:00' }],
+      orders: [{ customer_id: 'c1', demand_cases: 125 }], fleet: [{ vehicle_id: 'EXTRA-DRIVER', capacity_cases: 900 }],
+      cost_parameters: { cost_per_mile: 2.5 }, cost_source: 'frozen depot costs', override_status: 'completed',
+    } })
+    return route.fulfill({ status: 404, json: { detail: 'No global editor requests allowed' } })
+  })
+  await page.goto(`${appUrl}/data-editor?networkRun=run-1&depot=DPT_NORTH&depotPlan=plan-1&date=2026-09-01&routePlanScenario=named-1`)
+  await expect(page.getByText('River Market', { exact: true })).toBeVisible()
+  await expect(page.getByText('125', { exact: true })).toBeVisible()
+  await expect(page.getByText('EXTRA-DRIVER', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('Inputs scenario')).toHaveValue('named-1')
 })

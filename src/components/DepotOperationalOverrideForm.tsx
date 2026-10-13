@@ -25,6 +25,7 @@ export default function DepotOperationalOverrideForm({
   canOptimize = true,
   depot,
   baselineRoutes,
+  planSetId,
 }: {
   value: OperationalDraft
   onChange: (value: OperationalDraft) => void
@@ -34,8 +35,10 @@ export default function DepotOperationalOverrideForm({
   canReset: boolean
   canOptimize?: boolean
   depot: Depot
+  planSetId?: string
   baselineRoutes: Route[]
 }) {
+  const [checkingDeliveries, setCheckingDeliveries] = useState(false)
   const [showOperating, setShowOperating] = useState(false)
   const [showWindowMap, setShowWindowMap] = useState(false)
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null)
@@ -54,6 +57,7 @@ export default function DepotOperationalOverrideForm({
     [value.max_stops_per_route, 1, 149],
   ] as const).some(([number, minimum, maximum]) => number != null && (!Number.isInteger(number) || number < minimum || number > maximum))
   const hasInvalidWindow = windowChanges.some((change) => !change.receiving_window_start || change.receiving_window_end <= change.receiving_window_start)
+  const hasInvalidCases = deliveryChange?.deliveries.some(row => !Number.isInteger(row.demand_cases) || row.demand_cases < 1)
   const hasEmptyDeliveryChange = deliveryChange?.kind === 'add_deliveries' && deliveryChange.deliveries.length === 0
   const replaceChange = (kind: DepotPlanDailyChange['kind'], next: DepotPlanDailyChange) =>
     onChange({ ...value, changes: changes.map((change) => change.kind === kind ? next : change) })
@@ -72,6 +76,7 @@ export default function DepotOperationalOverrideForm({
 
   return (
     <section className="rounded-lg border border-border bg-card p-4">
+      <fieldset disabled={checkingDeliveries}>
       <h2 className="text-sm font-semibold">Scenario changes</h2>
       <div className="mt-4 flex flex-wrap gap-2">
         {!deliveryChange && <button type="button" onClick={() => onChange({ ...value, changes: [...changes, { kind: 'add_deliveries', deliveries: [] }] })} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"><Plus className="h-3.5 w-3.5" />Add deliveries</button>}
@@ -95,7 +100,7 @@ export default function DepotOperationalOverrideForm({
         </label>
       </div>}
       {deliveryChange?.kind === 'add_deliveries' && <ChangeCard title="Add deliveries" onRemove={() => removeChange('add_deliveries')}>
-        <DeliveryMapEditor depot={depot} baselineRoutes={baselineRoutes} deliveries={deliveryChange.deliveries} onChange={(deliveries) => replaceChange('add_deliveries', { kind: 'add_deliveries', deliveries })} />
+        <DeliveryMapEditor onCheckingChange={setCheckingDeliveries} planSetId={planSetId} depot={depot} baselineRoutes={baselineRoutes} deliveries={deliveryChange.deliveries} onChange={(deliveries) => replaceChange('add_deliveries', { kind: 'add_deliveries', deliveries })} />
       </ChangeCard>}
       {facilityChange?.kind === 'facility_move' && <ChangeCard title="Move facility" onRemove={() => removeChange('facility_move')}>
         <FacilityMapEditor showServiceWindowOption={false} depot={depot} baselineRoutes={baselineRoutes} location={facilityChange.new_depot_location} preserveServiceWindows={facilityChange.preserve_service_windows} onLocationChange={(new_depot_location) => replaceChange('facility_move', { ...facilityChange, new_depot_location })} onPreserveServiceWindowsChange={(preserve_service_windows) => replaceChange('facility_move', { ...facilityChange, preserve_service_windows })} />
@@ -136,15 +141,17 @@ export default function DepotOperationalOverrideForm({
       </ChangeCard>}
       {hasInvalidLimits && <p role="alert" className="mt-3 text-xs text-destructive">Use whole numbers: drivers −64 to64, route minutes1–1440, stops1–149.</p>}
       {hasInvalidWindow && <p role="alert" className="mt-3 text-xs text-destructive">Closing time must be after opening time.</p>}
+      {hasInvalidCases && <p className="mt-3 text-xs text-destructive">Every delivery needs a positive whole-number case quantity.</p>}
       {hasEmptyDeliveryChange && <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">Drop at least one delivery pin before optimizing.</p>}
       <div className="mt-4 flex flex-wrap justify-end gap-2">
         <button type="button" onClick={onReset} disabled={!canReset || busy} className="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50">
           Reset selected day to default
         </button>
-        <button type="button" onClick={onOptimize} disabled={busy || !canOptimize || hasEmptyDeliveryChange || hasInvalidWindow || hasInvalidLimits} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">
+        <button type="button" onClick={onOptimize} disabled={busy || checkingDeliveries || !canOptimize || hasEmptyDeliveryChange || hasInvalidCases || hasInvalidWindow || hasInvalidLimits} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">
           {busy ? 'Queueing…' : 'Run scenario'}
         </button>
       </div>
+      </fieldset>
     </section>
   )
 }

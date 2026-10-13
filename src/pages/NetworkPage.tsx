@@ -40,7 +40,7 @@ export default function NetworkPage() {
     () => (options.data ? contextFromUrl(searchParams, options.data) : null),
     [options.data, searchParams],
   )
-  const overview = useNetworkOverview(context)
+  const overview = useNetworkOverview(context, true)
   const baselinePlan = useQuery({
     queryKey: ['network-baseline-plan-run', context],
     queryFn: () => api.networkBaselinePlanRun(context!),

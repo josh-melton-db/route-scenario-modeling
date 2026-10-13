@@ -77,7 +77,7 @@ def _filter_revision_rows(rows: NetworkRows, scenario: NetworkScenario) -> Netwo
     """Reproduce the canonical loader's immutable plan/horizon filtering."""
 
     start, end = scenario.horizon_start, scenario.horizon_end
-    filtered = deepcopy(rows)
+    filtered: NetworkRows = {}
     filters = {
         "demand_plan_daily": lambda row: (
             str(row.get("demand_plan_version_id")) == scenario.demand_plan_version_id
@@ -101,9 +101,11 @@ def _filter_revision_rows(rows: NetworkRows, scenario: NetworkScenario) -> Netwo
             and start <= str(row.get("service_date", ""))[:10] <= end
         ),
     }
-    for table, predicate in filters.items():
-        if table in filtered:
-            filtered[table] = [deepcopy(row) for row in filtered[table] if predicate(row)]
+    for table, table_rows in rows.items():
+        predicate = filters.get(table)
+        filtered[table] = deepcopy(
+            [row for row in table_rows if predicate(row)] if predicate else table_rows
+        )
     return filtered
 
 
@@ -179,6 +181,10 @@ def _effective_facility_rows(
 def _restore_normal_facility_rows(rows: NetworkRows) -> None:
     """Undo prior effective bounds before reapplying inherited assumptions."""
 
+    # These are the only input records normalized in place. Other tables are
+    # read-only during a solve and can be shared by its comparison views.
+    for table in ("facility_capacity_daily", "facility_supply_daily"):
+        rows[table] = deepcopy(rows.get(table, []))
     for row in rows.get("facility_capacity_daily", []):
         if row.get("effective_bound_applied") is True and row.get("normal_capacity_units") is not None:
             row["capacity_units"] = int(row["normal_capacity_units"])
@@ -431,6 +437,22 @@ class NetworkScenarioRepository:
             )
         return NetworkScenarioResult.model_validate(_json_value(row["result_payload"]))
 
+    def run_result(self, run_id: str) -> NetworkScenarioResult:
+        """Read map/audit output without expanding frozen solver inputs."""
+        if not self._uses_lakebase:
+            with self._lock:
+                snapshot = self._run_snapshots.get(run_id)
+                if snapshot is None:
+                    raise HTTPException(status_code=404, detail="Network run not found.")
+                return snapshot.result.model_copy(deep=True)
+        row = lakebase_store.postgres.query_one(
+            f"SELECT result_payload FROM {self._table('network_run_snapshots')} WHERE run_id = %s",
+            (run_id,),
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Network run not found.")
+        return NetworkScenarioResult.model_validate(_json_value(row["result_payload"]))
+
     def run_snapshot(self, run_id: str) -> NetworkRunSnapshot:
         if not self._uses_lakebase:
             with self._lock:
@@ -498,7 +520,7 @@ class NetworkScenarioRepository:
         elif kind == "baseline_revision":
             from .baseline_service import baseline_service
 
-            rows = baseline_service.get_revision(str(manifest["revision_id"])).rows
+            rows = dict(baseline_service.get_revision(str(manifest["revision_id"])).rows)
             if manifest.get("filter_plan_horizon"):
                 rows = _filter_revision_rows(rows, scenario)
         else:
@@ -523,14 +545,14 @@ class NetworkScenarioRepository:
     ) -> bool:
         if not result.run_id:
             raise ValueError("A solved network result must have a run ID.")
-        snapshot = NetworkRunSnapshot(
-            scenario=scenario.model_copy(deep=True),
-            result=result.model_copy(deep=True),
-            network_rows=deepcopy(network_rows),
-            flow_rows=deepcopy(flow_rows),
-            cost_rows=deepcopy(cost_rows),
-        )
         if not self._uses_lakebase:
+            snapshot = NetworkRunSnapshot(
+                scenario=scenario.model_copy(deep=True),
+                result=result.model_copy(deep=True),
+                network_rows=deepcopy(network_rows),
+                flow_rows=deepcopy(flow_rows),
+                cost_rows=deepcopy(cost_rows),
+            )
             with self._lock:
                 from .network_run_jobs import network_run_manager
                 try:
@@ -551,6 +573,22 @@ class NetworkScenarioRepository:
                 self._scenarios[scenario.scenario_id] = scenario.model_copy(deep=True)
                 self._results[scenario.scenario_id] = result.model_copy(deep=True)
             return True
+        # Database serialization owns its bytes; no second full input copy is
+        # needed. Prepare compression before acquiring transactional row locks.
+        manifest = deepcopy(snapshot_manifest)
+        envelope: bytes | None = None
+        envelope_size: int | None = None
+        envelope_hash: str | None = None
+        if manifest is not None:
+            manifest = _snapshot_manifest_with_deltas(
+                manifest, source_rows or {}, network_rows
+            )
+            envelope, envelope_size, envelope_hash = _encode_snapshot_envelope(flow_rows, cost_rows)
+            if result.diagnostics:
+                manifest_bytes = len(json.dumps(manifest, separators=(",", ":"), default=str).encode())
+                result.diagnostics.snapshot_json_bytes = envelope_size + manifest_bytes
+                result.diagnostics.snapshot_storage_bytes = len(envelope) + manifest_bytes
+                result.diagnostics.snapshot_storage_format = "reference-zlib-json-v1"
         cost_by_key = {
             (str(row["service_date"]), str(row["lane_id"])): row
             for row in cost_rows
@@ -563,17 +601,6 @@ class NetworkScenarioRepository:
             )
             if job and job["status"] == "cancelled":
                 raise HTTPException(status_code=409, detail="Network run was cancelled.")
-            manifest = deepcopy(snapshot_manifest)
-            envelope: bytes | None = None
-            envelope_size: int | None = None
-            envelope_hash: str | None = None
-            if manifest is not None:
-                manifest = _snapshot_manifest_with_deltas(
-                    manifest, source_rows or {}, network_rows
-                )
-                envelope, envelope_size, envelope_hash = _encode_snapshot_envelope(
-                    snapshot.flow_rows, snapshot.cost_rows
-                )
             lakebase_store.postgres.execute(
                 f"""
                 INSERT INTO {self._table('network_run_snapshots')} (
@@ -587,20 +614,20 @@ class NetworkScenarioRepository:
                     result.run_id,
                     scenario.scenario_id,
                     lakebase_store.postgres.jsonb(
-                        snapshot.scenario.model_dump(mode="json")
+                        scenario.model_dump(mode="json")
                     ),
                     lakebase_store.postgres.jsonb(
-                        snapshot.result.model_dump(mode="json")
+                        result.model_dump(mode="json")
                     ),
                     lakebase_store.postgres.jsonb(
-                        {} if manifest is not None else snapshot.network_rows
+                        {} if manifest is not None else network_rows
                     ),
                     (
                         lakebase_store.postgres.jsonb(manifest)
                         if manifest is not None else None
                     ),
-                    lakebase_store.postgres.jsonb([] if envelope is not None else snapshot.flow_rows),
-                    lakebase_store.postgres.jsonb([] if envelope is not None else snapshot.cost_rows),
+                    lakebase_store.postgres.jsonb([] if envelope is not None else flow_rows),
+                    lakebase_store.postgres.jsonb([] if envelope is not None else cost_rows),
                     envelope,
                     "zlib-json-v1" if envelope is not None else None,
                     envelope_size,
@@ -1400,7 +1427,9 @@ class NetworkScenarioService:
         return self.repository.run_snapshot(run_id)
 
     def run_result(self, run_id: str) -> NetworkScenarioResult:
-        return self.get_run_snapshot(run_id).result
+        if self._is_baseline_resource(run_id, "run"):
+            return self.get_run_snapshot(run_id).result
+        return self.repository.run_result(run_id)
 
     def _rate_flows(
         self,
@@ -1493,14 +1522,14 @@ class NetworkScenarioService:
             if scenario.assumptions.parent_run_id else None
         )
         if rows_override is None and parent is not None:
-            rows = deepcopy(parent.network_rows)
-            rows["baseline_network_flow_daily"] = deepcopy(parent.flow_rows)
-            rows["network_flow_cost_daily"] = deepcopy(parent.cost_rows)
+            rows = dict(parent.network_rows)
+            rows["baseline_network_flow_daily"] = parent.flow_rows
+            rows["network_flow_cost_daily"] = parent.cost_rows
         else:
-            rows = deepcopy(rows_override) if rows_override is not None else self._rows(scenario)
-        source_rows = deepcopy(rows)
+            rows = dict(rows_override) if rows_override is not None else self._rows(scenario)
+        source_rows = dict(rows)
         _restore_normal_facility_rows(rows)
-        normal_rows = deepcopy(rows)
+        normal_rows = dict(rows)
         mark("input_loading_and_copying")
         source_metadata = source_rows.get("baseline_revision_metadata", [])
         pinned_context = (
@@ -1681,7 +1710,7 @@ class NetworkScenarioService:
             lane_type="LINEHAUL",
             metric="assigned_flow",
         )
-        comparable_baseline_rows = deepcopy(source_rows)
+        comparable_baseline_rows = dict(source_rows)
         comparable_baseline_rows["baseline_network_flow_daily"] = baseline_flow_rows
         comparable_baseline_rows["network_flow_cost_daily"] = baseline_cost_rows
         baseline = network_overview_service.build_overview(
@@ -1943,10 +1972,6 @@ class NetworkScenarioService:
         )
         serialization_started = perf_counter()
         summary_json = json.dumps(summary_payload, separators=(",", ":"))
-        snapshot_json_bytes = len(json.dumps(
-            {"network_rows": rows, "flow_rows": flow_rows, "cost_rows": cost_rows},
-            separators=(",", ":"), default=str,
-        ).encode())
         serialization_seconds = round(perf_counter() - serialization_started, 6)
         result.diagnostics = NetworkRunDiagnostics(
             stage_seconds={
@@ -1958,7 +1983,6 @@ class NetworkScenarioService:
             baseline_charge_count=len(baseline_charges),
             solver_day_count=len(solve_dates),
             summary_json_bytes=len(summary_json.encode()),
-            snapshot_json_bytes=snapshot_json_bytes,
         )
         solved = scenario.model_copy(
             update={

@@ -1,0 +1,35 @@
+import type { KpiDeltas, Kpis } from '@/api/types'
+
+export function kpiDeltas(base: Kpis, selected: Kpis): KpiDeltas {
+  return {
+    route_count: selected.route_count - base.route_count,
+    driver_count: selected.driver_count - base.driver_count,
+    vehicle_count: selected.vehicle_count - base.vehicle_count,
+    total_miles: selected.total_miles - base.total_miles,
+    drive_minutes: selected.drive_minutes - base.drive_minutes,
+    service_minutes: selected.service_minutes - base.service_minutes,
+    total_cases: selected.total_cases - base.total_cases,
+    avg_stops_per_route: selected.avg_stops_per_route - base.avg_stops_per_route,
+    avg_capacity_utilization_pct: selected.avg_capacity_utilization_pct - base.avg_capacity_utilization_pct,
+    avg_driver_utilization_pct: selected.avg_driver_utilization_pct - base.avg_driver_utilization_pct,
+    overtime_minutes: selected.overtime_minutes - base.overtime_minutes,
+    missed_windows: selected.missed_windows - base.missed_windows,
+    late_minutes: selected.late_minutes - base.late_minutes,
+    total_revenue: selected.total_revenue - base.total_revenue,
+    profit: selected.profit - base.profit,
+    mileage_cost: selected.cost_breakdown.mileage_cost - base.cost_breakdown.mileage_cost,
+    labor_cost: selected.cost_breakdown.labor_cost - base.cost_breakdown.labor_cost,
+    overtime_cost: selected.cost_breakdown.overtime_cost - base.cost_breakdown.overtime_cost,
+    fixed_vehicle_cost: selected.cost_breakdown.fixed_vehicle_cost - base.cost_breakdown.fixed_vehicle_cost,
+    sla_penalty_cost: selected.cost_breakdown.sla_penalty_cost - base.cost_breakdown.sla_penalty_cost,
+    carrier_linehaul_cost: selected.cost_breakdown.carrier_linehaul_cost - base.cost_breakdown.carrier_linehaul_cost,
+    carrier_lane_cost: selected.cost_breakdown.carrier_lane_cost - base.cost_breakdown.carrier_lane_cost,
+    carrier_stop_cost: selected.cost_breakdown.carrier_stop_cost - base.cost_breakdown.carrier_stop_cost,
+    carrier_minimum_adjustment: selected.cost_breakdown.carrier_minimum_adjustment - base.cost_breakdown.carrier_minimum_adjustment,
+    fuel_surcharge_cost: selected.cost_breakdown.fuel_surcharge_cost - base.cost_breakdown.fuel_surcharge_cost,
+    accessorial_cost: selected.cost_breakdown.accessorial_cost - base.cost_breakdown.accessorial_cost,
+    volume_tier_adjustment: selected.cost_breakdown.volume_tier_adjustment - base.cost_breakdown.volume_tier_adjustment,
+    commitment_adjustment: selected.cost_breakdown.commitment_adjustment - base.cost_breakdown.commitment_adjustment,
+    total_cost: selected.cost_breakdown.total_cost - base.cost_breakdown.total_cost,
+  }
+}

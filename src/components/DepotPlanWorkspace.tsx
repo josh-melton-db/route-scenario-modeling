@@ -3,7 +3,6 @@ import { Loader2, Plus } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '@/api/client'
-import type { DepotPlanDayResult, KpiDeltas, Kpis } from '@/api/types'
 import {
   useCreateDepotPlanScenario,
   useDepotPlan,
@@ -16,10 +15,7 @@ import {
 } from '@/api/queries'
 import { defaultDepotServiceDate } from '@/lib/networkLinks'
 import ErrorState from './ErrorState'
-import KpiDeltaGrid from './KpiDeltaGrid'
-import MapView from './MapView'
-import DualMap from './DualMap'
-import RouteSidebar from './RouteSidebar'
+import DepotScenarioComparison from './DepotScenarioComparison'
 import DepotPlanCalendar from './DepotPlanCalendar'
 import DepotDemandReleasePanel from './DepotDemandReleasePanel'
 import DepotOperationalOverrideForm, {
@@ -48,8 +44,9 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
   const reset = useResetDepotPlanDay(planSetId, routeScenarioId, selectedDate)
   const solve = useSolveDepotPlanDay(planSetId)
   const setFacility = useRouteContext((state) => state.setFacility)
-  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null)
-  const [newScenarioName, setNewScenarioName] = useState('Operational plan')
+  const [creatingScenario, setCreatingScenario] = useState(false)
+  const [renameName, setRenameName] = useState('')
+  const [newScenarioName, setNewScenarioName] = useState('')
   const drafts = useRoutePlanDrafts((state) => state.drafts)
   const setDraft = useRoutePlanDrafts((state) => state.setDraft)
   const clearDraft = useRoutePlanDrafts((state) => state.clearDraft)
@@ -95,7 +92,7 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
       let restoredScenarioId = 'default'
       if (routeScenarioId !== 'default') {
         const name = planData?.scenarios.find((row) => row.route_scenario_id === routeScenarioId)?.scenario_name
-          ?? newScenarioName
+          ?? (newScenarioName || 'Restored scenario')
         const restoredScenario = await api.createDepotPlanScenario(restored.plan_set_id, name)
         restoredScenarioId = restoredScenario.route_scenario_id
         setDraft(`${restored.plan_set_id}:${restoredScenarioId}:${selectedDate || restored.horizon_start}`, activeDraft)
@@ -120,6 +117,8 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
     try {
       const created = await createScenario.mutateAsync(newScenarioName.trim())
       updateContext({ routePlanScenario: created.route_scenario_id })
+      setCreatingScenario(false)
+      setNewScenarioName('')
     } catch (err) {
       setActionError(String(err))
     }
@@ -130,7 +129,10 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
     setActionError(null)
     try {
       await optimize.mutateAsync({ route_scenario_id: routeScenarioId, ...activeDraft })
-      navigate(`/analyze?${searchParams.toString()}`)
+      const next = new URLSearchParams(searchParams)
+      next.set('compareLeft', next.get('compareLeft') || 'default')
+      next.set('compareRight', routeScenarioId)
+      navigate(`/analyze?${next.toString()}`)
     } catch (err) {
       setActionError(String(err))
     }
@@ -157,9 +159,9 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
   }
 
   function updateContext(values: Record<string, string>) {
+    if (values.routePlanScenario) setRenameName('')
     const next = new URLSearchParams(searchParams)
     for (const [key, value] of Object.entries(values)) next.set(key, value)
-    setSelectedRouteId(null)
     setSearchParams(next)
   }
 
@@ -176,24 +178,25 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
   }
   if (error) return <ErrorState title="Could not load depot horizon" error={error} />
   if (!planData || !planSetId) {
-    return <Loading label="Creating the stored depot horizon…" />
+    return <Loading label="Loading depot routes…" />
   }
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-end gap-2">
-          <label className="text-xs text-muted-foreground">
+          {mode === 'scenario' && <label className="text-xs text-muted-foreground">
             Route scenario
             <select aria-label="Route plan scenario" value={routeScenarioId}
               onChange={(event) => updateContext({ routePlanScenario: event.target.value })}
               className="mt-1 block h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground">
               {planData.scenarios.map((scenario) => <option key={scenario.route_scenario_id} value={scenario.route_scenario_id}>{scenario.scenario_name}</option>)}
             </select>
-          </label>
-          {mode === 'scenario' && <>
+          </label>}
+          {mode === 'scenario' && !creatingScenario && <button type="button" onClick={() => setCreatingScenario(true)} className="h-9 rounded-md border border-border px-3 text-sm">+ New scenario</button>}
+          {mode === 'scenario' && creatingScenario && <>
             <input aria-label="New route scenario name" value={newScenarioName} onChange={(event) => setNewScenarioName(event.target.value)} className="h-9 rounded-md border border-border bg-background px-2 text-sm" />
-            <button type="button" onClick={() => void addScenario()} disabled={createScenario.isPending} className="inline-flex h-9 items-center gap-1 rounded-md border border-border px-3 text-sm">
+            <button type="button" onClick={() => void addScenario()} disabled={createScenario.isPending || !newScenarioName.trim()} className="inline-flex h-9 items-center gap-1 rounded-md border border-border px-3 text-sm">
               <Plus className="h-4 w-4" /> Create scenario
             </button>
           </>}
@@ -201,9 +204,16 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
         {mode === 'scenario' && <DepotPlanCalendar days={planData.days} selectedDate={selectedDate} onSelect={(date) => updateContext({ date })} onSolve={(date) => void solveDay(date)} solvingDate={solve.isPending ? solve.variables : null} />}
       </div>
 
+      {mode === 'scenario' && routeScenarioId !== 'default' && <div className="flex items-center gap-2">
+        <input aria-label="Scenario name" key={`${routeScenarioId}:${planData.scenarios.find(row => row.route_scenario_id === routeScenarioId)?.scenario_name}`} defaultValue={planData.scenarios.find(row => row.route_scenario_id === routeScenarioId)?.scenario_name} onChange={event => setRenameName(event.target.value)} className="rounded-md border border-border bg-background px-3 py-2 text-sm" />
+        <button type="button" disabled={!renameName.trim()} onClick={async () => {
+          try { await api.renameDepotPlanScenario(planSetId, routeScenarioId, renameName); setRenameName(''); await queryClient.invalidateQueries({ queryKey: ['depot-plan'] }) }
+          catch (err) { setActionError(String(err)) }
+        }} className="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50">Save name</button>
+      </div>}
       {mode === 'scenario' && routeScenarioId === 'default' && (
         <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-          Select a scenario or create one to add changes.
+          Optimized default contains the saved routes for this date. Create a named scenario to change drivers, deliveries, or time windows and compare its results.
         </div>
       )}
       {mode === 'scenario' && !day.data?.default_result && (
@@ -222,6 +232,7 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
           busy={optimize.isPending || reset.isPending}
           canReset={Boolean(day.data?.override_status || day.data?.override_request || drafts[draftKey])}
           canOptimize={Boolean(day.data?.default_result)}
+          planSetId={planSetId}
           depot={planData.depot}
           baselineRoutes={day.data?.default_result?.routes ?? currentResult?.routes ?? []}
         />
@@ -242,86 +253,17 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
       {day.isLoading && <Loading label={`Loading ${selectedDate}…`} />}
       {day.error && <ErrorState title="Could not load the selected route day" error={day.error} />}
       {mode === 'analyze' && <>
-      {currentResult && (!day.data?.default_result || currentResult.result_id === day.data.default_result.result_id) && <KpiDeltaGrid baselineKpis={currentResult.kpis} />}
-      {day.data && <DayStatus detail={day.data} pending={pending} />}
-      {currentResult && currentResult.unserved_cases > 0 && (
-        <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/35 bg-destructive/5 px-3 py-2">
-          <p className="text-xs text-muted-foreground">Unserved: {currentResult.unserved_cases} cases</p>
-        </div>
-      )}
-      {day.data?.default_result && day.data.selected_result && day.data.selected_result.result_id !== day.data.default_result.result_id ? (
-        <>
-          <DepotPlanCalendar days={planData.days} selectedDate={selectedDate} onSelect={(date) => updateContext({ date })} onSolve={(date) => void solveDay(date)} solvingDate={solve.isPending ? solve.variables : null} />
-          <KpiDeltaGrid baselineKpis={day.data.default_result.kpis} scenarioKpis={day.data.selected_result.kpis} deltas={kpiDeltas(day.data.default_result.kpis, day.data.selected_result.kpis)} />
-          <DualMap
-            baselineDepot={planData.depot}
-            scenarioDepot={day.data.selected_result.depot ?? planData.depot}
-            baselineRoutes={day.data.default_result.routes}
-            scenarioRoutes={day.data.selected_result.routes}
-            status={day.data.selected_result.status === 'infeasible' ? 'infeasible' : 'succeeded'}
-            baselineLabel="Stored default"
-            scenarioLabel="Selected override"
-          />
-        </>
-      ) : currentResult ? (
-        <div className="flex h-[clamp(480px,65vh,680px)] overflow-hidden rounded-lg border border-border bg-card">
-          <RouteSidebar routes={currentResult.routes} selectedRouteId={selectedRouteId} onSelectRoute={setSelectedRouteId} title={`${selectedDate} routes`} headerAction={<DepotPlanCalendar days={planData.days} selectedDate={selectedDate} onSelect={(date) => updateContext({ date })} onSolve={(date) => void solveDay(date)} solvingDate={solve.isPending ? solve.variables : null} />} />
-          <div className="min-w-0 flex-1"><MapView depot={currentResult.depot ?? planData.depot} routes={currentResult.routes} selectedRouteId={selectedRouteId} onSelectRoute={setSelectedRouteId} /></div>
-        </div>
-      ) : !day.isLoading ? (
-        <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-          <DepotPlanCalendar days={planData.days} selectedDate={selectedDate} onSelect={(date) => updateContext({ date })} onSolve={(date) => void solveDay(date)} solvingDate={solve.isPending ? solve.variables : null} />
-          <p className="mt-3">No stored result yet for this date.</p>
-          {day.data?.default_status === 'not_requested' && <button type="button" onClick={() => void solveDay(selectedDate)} disabled={solve.isPending} className="mt-3 rounded-md bg-primary px-3 py-2 font-semibold text-primary-foreground disabled:opacity-50">{solve.isPending ? 'Queueing solve…' : 'Solve this date'}</button>}
-        </div>
-      ) : null}
+        <h1 className="text-lg font-semibold">Depot comparison</h1>
+        <DepotPlanCalendar days={planData.days} selectedDate={selectedDate} onSelect={(date) => updateContext({ date })} onSolve={(date) => void solveDay(date)} solvingDate={solve.isPending ? solve.variables : null} />
+        <DepotScenarioComparison plan={planData} serviceDate={selectedDate}
+          leftId={searchParams.get('compareLeft') || 'default'}
+          rightId={searchParams.get('compareRight') ?? (routeScenarioId === 'default' ? 'none' : routeScenarioId)}
+          onSelect={(side, id) => updateContext({ [side === 'left' ? 'compareLeft' : 'compareRight']: id })} />
       </>}
     </div>
   )
 }
 
-function DayStatus({ detail, pending }: { detail: { default_status: string; override_status: string | null; selected_result: DepotPlanDayResult | null; error: string | null }; pending: boolean }) {
-  if (!pending && !detail.error) return null
-  return <div role="status" className="rounded-md border border-border px-3 py-2 text-sm">
-    {pending && 'Optimizing…'}
-    {detail.error && <div role="alert" className="text-destructive">{detail.error}</div>}
-  </div>
-}
-
 function Loading({ label }: { label: string }) {
   return <div className="flex h-56 items-center justify-center text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{label}</div>
-}
-
-function kpiDeltas(base: Kpis, selected: Kpis): KpiDeltas {
-  return {
-    route_count: selected.route_count - base.route_count,
-    driver_count: selected.driver_count - base.driver_count,
-    vehicle_count: selected.vehicle_count - base.vehicle_count,
-    total_miles: selected.total_miles - base.total_miles,
-    drive_minutes: selected.drive_minutes - base.drive_minutes,
-    service_minutes: selected.service_minutes - base.service_minutes,
-    total_cases: selected.total_cases - base.total_cases,
-    avg_stops_per_route: selected.avg_stops_per_route - base.avg_stops_per_route,
-    avg_capacity_utilization_pct: selected.avg_capacity_utilization_pct - base.avg_capacity_utilization_pct,
-    avg_driver_utilization_pct: selected.avg_driver_utilization_pct - base.avg_driver_utilization_pct,
-    overtime_minutes: selected.overtime_minutes - base.overtime_minutes,
-    missed_windows: selected.missed_windows - base.missed_windows,
-    late_minutes: selected.late_minutes - base.late_minutes,
-    total_revenue: selected.total_revenue - base.total_revenue,
-    profit: selected.profit - base.profit,
-    mileage_cost: selected.cost_breakdown.mileage_cost - base.cost_breakdown.mileage_cost,
-    labor_cost: selected.cost_breakdown.labor_cost - base.cost_breakdown.labor_cost,
-    overtime_cost: selected.cost_breakdown.overtime_cost - base.cost_breakdown.overtime_cost,
-    fixed_vehicle_cost: selected.cost_breakdown.fixed_vehicle_cost - base.cost_breakdown.fixed_vehicle_cost,
-    sla_penalty_cost: selected.cost_breakdown.sla_penalty_cost - base.cost_breakdown.sla_penalty_cost,
-    carrier_linehaul_cost: selected.cost_breakdown.carrier_linehaul_cost - base.cost_breakdown.carrier_linehaul_cost,
-    carrier_lane_cost: selected.cost_breakdown.carrier_lane_cost - base.cost_breakdown.carrier_lane_cost,
-    carrier_stop_cost: selected.cost_breakdown.carrier_stop_cost - base.cost_breakdown.carrier_stop_cost,
-    carrier_minimum_adjustment: selected.cost_breakdown.carrier_minimum_adjustment - base.cost_breakdown.carrier_minimum_adjustment,
-    fuel_surcharge_cost: selected.cost_breakdown.fuel_surcharge_cost - base.cost_breakdown.fuel_surcharge_cost,
-    accessorial_cost: selected.cost_breakdown.accessorial_cost - base.cost_breakdown.accessorial_cost,
-    volume_tier_adjustment: selected.cost_breakdown.volume_tier_adjustment - base.cost_breakdown.volume_tier_adjustment,
-    commitment_adjustment: selected.cost_breakdown.commitment_adjustment - base.cost_breakdown.commitment_adjustment,
-    total_cost: selected.cost_breakdown.total_cost - base.cost_breakdown.total_cost,
-  }
 }

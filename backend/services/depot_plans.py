@@ -2,19 +2,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import uuid
 import threading
+from dataclasses import asdict
+from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from route_opt.cost import CostParameters
-from route_opt.depot_planning import materialize_depot_targets
+from route_opt.depot_planning import materialize_depot_targets, _available_fleet
 
 from ..depot_plan_models import DayDetail, PlanSet, RouteScenario
-from ..config import get_route_execution_mode
+from ..config import (
+    get_route_execution_mode, get_routing_coverage_manifest,
+    get_route_solver_endpoint, get_valhalla_max_snap_distance_miles,
+    allow_haversine_fallback, get_valhalla_app_url,
+)
 from .depot_route_execution import dated_route_executor
 from .depot_plan_jobs import DepotPlanJobManager, JobKey, depot_plan_job_manager
 from .depot_plan_repository import depot_plan_repository
@@ -162,6 +169,37 @@ class DepotPlanService:
                 "error": None,
             }
 
+        lookup = getattr(self.repository, "find_reusable_result", None)
+        if callable(lookup):
+            for service_date in sorted({horizon_start, priority_date_text or horizon_start}):
+                try:
+                    costs, cost_source = _route_cost_parameters(
+                        frozen_cost_rows, depot_id, service_date,
+                        strict=get_route_execution_mode() == "strict_serving_road" and int(daily_targets[service_date]["assigned_cases"]) > 0,
+                        source=str(cost_resource_source),
+                    )
+                except ValueError:
+                    # Keep existing asynchronous error reporting for invalid resources.
+                    continue
+                input_hash = _routing_input_hash(daily_targets[service_date], fleet, costs, self.solver)
+                cached = lookup(input_hash)
+                if cached is None:
+                    continue
+                result = _reused_day_result(cached, service_date, self._timestamp())
+                result["routing_input_hash"] = input_hash
+                result["execution"].update({
+                    "resource_source": resource_source,
+                    "fleet_snapshot": deepcopy(fleet_snapshot),
+                    "customer_constraint_snapshot": deepcopy(customer_constraint_snapshot),
+                    "cost_snapshot": deepcopy(cost_snapshot),
+                    "cost_parameter_source": cost_source,
+                })
+                day = record["days"][service_date]
+                day["default_status"] = result["status"]
+                day["default_result_id"] = result["result_id"]
+                day["results"][result["result_id"]] = result
+                day["jobs"][f"default-{service_date}"].update(status=result["status"], result_id=result["result_id"])
+
         try:
             created = self.repository.create(record)
         except Exception:
@@ -272,6 +310,69 @@ class DepotPlanService:
         if not callable(lister):
             raise RuntimeError("Selected depot repository cannot page result routes.")
         return lister(plan_set_id, result_id, limit=limit, offset=offset)
+
+    def rename_scenario(self, plan_set_id: str, route_scenario_id: str, name: str) -> RouteScenario:
+        name = name.strip()
+        if not name:
+            raise ValueError("Scenario name is required.")
+        def rename(record: dict[str, object]) -> None:
+            _require_scenario(record, route_scenario_id, named=True)
+            record["scenarios"][route_scenario_id]["scenario_name"] = name
+            record["updated_at"] = self._timestamp()
+        record = self.repository.mutate(plan_set_id, rename)
+        return RouteScenario.model_validate(record["scenarios"][route_scenario_id])
+
+    def inputs(self, plan_set_id: str, service_date: str, route_scenario_id: str = DEFAULT_SCENARIO_ID) -> dict[str, object]:
+        record = self.repository.get(plan_set_id)
+        _require_scenario(record, route_scenario_id)
+        day = _require_day(record, service_date)
+        snapshot = self.snapshot_provider(str(record["parent_run_id"]))
+        rows = _apply_customer_constraint_snapshot(
+            deepcopy(_snapshot_value(snapshot, "network_rows")), record.get("customer_constraint_snapshot")
+        )
+        flows = list(_snapshot_value(snapshot, "flow_rows"))
+        fleet = deepcopy(record["fleet"])
+        _verify_fleet_snapshot(fleet, record.get("fleet_snapshot"))
+        frozen_costs = record.get("route_cost_parameters")
+        if frozen_costs is None:
+            frozen_costs, _ = _snapshot_cost_rows(snapshot)
+        _verify_cost_snapshot(frozen_costs, record.get("cost_snapshot"))
+        costs, source = _route_cost_parameters(
+            frozen_costs, str(record["depot"]["depot_id"]), service_date,
+            strict=get_route_execution_mode() == "strict_serving_road" and int(day["assigned_cases"]) > 0,
+            source=str(record.get("cost_resource_source") or "legacy_snapshot"),
+        )
+        detail = _day_detail_payload(record, day, route_scenario_id)
+        request = detail.get("override_request") if route_scenario_id != DEFAULT_SCENARIO_ID else None
+        if request:
+            fleet, rows, costs = _apply_override(fleet, rows, str(record["depot"]["depot_id"]), service_date, request, costs)
+            flows.extend(rows.pop("__daily_override_flow_rows", []))
+        targets = materialize_depot_targets(rows, flows, str(record["depot"]["depot_id"]), service_date)
+        return {"plan_set_id": plan_set_id, "parent_run_id": record["parent_run_id"], "service_date": service_date,
+                "route_scenario_id": route_scenario_id, "depot": targets["depot"],
+                "deliveries": targets["planning_customers"], "orders": targets["orders"],
+                "fleet": _available_fleet(fleet, str(record["depot"]["depot_id"]), service_date), "cost_parameters": asdict(costs), "cost_source": source,
+                "override_status": detail.get("override_status")}
+
+    def delivery_access(self, plan_set_id: str, location: Mapping[str, object]) -> dict[str, object]:
+        from .routing_coverage import resolve_coverage
+        from .valhalla import ValhallaMatrixClient
+        record = self.repository.get(plan_set_id)
+        depot = record["depot"]["location"]
+        import math
+        lat, lng = float(location["lat"]), float(location["lng"])
+        if not math.isfinite(lat) or not math.isfinite(lng) or abs(lat) > 90 or abs(lng) > 180:
+            raise ValueError("Delivery coordinates must be valid latitude and longitude.")
+        manifest = get_routing_coverage_manifest()
+        if not manifest:
+            return {"reachable": False, "reason": "coverage_unavailable"}
+        coverage = resolve_coverage(str(record["depot"]["depot_id"]), [depot, location],
+                                    manifest_path=manifest, allow_uncovered=True, strict=False)
+        if coverage is None:
+            return {"reachable": False, "reason": "coverage_unavailable"}
+        client = ValhallaMatrixClient(str(coverage["endpoint_url"]), costing="truck",
+                                     max_snap_distance_miles=get_valhalla_max_snap_distance_miles())
+        return client.inspect_bidirectional_reachability(depot, location)
 
     def create_scenario(self, plan_set_id: str, scenario_name: str) -> RouteScenario:
         name = scenario_name.strip()
@@ -526,17 +627,38 @@ class DepotPlanService:
                     cost_parameters,
                 )
                 flow_rows.extend(network_rows.pop("__daily_override_flow_rows", []))
-            solved = self.solver(
-                network_rows=network_rows,
-                flow_rows=flow_rows,
-                depot_id=str(running_record["depot"]["depot_id"]),
-                service_date=service_date,
-                fleet=fleet,
-                scenario_id=f"{plan_set_id}:{route_scenario_id}",
-                cost_parameters=cost_parameters,
-            )
-            execution = solved.get("execution")
+            input_hash = None
+            cached = None
+            if route_scenario_id == DEFAULT_SCENARIO_ID and not request:
+                targets = materialize_depot_targets(
+                    network_rows, flow_rows, str(running_record["depot"]["depot_id"]), service_date
+                )
+                input_hash = _routing_input_hash(targets, fleet, cost_parameters, self.solver)
+                lookup = getattr(self.repository, "find_reusable_result", None)
+                cached = lookup(input_hash) if callable(lookup) else None
+            if cached is not None:
+                solved = deepcopy(cached)
+                solved["execution"] = {
+                    **(solved.get("execution") or {}),
+                    "route_cache": "hit",
+                    "reused_from_result_id": cached["result_id"],
+                    "solver_invoked": False,
+                    "matrix_requested": False,
+                }
+            else:
+                solved = self.solver(
+                    network_rows=network_rows,
+                    flow_rows=flow_rows,
+                    depot_id=str(running_record["depot"]["depot_id"]),
+                    service_date=service_date,
+                    fleet=fleet,
+                    scenario_id=f"{plan_set_id}:{route_scenario_id}",
+                    cost_parameters=cost_parameters,
+                )
+            execution = solved.setdefault("execution", {})
             if isinstance(execution, dict):
+                execution["available_vehicle_count"] = len(_available_fleet(fleet, str(running_record["depot"]["depot_id"]), service_date))
+                execution["driver_delta"] = int((request or {}).get("driver_delta") or 0)
                 execution["resource_source"] = running_record["resource_source"]
                 execution["fleet_snapshot"] = deepcopy(
                     running_record.get("fleet_snapshot")
@@ -556,6 +678,8 @@ class DepotPlanService:
                 )
                 execution["job_attempt"] = attempt
             result = _day_result(solved, service_date, self._timestamp())
+            if input_hash is not None:
+                result["routing_input_hash"] = input_hash
         except Exception as exc:
             if "heartbeat_stop" in locals():
                 heartbeat_stop.set()
@@ -768,6 +892,52 @@ def _result_by_id(
     return day["results"].get(str(result_id))
 
 
+def _routing_input_hash(
+    targets: Mapping[str, object], fleet: Sequence[Mapping[str, object]],
+    costs: CostParameters, solver: Any,
+) -> str:
+    """Versioned depot/date inputs; excludes network costs and run identity."""
+    mode = getattr(solver, "mode", None) or get_route_execution_mode()
+    manifest_path = get_routing_coverage_manifest()
+    manifest = Path(manifest_path) if manifest_path else None
+    policy = {
+        "version": "depot-route-reuse-v1",
+        "cache_epoch": os.getenv("DEPOT_ROUTE_CACHE_VERSION", "1"),
+        "mode": mode,
+        "solver": f"{getattr(solver, '__module__', type(solver).__module__)}.{getattr(solver, '__qualname__', type(solver).__qualname__)}",
+        "endpoint": get_route_solver_endpoint(required=False),
+        "coverage": hashlib.sha256(manifest.read_bytes()).hexdigest() if manifest and manifest.is_file() else None,
+        "valhalla_app_url": get_valhalla_app_url(),
+        "snap_distance": get_valhalla_max_snap_distance_miles(),
+        "allow_fallback": allow_haversine_fallback(),
+    }
+    # Sort records to make identity independent of table ordering. Include all
+    # materialized fields conservatively, including names used by route output.
+    def canonical(values: Sequence[Mapping[str, object]]) -> list[Mapping[str, object]]:
+        return sorted(values, key=lambda row: json.dumps(row, sort_keys=True, default=str))
+
+    payload = {
+        "policy": policy,
+        "targets": {key: canonical(value) if isinstance(value, list) else value for key, value in targets.items()},
+        "fleet": canonical(fleet),
+        "costs": asdict(costs),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _reused_day_result(cached: Mapping[str, object], service_date: str, created_at: str) -> dict[str, object]:
+    result = _day_result(cached, service_date, created_at)
+    result["execution"] = {
+        **(result.get("execution") or {}),
+        "route_cache": "hit",
+        "reused_from_result_id": cached["result_id"],
+        "solver_invoked": False,
+        "matrix_requested": False,
+    }
+    result["execution"].pop("job_attempt", None)
+    return result
+
+
 def _day_result(
     solved: Mapping[str, object], service_date: str, created_at: str
 ) -> dict[str, object]:
@@ -783,6 +953,7 @@ def _day_result(
         "assigned_cases": int(solved["assigned_cases"]),
         "routed_cases": int(solved["routed_cases"]),
         "unserved_cases": unserved_cases,
+        "unserved_orders": deepcopy(solved.get("unserved_orders", [])),
         "diagnostics": deepcopy(solved["diagnostics"]),
         "matrix_source": solved["matrix_source"],
         "execution": deepcopy(solved.get("execution")),

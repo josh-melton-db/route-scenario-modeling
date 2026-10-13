@@ -174,8 +174,8 @@ export const api = {
     return payload
   },
   networkBaseline: () => requestJSON<NetworkBaselineState>('/api/network/baseline'),
-  networkBaselinePlanRun: (params: NetworkOverviewParams) => requestJSON<NetworkScenarioResult>(
-    `/api/network/baseline/plan-run?${qs({ ...params })}`,
+  networkBaselinePlanRun: (params: NetworkOverviewParams) => requestJSON<{ scenario_id: string; run_id: string }>(
+    `/api/network/baseline/plan-run?${qs({ ...params, context_only: 'true' })}`,
   ),
   proposeNetworkBaseline: (runId: string) => requestJSON<NetworkBaselineProposal>(
     '/api/network/baseline/proposals', { method: 'POST', body: JSON.stringify({ run_id: runId }) },
@@ -229,8 +229,8 @@ export const api = {
     return { scenario, result } satisfies NetworkScenarioRunResponse
   },
   networkOptions: () => requestJSON<NetworkOptions>('/api/network/options'),
-  networkOverview: (params: NetworkOverviewParams, signal?: AbortSignal) =>
-    requestJSON<NetworkOverview>(`/api/network/overview?${qs({ ...params })}`, { signal }),
+  networkOverview: (params: NetworkOverviewParams, signal?: AbortSignal, mapLanesOnly = false) =>
+    requestJSON<NetworkOverview>(`/api/network/overview?${qs({ ...params, ...(mapLanesOnly ? { map_lanes_only: 'true' } : {}) })}`, { signal }),
   networkScenarios: () =>
     requestJSON<NetworkScenario[]>('/api/network/scenarios'),
   createNetworkScenario: (payload: NetworkScenarioCreateRequest) =>
@@ -321,6 +321,15 @@ export const api = {
       `/api/depot-plans/${encodeURIComponent(planSetId)}/scenarios`,
       { method: 'POST', body: JSON.stringify({ scenario_name: scenarioName }) },
     ),
+  renameDepotPlanScenario: (planSetId: string, scenarioId: string, scenarioName: string) =>
+    requestJSON<DepotPlanRouteScenario>(`/api/depot-plans/${encodeURIComponent(planSetId)}/scenarios/${encodeURIComponent(scenarioId)}`,
+      { method: 'PATCH', body: JSON.stringify({ scenario_name: scenarioName }) }),
+  depotInputs: (planSetId: string, date: string, scenarioId: string) =>
+    requestJSON<{ depot: Depot; parent_run_id: string; service_date: string; orders: Array<Record<string, unknown>>; deliveries: Array<Record<string, unknown>>; fleet: Array<Record<string, unknown>>; cost_parameters: Record<string, unknown>; cost_source: string; override_status: string | null }>(
+      `/api/depot-plans/${encodeURIComponent(planSetId)}/days/${encodeURIComponent(date)}/inputs?${qs({ route_scenario_id: scenarioId })}`),
+  depotDeliveryAccess: (planSetId: string, location: { lat: number; lng: number }) =>
+    requestJSON<{ reachable: boolean; reason?: string; road_access_lat?: number; road_access_lng?: number; road_snap_distance_miles?: number }>(
+      `/api/depot-plans/${encodeURIComponent(planSetId)}/delivery-access`, { method: 'POST', body: JSON.stringify(location) }),
   optimizeDepotPlanDay: (
     planSetId: string,
     serviceDate: string,

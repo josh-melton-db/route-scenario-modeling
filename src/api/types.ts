@@ -952,6 +952,7 @@ export interface DepotPlanDayResult {
   assigned_cases: number
   routed_cases: number
   unserved_cases: number
+  unserved_orders?: Array<{ customer_id: string; customer_name?: string; demand_cases: number; reason: string }>
   diagnostics: Array<string | Record<string, unknown>>
   matrix_source: MatrixSource
   execution?: {
@@ -967,6 +968,8 @@ export interface DepotPlanDayResult {
     resource_source?: string
     cost_parameter_source?: string
     approximate?: boolean
+    available_vehicle_count?: number
+    driver_delta?: number
   } | null
   created_at: string
 }

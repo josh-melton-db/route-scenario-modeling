@@ -110,7 +110,7 @@ test('preserves parent scenario, run, depot, and date across route navigation', 
   await page.route('**/api/delivery-days', (route) => route.fulfill({ json: ['Tuesday'] }))
 
   await page.goto(`${appUrl}/network/scenarios/${scenarioId}/flow?run=${runId}`)
-  await expect(page.getByText(/plan generated 9\/1\/2026/)).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: 'Viewing pinned historical run network-run-old from revision 1' })).toBeVisible()
   expect(historicalReads).toBeGreaterThan(0)
 
   const routeContext = new URLSearchParams({

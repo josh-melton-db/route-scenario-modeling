@@ -142,3 +142,30 @@ def test_compressed_envelope_round_trips_and_rejects_corruption() -> None:
             uncompressed_bytes=raw_size,
             expected_sha256=digest,
         )
+
+
+def test_normalization_preserves_shared_frozen_facility_rows() -> None:
+    from backend.services.network_scenarios import _restore_normal_facility_rows
+
+    frozen = {
+        "facility_capacity_daily": [{"capacity_units": 20, "normal_capacity_units": 100, "effective_bound_applied": True}],
+        "facility_supply_daily": [{"supply_units": 30, "normal_supply_units": 90, "effective_bound_applied": True}],
+        "demand_plan_daily": [{"required_units": 100}],
+    }
+    working = dict(frozen)
+    _restore_normal_facility_rows(working)
+    assert working["facility_capacity_daily"][0]["capacity_units"] == 100
+    assert working["facility_supply_daily"][0]["supply_units"] == 90
+    assert frozen["facility_capacity_daily"][0]["capacity_units"] == 20
+    assert frozen["facility_supply_daily"][0]["supply_units"] == 30
+    assert working["demand_plan_daily"] is frozen["demand_plan_daily"]
+
+
+def test_manifest_preserves_transfer_evidence_and_metadata_removal(monkeypatch) -> None:
+    scenario = _scenario("2026-10-08", "2026-10-08", "REV-METADATA")
+    before = {"network_transfer_movements": [{"transfer_id": "old"}], "facility_supply_provenance": [{"source": "legacy"}]}
+    after = {"network_transfer_movements": [{"transfer_id": "new", "assigned_units": 500}], "facility_supply_provenance": []}
+    monkeypatch.setattr(baseline_service, "get_revision", lambda _: SimpleNamespace(rows=before))
+    manifest = _snapshot_manifest_with_deltas({"base_kind": "baseline_revision", "revision_id": "REV-METADATA"}, before, after)
+    assert NetworkScenarioRepository()._reconstruct_network_rows(scenario, manifest) == after
+    assert before["network_transfer_movements"][0]["transfer_id"] == "old"

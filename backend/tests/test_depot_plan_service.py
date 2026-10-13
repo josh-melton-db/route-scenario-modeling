@@ -39,6 +39,15 @@ class FakeRepository:
         self.lock = RLock()
         self.inside_mutate = False
 
+    def find_reusable_result(self, input_hash):
+        with self.lock:
+            for record in self.records.values():
+                for day in record["days"].values():
+                    result = day["results"].get(day.get("default_result_id"))
+                    if result and result.get("routing_input_hash") == input_hash:
+                        return deepcopy(result)
+        return None
+
     def find(self, parent_run_id: str, depot_id: str):
         with self.lock:
             for record in self.records.values():
@@ -239,6 +248,86 @@ def test_route_preparation_requests_date_without_changing_parent_horizon(monkeyp
     assert {day for day, _ in solve_calls} == {DATE_ONE, DATE_TWO}
     with pytest.raises(ValueError, match="outside"):
         prepare_depot_routes(baseline=baseline, plans=service, service_date="2026-11-01")
+
+
+def test_unchanged_depot_reuses_routes_across_network_runs() -> None:
+    service, repository, jobs, calls, _ = _service()
+    first = service.get_or_create_plan("BASELINE", DEPOT_ID)
+    while jobs.run_next():
+        pass
+    original = service.get_day(first.plan_set_id, DATE_ONE).selected_result
+    second = service.get_or_create_plan("TARIFF-SCENARIO", DEPOT_ID)
+    reused = service.get_day(second.plan_set_id, DATE_ONE).selected_result
+    assert len(calls) == 1
+    assert not jobs.run_next()
+    assert second.parent_run_id == "TARIFF-SCENARIO"
+    assert second.plan_set_id != first.plan_set_id
+    assert reused.result_id != original.result_id
+    assert reused.routes == original.routes
+    assert reused.execution["reused_from_result_id"] == original.result_id
+    assert reused.execution["solver_invoked"] is False
+    repository.records[second.plan_set_id]["days"][DATE_ONE]["results"][reused.result_id]["routes"].clear()
+    assert service.get_day(first.plan_set_id, DATE_ONE).selected_result.routes
+
+
+@pytest.mark.parametrize("change", ["cases", "window", "location", "fleet", "cost", "mode", "coverage", "cache_epoch"])
+def test_changed_routing_inputs_do_not_reuse_routes(change, monkeypatch) -> None:
+    service, repository, jobs, calls, _ = _service()
+    service.get_or_create_plan("BASELINE", DEPOT_ID)
+    while jobs.run_next():
+        pass
+    snapshot = _snapshot()
+    if change == "cases":
+        snapshot["flow_rows"][0]["assigned_units"] -= 1
+    elif change == "window":
+        snapshot["network_rows"]["dim_network_customers"][0]["receiving_window_start"] = "10:00"
+    elif change == "location":
+        snapshot["network_rows"]["dim_network_customers"][0]["lat"] = 39.8
+    elif change == "fleet":
+        def fleet_provider(snapshot, depot):
+            fleet, source = _fleet_provider(snapshot, depot)
+            fleet[0]["max_route_minutes"] = 500
+            return fleet, source
+        service.fleet_provider = fleet_provider
+    elif change == "cost":
+        from dataclasses import replace
+        import backend.services.depot_plans as module
+        resolve = module._route_cost_parameters
+        def changed_cost(*args, **kwargs):
+            costs, source = resolve(*args, **kwargs)
+            return replace(costs, cost_per_mile=costs.cost_per_mile + 1), source
+        monkeypatch.setattr(module, "_route_cost_parameters", changed_cost)
+    elif change == "mode":
+        monkeypatch.setenv("ROUTE_EXECUTION_MODE", "local_road")
+    elif change == "coverage":
+        monkeypatch.setattr("backend.services.depot_plans.get_valhalla_max_snap_distance_miles", lambda: 0.123)
+    elif change == "cache_epoch":
+        monkeypatch.setenv("DEPOT_ROUTE_CACHE_VERSION", "next-solver-version")
+    service.snapshot_provider = lambda _: deepcopy(snapshot)
+    second = service.get_or_create_plan("CHANGED", DEPOT_ID)
+    assert service.get_day(second.plan_set_id, DATE_ONE).default_status == "queued"
+    while jobs.run_next():
+        pass
+    assert len(calls) == 2
+
+
+def test_later_day_worker_reuses_matching_saved_route() -> None:
+    service, repository, jobs, calls, _ = _service()
+    first = service.get_or_create_plan("BASELINE", DEPOT_ID)
+    while jobs.run_next():
+        pass
+    service.solve_day(first.plan_set_id, DATE_TWO)
+    while jobs.run_next():
+        pass
+    assert len(calls) == 2
+    second = service.get_or_create_plan("OTHER-NETWORK-RUN", DEPOT_ID)
+    service.solve_day(second.plan_set_id, DATE_TWO)
+    while jobs.run_next():
+        pass
+    assert len(calls) == 2
+    day = service.get_day(second.plan_set_id, DATE_TWO)
+    assert day.default_status == "completed"
+    assert day.selected_result.execution["route_cache"] == "hit"
 
 
 def test_plan_creation_only_queues_first_day_and_later_days_solve_on_demand() -> None:
@@ -1014,3 +1103,85 @@ def test_absent_vehicle_stop_limit_requires_valid_explicit_default_policy(policy
 
     with pytest.raises(ValueError, match="default operating|positive integer"):
         _bind_fleet_operating_policy([{"vehicle_id": "VEH-1"}], policy, "configured_store:fleet")
+
+
+def test_depot_inputs_use_submitted_changes_and_frozen_resources():
+    service, repository, jobs, _, solve_inputs = _service()
+    plan = _payload(service.get_or_create_plan('RUN-inputs', DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan['plan_set_id'], 'Extra driver'))
+    service.optimize_day(plan['plan_set_id'], DATE_ONE, {
+        'route_scenario_id': scenario['route_scenario_id'], 'driver_delta': 1,
+    })
+    inputs = service.inputs(plan['plan_set_id'], DATE_ONE, scenario['route_scenario_id'])
+    baseline = service.inputs(plan['plan_set_id'], DATE_ONE)
+    assert len(inputs['fleet']) == len(baseline['fleet']) + 1
+    assert inputs['orders'] == baseline['orders']
+    assert inputs['override_status'] == 'queued'
+    assert jobs.run_next()
+    assert [row['vehicle_id'] for row in solve_inputs[-1]['fleet']] == [row['vehicle_id'] for row in inputs['fleet']]
+    result = _payload(service.get_day(plan['plan_set_id'], DATE_ONE, scenario['route_scenario_id']))['selected_result']
+    assert result['execution']['driver_delta'] == 1
+    assert result['execution']['available_vehicle_count'] == len(inputs['fleet'])
+    # A second run must pass a different fleet to the solver, not reuse the old override.
+    service.optimize_day(plan['plan_set_id'], DATE_ONE, {
+        'route_scenario_id': scenario['route_scenario_id'], 'driver_delta': 2,
+    })
+    assert jobs.run_next()
+    assert len(solve_inputs[-1]['fleet']) == len(baseline['fleet']) + 2
+
+
+def test_unserved_delivery_reasons_survive_result_storage():
+    service, _, jobs, _, _ = _service()
+    plan = _payload(service.get_or_create_plan('RUN-reasons', DEPOT_ID))
+    while jobs.run_next():
+        pass
+    scenario = _payload(service.create_scenario(plan['plan_set_id'], 'No driver'))
+    service.optimize_day(plan['plan_set_id'], DATE_ONE, {
+        'route_scenario_id': scenario['route_scenario_id'], 'driver_delta': -1,
+    })
+    assert jobs.run_next()
+    result = _payload(service.get_day(plan['plan_set_id'], DATE_ONE, scenario['route_scenario_id']))['selected_result']
+    assert sum(row['demand_cases'] for row in result['unserved_orders']) == result['unserved_cases'] == 100
+    assert all(row['reason'] for row in result['unserved_orders'])
+
+
+def test_rename_scenario_preserves_identity_and_default_is_readonly():
+    service, _, _, _, _ = _service()
+    plan = _payload(service.get_or_create_plan('RUN-rename', DEPOT_ID))
+    scenario = _payload(service.create_scenario(plan['plan_set_id'], 'First'))
+    renamed = _payload(service.rename_scenario(plan['plan_set_id'], scenario['route_scenario_id'], '  Morning shift  '))
+    assert renamed['scenario_name'] == 'Morning shift'
+    assert renamed['route_scenario_id'] == scenario['route_scenario_id']
+    with pytest.raises(ValueError):
+        service.rename_scenario(plan['plan_set_id'], 'default', 'Changed')
+    with pytest.raises(ValueError):
+        service.rename_scenario(plan['plan_set_id'], scenario['route_scenario_id'], '  ')
+
+
+def test_delivery_access_handles_missing_coverage_and_invalid_coordinates(monkeypatch):
+    service, _, _, _, _ = _service()
+    plan = _payload(service.get_or_create_plan('RUN-access', DEPOT_ID))
+    monkeypatch.setattr('backend.services.depot_plans.get_routing_coverage_manifest', lambda: None)
+    assert service.delivery_access(plan['plan_set_id'], {'lat': 40, 'lng': -86}) == {'reachable': False, 'reason': 'coverage_unavailable'}
+    for location in ({'lat': 91, 'lng': -86}, {'lat': float('nan'), 'lng': -86}, {'lat': 40, 'lng': 181}):
+        with pytest.raises(ValueError):
+            service.delivery_access(plan['plan_set_id'], location)
+
+
+@pytest.mark.parametrize('reply', [
+    {'reachable': True, 'road_access_lat': 40.001, 'road_access_lng': -86.001, 'road_snap_distance_miles': .05},
+    {'reachable': False}, {'reachable': False, 'reason': 'snap_distance_exceeded'},
+])
+def test_delivery_access_returns_bounded_bidirectional_road_check(monkeypatch, reply):
+    service, _, _, _, _ = _service()
+    plan = _payload(service.get_or_create_plan('RUN-snap', DEPOT_ID))
+    monkeypatch.setattr('backend.services.depot_plans.get_routing_coverage_manifest', lambda: '/tmp/test-coverage')
+    monkeypatch.setattr('backend.services.routing_coverage.resolve_coverage', lambda *args, **kwargs: {'endpoint_url': 'http://road.test'})
+    def inspect(self, depot, point):
+        assert point == {'lat': 40, 'lng': -86}
+        assert self.costing == 'truck'
+        return reply
+    monkeypatch.setattr('backend.services.valhalla.ValhallaMatrixClient.inspect_bidirectional_reachability', inspect)
+    assert service.delivery_access(plan['plan_set_id'], {'lat': 40, 'lng': -86}) == reply

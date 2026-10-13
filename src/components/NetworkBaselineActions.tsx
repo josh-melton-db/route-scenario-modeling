@@ -30,7 +30,7 @@ export default function NetworkBaselineActions({ runId }: { runId?: string }) {
   const buttonClass = 'rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent/50 disabled:opacity-50'
   return (
     <section aria-label="Network baseline lifecycle" className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-      <span>{baseline.isLoading ? 'Loading baseline revision…' : state ? (state.active_run_id ? 'Accepted network baseline' : 'Original story baseline') : 'Baseline revision unavailable'}</span>
+      {(baseline.isLoading || !state || state.active_run_id) && <span>{baseline.isLoading ? 'Loading baseline revision…' : state?.active_run_id ? 'Accepted network baseline' : 'Baseline revision unavailable'}</span>}
       {state?.accepted_at && <span>· accepted {new Date(state.accepted_at).toLocaleDateString()}</span>}
       {isActive ? <span className="text-primary">This run is the active baseline</span> : runId && (
         <button className={buttonClass} disabled={action.isPending || !state} onClick={() => action.mutate(currentProposal ? 'accept' : 'propose')}>

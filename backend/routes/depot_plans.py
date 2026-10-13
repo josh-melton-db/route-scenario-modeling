@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..services.depot_plan_jobs import DepotPlanQueueFullError
+from ..models import LatLng
 
 from ..depot_plan_models import (
     CreatePlanRequest,
@@ -62,6 +63,24 @@ def create_depot_plan(
         depot_id,
         priority_date=request.priority_date,
     )
+
+
+@router.patch("/depot-plans/{plan_set_id}/scenarios/{route_scenario_id}", response_model=RouteScenario)
+def rename_route_scenario(plan_set_id: str, route_scenario_id: str, request: CreateRouteScenarioRequest,
+                          service: Any = Depends(get_depot_plan_service)) -> RouteScenario:
+    return _service_call(service.rename_scenario, plan_set_id, route_scenario_id, request.scenario_name)
+
+
+@router.get("/depot-plans/{plan_set_id}/days/{service_date}/inputs")
+def depot_inputs(plan_set_id: str, service_date: date, route_scenario_id: str = "default",
+                 service: Any = Depends(get_depot_plan_service)) -> dict:
+    return _service_call(service.inputs, plan_set_id, _date_text(service_date), route_scenario_id)
+
+
+@router.post("/depot-plans/{plan_set_id}/delivery-access")
+def delivery_access(plan_set_id: str, location: LatLng,
+                    service: Any = Depends(get_depot_plan_service)) -> dict:
+    return _service_call(service.delivery_access, plan_set_id, location.model_dump())
 
 
 @router.get("/depot-plans/{plan_set_id}", response_model=PlanSet)

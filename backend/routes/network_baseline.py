@@ -38,19 +38,26 @@ def baseline_state() -> BaselineState:
     return baseline_service.get_state()
 
 
-@router.get("/plan-run", response_model=NetworkScenarioResult)
+class BaselinePlanContext(BaseModel):
+    scenario_id: str
+    run_id: str
+
+
+@router.get("/plan-run", response_model=NetworkScenarioResult | BaselinePlanContext)
 def baseline_plan_run(
     demand_plan_version_id: str | None = None,
     capacity_plan_version_id: str | None = None,
     horizon_start: str | None = None,
     horizon_end: str | None = None,
-) -> NetworkScenarioResult:
-    return baseline_service.get_plan_run(
+    context_only: bool = False,
+) -> NetworkScenarioResult | BaselinePlanContext:
+    read = baseline_service.get_plan_context if context_only else baseline_service.get_plan_result
+    return read(
         demand_plan_version_id=demand_plan_version_id,
         capacity_plan_version_id=capacity_plan_version_id,
         horizon_start=horizon_start,
         horizon_end=horizon_end,
-    ).result
+    )
 
 
 @router.post("/proposals", response_model=BaselineProposalResponse)

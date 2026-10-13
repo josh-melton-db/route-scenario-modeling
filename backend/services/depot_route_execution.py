@@ -240,6 +240,9 @@ class DatedRouteExecutor:
             solve_network_rows, solve_flow_rows, depot_id, service_date, fleet, **solve_kwargs
         )
         _merge_road_unreachable(solved, unreachable_orders, int(targets["assigned_cases"]))
+        customer_names = {str(row["customer_id"]): row.get("customer_name") for row in targets["planning_customers"]}
+        for order in solved.get("unserved_orders", []):
+            order["customer_name"] = customer_names.get(str(order["customer_id"])) or str(order["customer_id"])
         solve_seconds = time.perf_counter() - solve_started_at
         compact_matrix = compact_travel_matrix(matrix)
         matrix_payload = json.dumps(compact_matrix, separators=(",", ":"), sort_keys=True)

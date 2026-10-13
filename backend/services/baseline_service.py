@@ -885,6 +885,8 @@ class BaselineService:
         capacity_plan_version_id: str | None = None,
         horizon_start: str | None = None,
         horizon_end: str | None = None,
+        _result_only: bool = False,
+        _context_only: bool = False,
     ) -> Any:
         """Return a full-network immutable snapshot for depot child planning.
 
@@ -943,6 +945,17 @@ class BaselineService:
         capacity_end = str(capacity_version["horizon_end"])[:10]
         if start < capacity_start or end > capacity_end:
             raise HTTPException(status_code=422, detail="Plan-run horizon must be covered by the capacity plan.")
+        suffix = f"{target_revision_id}.{demand_id}.{capacity_id}.{start}.{end}"
+        scenario_id = f"baseline-plan-scenario.{suffix}"
+        plan_run_id = f"baseline-plan-run.{suffix}"
+        if _context_only:
+            return {"scenario_id": scenario_id, "run_id": plan_run_id}
+        with self._plan_cache_lock:
+            cached = self._plan_run_cache.get(plan_run_id)
+            if cached is not None:
+                self._plan_run_cache.move_to_end(plan_run_id)
+        if cached is not None:
+            return cached.result.model_copy(deep=True) if _result_only else cached.copy()
         if target_revision_id == original_id:
             network_rows = network_overview_service._load_rows(
                 demand_plan_version_id=demand_id,
@@ -953,15 +966,6 @@ class BaselineService:
         else:
             revision = self.get_revision(target_revision_id)
             network_rows = revision.rows
-        suffix = f"{target_revision_id}.{demand_id}.{capacity_id}.{start}.{end}"
-        scenario_id = f"baseline-plan-scenario.{suffix}"
-        plan_run_id = f"baseline-plan-run.{suffix}"
-        with self._plan_cache_lock:
-            cached = self._plan_run_cache.get(plan_run_id)
-            if cached is not None:
-                self._plan_run_cache.move_to_end(plan_run_id)
-        if cached is not None:
-            return cached.copy()
         generated_at = str(demand_version.get("published_at") or demand_version.get("as_of_date"))
         metadata = option_rows.get('baseline_revision_metadata', [])
         baseline_tariffs = metadata[0].get('tariffs', []) if metadata else []
@@ -1150,7 +1154,15 @@ class BaselineService:
             # IDs are reconstructible; don't retain every filtered full network.
             while len(self._plan_run_cache) > 4:
                 self._plan_run_cache.popitem(last=False)
-        return snapshot.copy()
+        return result.model_copy(deep=True) if _result_only else snapshot.copy()
+
+    def get_plan_context(self, **kwargs: Any) -> dict[str, str]:
+        """Resolve immutable planning IDs without fetching/rating network rows."""
+        return self.get_plan_run(_context_only=True, **kwargs)
+
+    def get_plan_result(self, **kwargs: Any) -> Any:
+        """Return only the UI result, without copying the full planning snapshot."""
+        return self.get_plan_run(_result_only=True, **kwargs)
 
     def resolve_plan_run(self, run_id: str) -> Any:
         prefix = "baseline-plan-run."

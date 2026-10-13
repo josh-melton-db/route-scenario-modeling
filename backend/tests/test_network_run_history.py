@@ -98,6 +98,73 @@ def test_snapshot_is_immutable_after_edit_and_rerun() -> None:
     ]
 
 
+def test_historical_map_read_never_reconstructs_solver_inputs(monkeypatch) -> None:
+    from backend.services.network_scenarios import NetworkScenarioRepository, lakebase_store
+
+    scenario = _create_scenario("Compact historical read")
+    result = _run(str(scenario["scenario_id"]))["result"]
+    repository = NetworkScenarioRepository()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Map reads must not expand the solver snapshot")
+
+    monkeypatch.setattr(repository, "run_snapshot", forbidden)
+    monkeypatch.setattr(NetworkScenarioRepository, "_uses_lakebase", property(lambda _: True))
+    monkeypatch.setattr(repository, "_table", lambda name: name)
+    queries = []
+
+    def query(statement, parameters):
+        queries.append(statement)
+        assert parameters == (result["run_id"],)
+        return {"result_payload": result}
+
+    monkeypatch.setattr(lakebase_store.postgres, "query_one", query)
+    historical = repository.run_result(str(result["run_id"]))
+    assert historical.model_dump(mode="json") == result
+    assert queries == ["SELECT result_payload FROM network_run_snapshots WHERE run_id = %s"]
+
+
+def test_database_save_stores_reference_without_copying_demand(monkeypatch) -> None:
+    from contextlib import nullcontext
+    from backend.models import NetworkRunDiagnostics
+    from backend.services.network_scenarios import NetworkScenarioRepository, lakebase_store
+    from backend.services.network_snapshot_codec import decode_envelope
+
+    scenario = _create_scenario("Reference persistence")
+    completed = _run(str(scenario["scenario_id"]))
+    snapshot = network_scenario_service.get_run_snapshot(str(completed["result"]["run_id"]))
+
+    class ReadOnlyDemand(list):
+        def __deepcopy__(self, memo):
+            raise AssertionError("Database saves must not copy frozen demand")
+
+    rows = dict(snapshot.network_rows)
+    rows["demand_plan_daily"] = ReadOnlyDemand(rows["demand_plan_daily"])
+    repository = NetworkScenarioRepository()
+    monkeypatch.setattr(NetworkScenarioRepository, "_uses_lakebase", property(lambda _: True))
+    monkeypatch.setattr(repository, "_table", lambda name: name)
+    monkeypatch.setattr(lakebase_store.postgres, "transaction", lambda: nullcontext(object()))
+    monkeypatch.setattr(lakebase_store.postgres, "query_one", lambda *args, **kwargs: None)
+    monkeypatch.setattr(lakebase_store.postgres, "jsonb", lambda value: value)
+    writes = []
+    monkeypatch.setattr(lakebase_store.postgres, "execute", lambda sql, parameters, **kwargs: writes.append((sql, parameters)) or 1)
+    monkeypatch.setattr(lakebase_store.postgres, "executemany", lambda *args, **kwargs: None)
+    snapshot.result.diagnostics = NetworkRunDiagnostics()
+    assert repository.save_result(
+        snapshot.scenario, snapshot.result, network_rows=rows,
+        flow_rows=snapshot.flow_rows, cost_rows=snapshot.cost_rows,
+        expected_revision=snapshot.scenario.revision, source_rows=rows,
+        snapshot_manifest={"base_kind": "baseline_revision", "revision_id": "frozen-revision"},
+    )
+    parameters = next(parameters for sql, parameters in writes if "INSERT INTO network_run_snapshots" in sql)
+    assert parameters[4] == {}
+    assert parameters[5]["revision_id"] == "frozen-revision"
+    assert parameters[6:8] == ([], [])
+    assert decode_envelope(parameters[8], codec=parameters[9], uncompressed_bytes=parameters[10], expected_sha256=parameters[11]) == (snapshot.flow_rows, snapshot.cost_rows)
+    assert snapshot.result.diagnostics.snapshot_storage_bytes > 0
+    assert snapshot.result.diagnostics.snapshot_storage_bytes < snapshot.result.diagnostics.snapshot_json_bytes
+
+
 def test_historical_lookup_survives_scenario_deletion_and_missing_run_is_404() -> None:
     scenario = _create_scenario("Deleted scenario history")
     scenario_id = str(scenario["scenario_id"])

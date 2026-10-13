@@ -48,6 +48,31 @@ def test_create_find_get_and_unique_parent_depot_return_detached_copies() -> Non
     assert repository.find("RUN-1", "DPT-1") == repository.get("DPS-1")
 
 
+def test_durable_reuse_reads_result_and_routes_without_loading_parent_plan(monkeypatch):
+    from backend.services.depot_plan_repository import lakebase_store
+
+    repository = DepotPlanRepository()
+    monkeypatch.setattr(DepotPlanRepository, "_uses_lakebase", property(lambda _: True))
+    monkeypatch.setattr(repository, "_results_table", lambda: "results")
+    monkeypatch.setattr(repository, "_routes_table", lambda: "routes")
+    stored = {"result_id": "saved", "routing_input_hash": "identical", "status": "completed", "route_count": 1}
+    def query_one(sql, parameters):
+        assert "route_scenario_id = 'default'" in sql
+        assert "payload->>'routing_input_hash' = %s" in sql
+        assert parameters == ("identical",)
+        return {"result_id": "saved", "payload": stored}
+    def query(sql, parameters):
+        assert parameters == ("saved",)
+        return [{"payload": {"route_id": "route-1"}}]
+    monkeypatch.setattr(lakebase_store.postgres, "query_one", query_one)
+    monkeypatch.setattr(lakebase_store.postgres, "query", query)
+    cached = repository.find_reusable_result("identical")
+    assert cached["routes"] == [{"route_id": "route-1"}]
+    assert "route_count" not in cached
+    cached["status"] = "failed"
+    assert stored["status"] == "completed"
+
+
 def test_mutate_is_atomic_and_returns_detached_copy() -> None:
     repository = DepotPlanRepository()
     repository.create(_record())

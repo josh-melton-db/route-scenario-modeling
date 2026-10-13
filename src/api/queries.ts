@@ -92,11 +92,12 @@ export function useNetworkOptions() {
   })
 }
 
-export function useNetworkOverview(params: NetworkOverviewParams | null) {
+export function useNetworkOverview(params: NetworkOverviewParams | null, mapLanesOnly = false) {
   return useQuery({
-    queryKey: params ? queryKeys.networkOverview(params) : ['network-overview', 'disabled'],
-    queryFn: ({ signal }) => api.networkOverview(params as NetworkOverviewParams, signal),
+    queryKey: params ? [...queryKeys.networkOverview(params), mapLanesOnly] : ['network-overview', 'disabled'],
+    queryFn: ({ signal }) => api.networkOverview(params as NetworkOverviewParams, signal, mapLanesOnly),
     enabled: Boolean(params),
+    staleTime: 60_000,
   })
 }
 
@@ -572,7 +573,8 @@ export function useOptimizeDepotPlanDay(planSetId: string, serviceDate: string) 
   return useMutation({
     mutationFn: (payload: DepotPlanOverrideRequest) =>
       api.optimizeDepotPlanDay(planSetId, serviceDate, payload),
-    onSuccess: () => {
+    onSuccess: (data, request) => {
+      queryClient.setQueryData(queryKeys.depotPlanDay(planSetId, serviceDate, request.route_scenario_id), data)
       void queryClient.invalidateQueries({ queryKey: ['depot-plan', planSetId] })
       void queryClient.invalidateQueries({ queryKey: ['depot-plan-day', planSetId, serviceDate] })
     },

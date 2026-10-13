@@ -98,6 +98,38 @@ class DepotPlanRepository:
                 "Depot plan records require plan_set_id, parent_run_id, and depot_id."
             ) from exc
 
+    def find_reusable_result(self, input_hash: str) -> DepotPlanRecord | None:
+        """Find a saved default with identical frozen routing inputs."""
+        if not self._uses_lakebase:
+            with self._lock:
+                for record in reversed(list(self._records.values())):
+                    for day in record.get("days", {}).values():
+                        results = day.get("results", {})
+                        result = results.get(day.get("default_result_id")) if isinstance(results, dict) else None
+                        if result and result.get("routing_input_hash") == input_hash and result.get("status") in {"completed", "infeasible"}:
+                            return deepcopy(result)
+            return None
+        row = lakebase_store.postgres.query_one(
+            f"SELECT result_id, payload FROM {self._results_table()} "
+            "WHERE payload->>'routing_input_hash' = %s "
+            "AND route_scenario_id = 'default' "
+            "AND payload->>'status' IN ('completed', 'infeasible') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (input_hash,),
+        )
+        if row is None:
+            return None
+        result = deepcopy(_json_value(row["payload"]))
+        routes = lakebase_store.postgres.query(
+            f"SELECT payload FROM {self._routes_table()} WHERE result_id = %s ORDER BY route_position, route_id",
+            (row["result_id"],),
+        )
+        expected_route_count = result.pop("route_count", None)
+        if expected_route_count is not None and int(expected_route_count) != len(routes):
+            return None
+        result["routes"] = [deepcopy(_json_value(route["payload"])) for route in routes]
+        return result
+
     def find(self, parent_run_id: str, depot_id: str) -> DepotPlanRecord | None:
         if not self._uses_lakebase:
             with self._lock:

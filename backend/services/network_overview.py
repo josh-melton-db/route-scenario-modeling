@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import math
 import time
-from collections import defaultdict
+import threading
+from collections import OrderedDict, defaultdict
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -85,6 +86,8 @@ def _lane_on_time_pct(utilization_pct: float, transit_minutes: int) -> float:
 class NetworkOverviewService:
     def __init__(self) -> None:
         self._options_cache: tuple[float, NetworkOptions] | None = None
+        self._overview_cache: OrderedDict[tuple[Any, ...], tuple[float, NetworkOverview]] = OrderedDict()
+        self._overview_cache_lock = threading.RLock()
 
     def _source(self) -> str:
         if get_data_backend() == "stub":
@@ -260,6 +263,8 @@ class NetworkOverviewService:
         now = time.monotonic()
         if self._options_cache and now - self._options_cache[0] < 300:
             return self._options_cache[1].model_copy(deep=True)
+        with self._overview_cache_lock:
+            self._overview_cache.clear()
         from .baseline_service import baseline_service
 
         # Accepted revisions retain their own dated input catalog. A fixture
@@ -399,6 +404,13 @@ class NetworkOverviewService:
         selected_region = region_id or options.default_region_id
         if end < start:
             raise HTTPException(status_code=400, detail="Horizon end must not precede start.")
+        _, active_revision_id = baseline_service.repository.ids()
+        cache_key = (active_revision_id, demand_id, capacity_id, start, end, selected_region, lane_type, metric)
+        with self._overview_cache_lock:
+            cached = self._overview_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < 300:
+                self._overview_cache.move_to_end(cache_key)
+                return cached[1].model_copy(deep=True)
         if baseline_service.is_original_active():
             rows = self._load_rows(
                 demand_plan_version_id=demand_id,
@@ -417,7 +429,7 @@ class NetworkOverviewService:
         if selected_region not in {row.region_id for row in options.regions}:
             raise HTTPException(status_code=404, detail="Network region not found.")
 
-        return self._build_overview(
+        overview = self._build_overview(
             rows,
             context=NetworkOverviewContext(
                 demand_plan_version_id=demand_id,
@@ -429,6 +441,12 @@ class NetworkOverviewService:
                 metric=metric,
             ),
         )
+        with self._overview_cache_lock:
+            self._overview_cache[cache_key] = (time.monotonic(), overview)
+            self._overview_cache.move_to_end(cache_key)
+            while len(self._overview_cache) > 8:
+                self._overview_cache.popitem(last=False)
+        return overview.model_copy(deep=True)
 
     def _build_overview(
         self,

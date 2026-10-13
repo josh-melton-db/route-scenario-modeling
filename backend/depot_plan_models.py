@@ -79,9 +79,11 @@ class DayResult(StrictModel):
     assigned_cases: int = Field(ge=0)
     routed_cases: int = Field(ge=0)
     unserved_cases: int = Field(ge=0)
+    unserved_orders: list[dict[str, Any]] = Field(default_factory=list)
     diagnostics: list[dict[str, Any]] = Field(default_factory=list)
     matrix_source: MatrixSource
     execution: dict[str, Any] | None = None
+    routing_input_hash: str | None = None
     created_at: str
 
     @model_validator(mode="after")

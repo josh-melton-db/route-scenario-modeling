@@ -48,8 +48,9 @@ def network_overview(
     region_id: str | None = None,
     lane_type: NetworkLaneType = "LINEHAUL",
     metric: NetworkMetric = "assigned_flow",
+    map_lanes_only: bool = False,
 ) -> NetworkOverview:
-    return network_overview_service.get_overview(
+    overview = network_overview_service.get_overview(
         demand_plan_version_id=demand_plan_version_id,
         capacity_plan_version_id=capacity_plan_version_id,
         horizon_start=horizon_start,
@@ -58,6 +59,13 @@ def network_overview(
         lane_type=lane_type,
         metric=metric,
     )
+    if map_lanes_only:
+        map_lanes = [
+            lane for lane in overview.lanes
+            if lane.lane_type == "LINEHAUL" or lane.mode.upper() == "AIR"
+        ]
+        return overview.model_copy(update={"lanes": map_lanes})
+    return overview
 
 
 @router.get("/scenarios", response_model=list[NetworkScenario])

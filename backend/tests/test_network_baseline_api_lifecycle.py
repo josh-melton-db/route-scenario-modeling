@@ -145,3 +145,78 @@ def test_real_regional_run_promotes_inherits_then_reset_clears_demo_history() ->
     assert client.get(f'/api/network/runs/{run_id}').status_code == 404
     assert client.get(f'/api/network/scenarios/{scenario_id}').status_code == 404
     assert client.get(f"/api/network/scenarios/{child.json()['scenario_id']}").status_code == 404
+
+
+def test_plan_context_avoids_network_loading_and_full_snapshot_copies(monkeypatch):
+    client = TestClient(app)
+    options = client.get('/api/network/options').json()
+    params = {
+        'demand_plan_version_id': options['default_demand_plan_version_id'],
+        'capacity_plan_version_id': options['default_capacity_plan_version_id'],
+        'horizon_start': options['default_horizon_start'],
+        'horizon_end': options['default_horizon_end'],
+    }
+    from backend.services.network_overview import network_overview_service
+    def no_network_rows(**kwargs):
+        raise AssertionError('context lookup must not load network facts')
+    monkeypatch.setattr(network_overview_service, '_load_rows', no_network_rows)
+    response = client.get('/api/network/baseline/plan-run', params={**params, 'context_only': True})
+    assert response.status_code == 200, response.text
+    assert set(response.json()) == {'scenario_id', 'run_id'}
+    assert response.json()['run_id'].startswith('baseline-plan-run.')
+    assert client.get('/api/network/baseline/plan-run', params={**params, 'context_only': True, 'horizon_end': '2000-01-01'}).status_code == 422
+
+
+def test_cached_plan_result_does_not_reload_or_copy_snapshot(monkeypatch):
+    from backend.services.network_overview import network_overview_service
+    from backend.services.network_run_snapshots import NetworkRunSnapshot
+    expected = baseline_service.get_plan_run().result
+    def fail(*args, **kwargs):
+        raise AssertionError('result-only cache hit must not reload or deep-copy full network')
+    monkeypatch.setattr(network_overview_service, '_load_rows', fail)
+    monkeypatch.setattr(NetworkRunSnapshot, 'copy', fail)
+    result = baseline_service.get_plan_result()
+    assert result.run_id == expected.run_id
+    result.overview.facilities.clear()
+    assert baseline_service.get_plan_result().overview.facilities
+
+
+def test_network_map_projection_keeps_kpis_and_filters_hidden_lanes():
+    client = TestClient(app)
+    params = {'lane_type': 'ALL'}
+    full = client.get('/api/network/overview', params=params)
+    projected = client.get('/api/network/overview', params={**params, 'map_lanes_only': True})
+    assert full.status_code == projected.status_code == 200
+    assert projected.json()['kpis'] == full.json()['kpis']
+    assert projected.json()['facilities'] == full.json()['facilities']
+    assert len(projected.content) < len(full.content) / 2
+    assert all(row['lane_type'] == 'LINEHAUL' or row['mode'].upper() == 'AIR' for row in projected.json()['lanes'])
+
+
+def test_overview_cache_is_revision_and_filter_specific(monkeypatch):
+    from datetime import date
+    from backend.services.network_overview import network_overview_service
+    options = network_overview_service.get_options()
+    params = dict(demand_plan_version_id=options.default_demand_plan_version_id, capacity_plan_version_id=options.default_capacity_plan_version_id,
+        horizon_start=date.fromisoformat(options.default_horizon_start), horizon_end=date.fromisoformat(options.default_horizon_end), region_id='ALL', lane_type='ALL', metric='assigned_flow')
+    network_overview_service._overview_cache.clear()
+    initial = network_overview_service.get_overview(**params)
+    original_build = network_overview_service._build_overview
+    builds = []
+    def record_build(*args, **kwargs):
+        builds.append(kwargs['context'])
+        return original_build(*args, **kwargs)
+    monkeypatch.setattr(network_overview_service, '_build_overview', record_build)
+    cached = network_overview_service.get_overview(**params)
+    assert builds == []
+    cached.facilities.clear()
+    assert network_overview_service.get_overview(**params).facilities == initial.facilities
+    network_overview_service.get_overview(**{**params, 'lane_type': 'LINEHAUL'})
+    assert len(builds) == 1
+    original_ids = baseline_service.repository.ids()
+    option_rows = baseline_service.active_option_rows()
+    monkeypatch.setattr(baseline_service, 'active_option_rows', lambda: option_rows)
+    monkeypatch.setattr(baseline_service.repository, 'ids', lambda: (original_ids[0], original_ids[1] + '-other'))
+    monkeypatch.setattr(baseline_service, 'active_rows', lambda: baseline_service.repository.revision(original_ids[1]).rows)
+    network_overview_service.get_overview(**params)
+    assert len(builds) == 2

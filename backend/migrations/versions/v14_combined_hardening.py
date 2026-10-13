@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 from ...services.postgres import PostgresService
 
-MIGRATION_VERSION = "2026_10_06_lazy_depot_status_v16"
+MIGRATION_VERSION = "2026_10_08_depot_route_reuse_v17"
 _migration_lock = RLock()
 _migration_state: dict[str, Any] = {"state": "not_started", "version": MIGRATION_VERSION, "error": None}
 
@@ -937,6 +937,7 @@ def _statements(postgres: PostgresService) -> Iterable[str]:
     yield f"CREATE INDEX IF NOT EXISTS depot_plan_sets_pending_idx ON {table('depot_plan_sets')} (has_pending, created_at)"
     yield f"CREATE INDEX IF NOT EXISTS depot_plan_jobs_claim_idx ON {table('depot_plan_jobs')} (status, retry_at, lease_expires_at, created_at)"
     yield f"CREATE INDEX IF NOT EXISTS depot_plan_results_day_idx ON {table('depot_plan_results')} (plan_set_id, service_date, created_at DESC)"
+    yield f"CREATE INDEX IF NOT EXISTS depot_plan_results_input_hash_idx ON {table('depot_plan_results')} ((payload->>'routing_input_hash'), created_at DESC) WHERE payload->>'routing_input_hash' IS NOT NULL"
     yield f"CREATE INDEX IF NOT EXISTS network_flow_results_lane_idx ON {table('network_flow_results')} (scenario_id, lane_id)"
 
 

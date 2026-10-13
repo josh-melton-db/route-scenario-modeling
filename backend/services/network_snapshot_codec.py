@@ -49,6 +49,8 @@ def _row_key(row: dict[str, Any], fields: tuple[str, ...]) -> tuple[str, ...]:
 def _table_delta(
     before: list[dict[str, Any]], after: list[dict[str, Any]], fields: tuple[str, ...]
 ) -> dict[str, Any] | None:
+    if before is after:
+        return None
     prior = {_row_key(row, fields): row for row in before}
     current = {_row_key(row, fields): row for row in after}
     upserts = [deepcopy(row) for row in after if prior.get(_row_key(row, fields)) != row]
@@ -82,6 +84,12 @@ def manifest_with_deltas(
         if (delta := _table_delta(source_rows.get(table, []), network_rows.get(table, []), _TABLE_KEYS[table]))
         is not None
     }
+    # Small solve metadata tables also belong to the frozen run and must
+    # survive reconstruction for transfer evidence and supply provenance.
+    replacements = encoded.setdefault("table_replacements", {})
+    for table in ("network_transfer_movements", "facility_supply_provenance"):
+        if source_rows.get(table, []) != network_rows.get(table, []):
+            replacements[table] = deepcopy(network_rows.get(table, []))
     return encoded
 
 
@@ -94,7 +102,7 @@ def encode_envelope(
     ).encode()
     if len(raw) > _MAX_UNCOMPRESSED_BYTES:
         raise ValueError("Network snapshot exceeds the uncompressed safety limit.")
-    compressed = zlib.compress(raw, level=9)
+    compressed = zlib.compress(raw, level=3)
     if len(compressed) > _MAX_COMPRESSED_BYTES:
         raise ValueError("Network snapshot exceeds the compressed safety limit.")
     return compressed, len(raw), hashlib.sha256(raw).hexdigest()
