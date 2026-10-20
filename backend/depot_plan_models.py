@@ -52,6 +52,8 @@ class RouteScenario(StrictModel):
 
 
 class DaySummary(StrictModel):
+    outsourced_by_cost_deliveries: int = Field(default=0, ge=0)
+    outsourcing_savings: float = Field(default=0, ge=0)
     service_date: str
     status: PlanStatus
     default_status: PlanStatus
@@ -76,6 +78,9 @@ class DaySummary(StrictModel):
 
 
 class DayResult(StrictModel):
+    contracted_routes: list[Route] = Field(default_factory=list)
+    outsourced_by_cost_deliveries: int = Field(default=0, ge=0)
+    outsourcing_savings: float = Field(default=0, ge=0)
     result_id: str = Field(min_length=1)
     service_date: str
     status: PlanStatus
@@ -131,6 +136,8 @@ class DayDetail(StrictModel):
 
 
 class PlanSet(StrictModel):
+    outsourced_by_cost_deliveries: int = Field(default=0, ge=0)
+    outsourcing_savings: float = Field(default=0, ge=0)
     rate_book_snapshot_hash: str | None = None
     rates_locked_at: str | None = None
     plan_set_id: str
@@ -211,6 +218,7 @@ class DailyPlanChange(StrictModel):
 
 
 class OverrideRequest(StrictModel):
+    allow_cost_based_outsourcing: bool = False
     route_scenario_id: str = Field(min_length=1)
     allow_contracted_overflow: bool = False
     projected_period_volume: float | None = Field(default=None, ge=0, allow_inf_nan=False)
@@ -223,6 +231,8 @@ class OverrideRequest(StrictModel):
 
     @model_validator(mode="after")
     def validate_named_scenario(self) -> "OverrideRequest":
+        if self.allow_cost_based_outsourcing and not self.allow_contracted_overflow:
+            raise ValueError("Cost-based outsourcing requires contracted overflow to be enabled.")
         if self.route_scenario_id == "default":
             raise ValueError("route_scenario_id must identify a named scenario.")
         return self

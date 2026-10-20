@@ -114,7 +114,7 @@ export default function MapView({
         route_id: route.route_id,
         route_name: route.route_name,
         path: route.path.map((point) => [point.lng, point.lat] as [number, number]),
-        color: routeColor(index),
+        color: route.fulfillment_method === 'carrier' ? [14, 165, 233] : routeColor(index),
         fulfillment_method: route.fulfillment_method,
       })),
     [routes],
@@ -127,7 +127,7 @@ export default function MapView({
           ...stop,
           route_id: route.route_id,
           route_name: route.route_name,
-          color: routeColor(index),
+          color: route.fulfillment_method === 'carrier' ? [14, 165, 233] : routeColor(index),
         })),
       ),
     [routes],
@@ -152,7 +152,7 @@ export default function MapView({
         data: paths,
         getPath: (datum) => datum.path,
         getColor: (datum) => {
-          const color: [number, number, number] = datum.fulfillment_method === 'carrier' ? [249, 115, 22] : datum.color
+          const color: [number, number, number] = datum.color
           return isSelected(datum.route_id) ? [...color, 230] as [number, number, number, number] : [...color, 60] as [number, number, number, number]
         },
         widthMinPixels: 3,

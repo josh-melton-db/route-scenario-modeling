@@ -705,6 +705,8 @@ class DepotPlanService:
                     contract_details=rate_book,
                     snapshot_hash=snapshot_hash,
                     projected_period_volume=(request or {}).get("projected_period_volume"),
+                    allow_cost_based_outsourcing=(request or {}).get("allow_cost_based_outsourcing", False),
+                    fleet=fleet,
                     enabled=True,
                 )
             execution = solved.setdefault("execution", {})
@@ -876,6 +878,8 @@ def _plan_set_payload(record: Mapping[str, object], scenario_id: str) -> dict[st
         "kpis": _rollup_kpis(selected_results) if selected_results else None,
         "contracted_cost": round(sum(float(result.get("contracted_cost", 0)) for result in selected_results), 2),
         "contracted_revenue": round(sum(float(result.get("contracted_revenue", 0)) for result in selected_results), 2),
+        "outsourced_by_cost_deliveries": sum(int(result.get("outsourced_by_cost_deliveries", 0)) for result in selected_results),
+        "outsourcing_savings": round(sum(float(result.get("outsourcing_savings", 0)) for result in selected_results), 2),
         "is_partial": coverage["solved_days"] != coverage["total_days"],
         "resource_source": record["resource_source"],
         "fleet_snapshot": record.get("fleet_snapshot"),
@@ -898,6 +902,8 @@ def _day_summary_payload(
         "routed_cases": result["routed_cases"] if result else None,
         "contracted_cases": result.get("contracted_cases", 0) if result else None,
         "contracted_deliveries": result.get("contracted_deliveries", 0) if result else None,
+        "outsourced_by_cost_deliveries": result.get("outsourced_by_cost_deliveries", 0) if result else 0,
+        "outsourcing_savings": result.get("outsourcing_savings", 0) if result else 0,
         "unserved_cases": result["unserved_cases"] if result else None,
         "total_cost": result["kpis"]["cost_breakdown"]["total_cost"] if result else None,
         "contracted_cost": result.get("contracted_cost", 0) if result else None,
@@ -1028,6 +1034,7 @@ def _day_result(
         **{key: deepcopy(solved[key]) for key in (
             "contracted_orders", "contracted_quotes", "contracted_deliveries",
             "contracted_cases", "fleet_cost", "contracted_cost", "contracted_revenue",
+            "contracted_routes", "outsourced_by_cost_deliveries", "outsourcing_savings",
         ) if key in solved},
         "diagnostics": deepcopy(solved["diagnostics"]),
         "matrix_source": solved["matrix_source"],

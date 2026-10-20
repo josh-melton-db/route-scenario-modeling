@@ -1,6 +1,52 @@
 import { expect, test } from '@playwright/test'
 
 const appUrl = process.env.E2E_BASE_URL ?? ''
+
+test('cost-based outsourcing requires overflow and shows informational contracted routes', async ({ page }) => {
+  let submitted: Record<string, unknown> | null = null
+  const carrierRoute = {
+    route_id: 'carrier-1', route_name: 'Contracted 1', driver_name: 'Carrier',
+    fulfillment_method: 'carrier', total_cases: 10, total_miles: 20,
+    drive_minutes: 30, service_minutes: 10, overtime_minutes: 0,
+    path: [depot.location, { lat: 40.1, lng: -86.1 }, depot.location],
+    stops: [{ stop_id: 's1', customer_id: 'c1', customer_name: 'Carrier customer',
+      sequence: 1, location: { lat: 40.1, lng: -86.1 }, demand_cases: 10,
+      arrival_time: '08:00', time_window_start: '06:30', time_window_end: '18:00' }],
+  }
+  await page.route(/^https?:\/\/[^/]+\/api\//, async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/depot-plans/plan-1') return route.fulfill({ json: planSet(1, 'named-1') })
+    if (path.endsWith('/optimize')) {
+      submitted = route.request().postDataJSON()
+      return route.fulfill({ json: {} })
+    }
+    if (path.includes('/days/')) return route.fulfill({ json: {
+      default_status: 'completed', default_result: result('2026-09-01', 'default'),
+      selected_result: { ...result('2026-09-01', 'carrier'), contracted_routes: [carrierRoute],
+        outsourced_by_cost_deliveries: 1, outsourcing_savings: 12.34,
+        contracted_deliveries: 1, contracted_cases: 10,
+        execution: { allow_contracted_overflow: true } },
+    } })
+    return route.fulfill({ status: 404, json: {} })
+  })
+  await page.goto(`${appUrl}/scenario?networkRun=run-1&depot=DPT_NORTH&depotPlan=plan-1&routePlanScenario=named-1&date=2026-09-01`)
+  const choice = page.getByLabel('Outsource stops when the contractor is cheaper', { exact: true })
+  await expect(choice).toBeDisabled()
+  await page.getByLabel('Allow contracted overflow', { exact: true }).check()
+  await choice.check()
+  await page.getByLabel('Allow contracted overflow', { exact: true }).uncheck()
+  await expect(choice).not.toBeChecked()
+  await expect(choice).toBeDisabled()
+  await page.getByLabel('Allow contracted overflow', { exact: true }).check()
+  await choice.check()
+  await page.getByRole('button', { name: 'Run scenario', exact: true }).click()
+  await expect.poll(() => submitted).toMatchObject({ allow_contracted_overflow: true, allow_cost_based_outsourcing: true })
+  await expect(page.getByText('Outsourced by cost: 1 deliveries · Savings: $12.34')).toBeVisible()
+  await expect(page.getByText('Contracted', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: /Contracted 1/ }).click()
+  await expect(page.getByText('Carrier customer', { exact: true })).toBeVisible()
+  await expect(page.getByText(/Unserved:/)).toHaveCount(0)
+})
 const depot = { depot_id: 'DPT_NORTH', name: 'North Depot', region: 'North', sales_territory: 'North', location: { lat: 40, lng: -86 } }
 const costBreakdown = {
   mileage_cost: 10, labor_cost: 20, overtime_cost: 0, fixed_vehicle_cost: 5,
