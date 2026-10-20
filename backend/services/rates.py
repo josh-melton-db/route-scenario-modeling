@@ -57,6 +57,8 @@ CANONICAL_RATE_CONTRACTS: tuple[dict[str, object], ...] = (
     {"contract_id": "TOLA_STANDARD_2026", "carrier_id": "TOLA_FREIGHT", "carrier_name": "TOLA Freight", "contract_name": "TOLA Standard 2026", "capacity_stops": 14, "rate_per_mile": 4.40, "rate_per_stop": 46, "minimum_charge": 370, "fuel_surcharge_pct": 12, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
     {"contract_id": "CAN_STANDARD_2026", "carrier_id": "CAN_NORTHLINK", "carrier_name": "Northern Link Logistics", "contract_name": "Canada Standard 2026", "capacity_stops": 12, "rate_per_mile": 4.85, "rate_per_stop": 52, "minimum_charge": 410, "fuel_surcharge_pct": 11, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
     {"contract_id": "MX_STANDARD_2026", "carrier_id": "MX_TRANSPORTES", "carrier_name": "Transportes del Norte", "contract_name": "Mexico Standard 2026", "capacity_stops": 12, "rate_per_mile": 4.60, "rate_per_stop": 48, "minimum_charge": 390, "fuel_surcharge_pct": 13, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+    {"contract_id": "DEMO_DELIVERY_STANDARD_2026", "carrier_id": "TOLA_FREIGHT", "carrier_name": "TOLA Freight", "contract_name": "Demo Delivery Standard 2026", "capacity_stops": 6, "rate_per_mile": 6.00, "rate_per_stop": 90, "minimum_charge": 650, "fuel_surcharge_pct": 12, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
+    {"contract_id": "DEMO_DELIVERY_RESERVE_2026", "carrier_id": "WESTERN_FREIGHT", "carrier_name": "Western Freight Lines", "contract_name": "Demo Delivery Reserve 2026", "capacity_stops": 12, "rate_per_mile": 8.00, "rate_per_stop": 120, "minimum_charge": 850, "fuel_surcharge_pct": 12, "effective_start": "2026-01-01", "effective_end": "2026-12-31"},
 )
 
 
@@ -77,6 +79,9 @@ def _with_curated_network_rates(
     detail: RateContractDetail, *, synthetic_seed: bool = False
 ) -> RateContractDetail:
     """Add published demo-corridor rates missing from legacy rate storage."""
+
+    if detail.contract_id in {"DEMO_DELIVERY_STANDARD_2026", "DEMO_DELIVERY_RESERVE_2026"}:
+        detail = _with_demo_delivery_rates(detail)
 
     if (
         detail.contract_id == "MX_STANDARD_2026"
@@ -118,6 +123,38 @@ def _with_curated_network_rates(
                 }
             )
     return _with_demo_rate_dates(detail) if synthetic_seed else detail
+
+
+def _with_demo_delivery_rates(detail: RateContractDetail) -> RateContractDetail:
+    from route_opt.network_synthetic import national_dataset_cached
+    from route_opt.synthetic import generate_depots
+
+    if detail.version.version_id != f"{detail.contract_id}_V1":
+        return detail
+    row = next(row for row in CANONICAL_RATE_CONTRACTS if row["contract_id"] == detail.contract_id)
+    dataset = national_dataset_cached()
+    facilities = {facility["facility_id"]: facility for facility in dataset["dim_facilities"]}
+    zones = [(market["primary_depot_id"], market["market_id"]) for market in dataset["dim_markets"]]
+    zones.extend((depot["depot_id"], depot["sales_territory"]) for depot in generate_depots())
+    template = detail.lane_rates[0]
+    lanes = [
+        template.model_copy(update={
+            "rule_id": f"{detail.contract_id}_DELIVERY_{depot_id}_{zone.replace(' ', '_')}",
+            "lane_name": f"{facilities[depot_id]['facility_name']} → {zone}",
+            "origin": depot_id, "destination": zone,
+            "lane_type": "DELIVERY", "origin_endpoint_id": depot_id,
+            "origin_endpoint_type": "facility", "destination_endpoint_id": zone,
+            "destination_endpoint_type": "market", "priority": 100,
+            "flat_rate": 0, "included_stops": 0, "mileage_rounding": "exact",
+        })
+        for depot_id, zone in zones
+    ]
+    commitments = [rule.model_copy(update={
+        "name": "Available demo overflow stop capacity", "period": "route",
+        "capacity_quantity": row["capacity_stops"], "committed_quantity": 0,
+        "current_utilization": 0, "shortfall_rate": 0, "overage_rate": 0,
+    }) for rule in detail.capacity_commitments]
+    return detail.model_copy(update={"lane_rates": lanes, "capacity_commitments": commitments})
 
 
 def _with_demo_rate_dates(detail: RateContractDetail) -> RateContractDetail:

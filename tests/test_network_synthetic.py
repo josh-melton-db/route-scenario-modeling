@@ -460,7 +460,7 @@ print(json.dumps({
     assert dates[0] <= payload["route_dates"][0] <= dates[-1]
     assert payload["rate_ranges"]
     assert all(start <= dates[0] and end >= dates[-1] for start, end in payload["rate_ranges"])
-    assert len(payload["rate_versions"]) == 9
+    assert len(payload["rate_versions"]) == 11
     assert all(
         anchor.replace("-", "") in version_id
         for version_id in payload["rate_versions"].values()
