@@ -10,6 +10,7 @@ export type OperationalDraft = Omit<DepotPlanOverrideRequest, 'route_scenario_id
 }
 
 export const emptyOperationalDraft: OperationalDraft = {
+  allow_contracted_overflow: false,
   driver_delta: 0,
   allow_overtime: false,
   changes: [],
@@ -78,6 +79,12 @@ export default function DepotOperationalOverrideForm({
     <section className="rounded-lg border border-border bg-card p-4">
       <fieldset disabled={checkingDeliveries}>
       <h2 className="text-sm font-semibold">Scenario changes</h2>
+      <label className="mt-3 flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={value.allow_contracted_overflow ?? false}
+          onChange={event => onChange({ ...value, allow_contracted_overflow: event.target.checked })} />
+        Allow contracted overflow
+      </label>
+      <p className="mt-1 text-xs text-muted-foreground">Price deliveries left unserved by the fleet using this depot’s delivery contracts. Deliveries without a rate remain unserved.</p>
       <div className="mt-4 flex flex-wrap gap-2">
         {!deliveryChange && <button type="button" onClick={() => onChange({ ...value, changes: [...changes, { kind: 'add_deliveries', deliveries: [] }] })} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"><Plus className="h-3.5 w-3.5" />Add deliveries</button>}
         {!facilityChange && <button type="button" onClick={() => onChange({ ...value, changes: [...changes, { kind: 'facility_move', new_depot_location: depot.location, preserve_service_windows: true }] })} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"><Plus className="h-3.5 w-3.5" />Move facility</button>}

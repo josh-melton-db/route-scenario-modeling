@@ -7,6 +7,7 @@ import KpiDeltaGrid from './KpiDeltaGrid'
 import { kpiDeltas } from '@/lib/depotKpiDeltas'
 
 const reasons: Record<string, string> = {
+  no_contract_rate: 'No contract rate',
   road_unreachable: 'No reachable truck-road path',
   capacity_infeasible: 'Delivery exceeds vehicle capacity',
   time_window_infeasible: 'Delivery time window cannot be met',
@@ -54,7 +55,18 @@ export default function DepotScenarioComparison({ plan, serviceDate, leftId, rig
   </>
 }
 function Unserved({ result }: { result: DepotPlanDayResult }) {
+  const money = (value: number) => value.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
   return <div className="mt-3 text-sm">
+    <p>Fleet cost: {money(result.fleet_cost ?? result.kpis.cost_breakdown.total_cost)} · Contracted cost: {money(result.contracted_cost ?? 0)} · Total cost: {money(result.kpis.cost_breakdown.total_cost)}</p>
+    <p>Contracted: {result.contracted_deliveries ?? 0} deliveries · {result.contracted_cases ?? 0} cases</p>
+    {(result.contracted_orders?.length ?? 0) > 0 && <details className="mt-2">
+      <summary>Contracted delivery rates</summary>
+      <p className="text-xs text-muted-foreground">Charge lines apply to the shared quote, not separately to each delivery.</p>
+      {result.contracted_orders?.map(order => <div key={`${order.quote_id}:${order.customer_id}`} className="mt-2">
+        <p>{order.customer_id} · {order.demand_cases} cases · {order.contract_id} · {order.contract_version_id} · {order.matched_lane}</p>
+        <ul>{order.charge_lines.map((line, index) => <li key={`${line.rule_id}:${index}`}>{line.label}: {money(line.amount)}</li>)}</ul>
+      </div>)}
+    </details>}
     {result.execution?.available_vehicle_count != null && <p className="text-muted-foreground">Available vehicles: {result.execution.available_vehicle_count} · Requested driver change: {result.execution.driver_delta ?? 0}</p>}
     {result.unserved_cases > 0 && <details className="mt-2" open><summary className="font-medium text-destructive">Unserved: {result.unserved_cases} cases</summary>
       {result.unserved_orders?.length ? <ul className="mt-2 space-y-1">{result.unserved_orders.map((row, index) => <li key={`${row.customer_id}:${index}`}>{row.customer_name || row.customer_id} · {row.demand_cases} cases · {reasons[row.reason] || row.reason || 'Reason unavailable'}</li>)}</ul> : <p className="mt-2 text-muted-foreground">This saved run did not retain delivery-level reasons. Rerun the scenario to collect them.</p>}

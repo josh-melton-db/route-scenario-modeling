@@ -23,6 +23,8 @@ from ..config import (
     allow_haversine_fallback, get_valhalla_app_url,
 )
 from .depot_route_execution import dated_route_executor
+from .depot_contracted_overflow import apply_contracted_overflow
+from .rates import list_rate_contract_details
 from .depot_plan_jobs import DepotPlanJobManager, JobKey, depot_plan_job_manager
 from .depot_plan_repository import depot_plan_repository
 from .network_scenarios import network_scenario_service
@@ -655,6 +657,14 @@ class DepotPlanService:
                     scenario_id=f"{plan_set_id}:{route_scenario_id}",
                     cost_parameters=cost_parameters,
                 )
+            if (request or {}).get("allow_contracted_overflow", False):
+                apply_contracted_overflow(
+                    solved, network_rows=network_rows,
+                    depot_id=str(running_record["depot"]["depot_id"]),
+                    service_date=service_date, cost_parameters=cost_parameters,
+                    contract_details=[detail.model_dump(mode="json") for detail in list_rate_contract_details(get_store())],
+                    enabled=True,
+                )
             execution = solved.setdefault("execution", {})
             if isinstance(execution, dict):
                 execution["available_vehicle_count"] = len(_available_fleet(fleet, str(running_record["depot"]["depot_id"]), service_date))
@@ -954,6 +964,10 @@ def _day_result(
         "routed_cases": int(solved["routed_cases"]),
         "unserved_cases": unserved_cases,
         "unserved_orders": deepcopy(solved.get("unserved_orders", [])),
+        **{key: deepcopy(solved[key]) for key in (
+            "contracted_orders", "contracted_quotes", "contracted_deliveries",
+            "contracted_cases", "fleet_cost", "contracted_cost",
+        ) if key in solved},
         "diagnostics": deepcopy(solved["diagnostics"]),
         "matrix_source": solved["matrix_source"],
         "execution": deepcopy(solved.get("execution")),
