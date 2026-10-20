@@ -62,6 +62,62 @@ function planSet(count: number, routeScenarioId = 'default') {
   }
 }
 
+test('refresh rates confirms and updates the lock without optimizing', async ({ page }) => {
+  let refreshes = 0
+  let solves = 0
+  await page.route(/^https?:\/\/[^/]+\/api\//, async route => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/refresh-rates')) {
+      refreshes++
+      return route.fulfill({ json: {} })
+    }
+    if (url.pathname.endsWith('/optimize') || url.pathname.endsWith('/solve')) solves++
+    if (url.pathname === '/api/depot-plans/plan-1') return route.fulfill({ json: {
+      ...planSet(1), rates_locked_at: '2026-10-06T12:00:00Z',
+      rate_book_snapshot_hash: refreshes ? 'bbbbbbbb1234' : 'aaaaaaaa1234',
+    } })
+    if (url.pathname.includes('/days/')) return route.fulfill({ json: {
+      default_status: 'completed', default_result: result('2026-09-01', 'default'),
+      selected_result: result('2026-09-01', 'default'),
+    } })
+    return route.fulfill({ status: 404, json: {} })
+  })
+  await page.goto(`${appUrl}/scenario?networkRun=run-1&depot=DPT_NORTH&depotPlan=plan-1&date=2026-09-01`)
+  await expect(page.getByText(/Rates locked:.*aaaaaaaa/)).toBeVisible()
+  const messages: string[] = []
+  page.once('dialog', async dialog => { messages.push(dialog.message()); await dialog.dismiss() })
+  await page.getByRole('button', { name: 'Refresh rates', exact: true }).click()
+  expect(messages).toHaveLength(1)
+  expect(messages[0]).toContain('Existing results keep their rates')
+  expect(refreshes).toBe(0)
+  page.once('dialog', async dialog => { messages.push(dialog.message()); await dialog.accept() })
+  await page.getByRole('button', { name: 'Refresh rates', exact: true }).click()
+  expect(messages).toHaveLength(2)
+  expect(messages[1]).toContain('Existing results keep their rates')
+  await expect(page.getByText(/Rates locked:.*bbbbbbbb/)).toBeVisible()
+  expect(refreshes).toBe(1)
+  expect(solves).toBe(0)
+})
+
+test('rate lock without a hash never displays undefined', async ({ page }) => {
+  await page.route(/^https?:\/\/[^/]+\/api\//, async route => {
+    const url = new URL(route.request().url())
+    if (url.pathname === '/api/depot-plans/plan-1') return route.fulfill({ json: {
+      ...planSet(1), rates_locked_at: '2026-10-06T12:00:00Z', rate_book_snapshot_hash: null,
+    } })
+    if (url.pathname.includes('/days/')) return route.fulfill({ json: {
+      default_status: 'completed', default_result: result('2026-09-01', 'default'),
+      selected_result: result('2026-09-01', 'default'),
+    } })
+    return route.fulfill({ status: 404, json: {} })
+  })
+  await page.goto(`${appUrl}/scenario?networkRun=run-1&depot=DPT_NORTH&depotPlan=plan-1&date=2026-09-01`)
+  const lock = page.getByText(/^Rates locked:/)
+  await expect(lock).toBeVisible()
+  await expect(lock).not.toContainText('undefined')
+  await expect(lock).toContainText('Hash unavailable')
+})
+
 test('contracted overflow defaults off, submits on, and displays rated and unrated deliveries', async ({ page }) => {
   let submitted: Record<string, unknown> | undefined
   await page.route(/^https?:\/\/[^/]+\/api\//, async route => {

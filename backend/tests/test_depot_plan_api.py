@@ -161,6 +161,13 @@ class FakeDepotPlanService:
         self._call("get_plan", plan_set_id, route_scenario_id)
         return _plan_set(route_scenario_id)
 
+    def refresh_rates(self, plan_set_id: str) -> dict[str, object]:
+        self._call("refresh_rates", plan_set_id)
+        if plan_set_id == "missing":
+            raise KeyError(plan_set_id)
+        return {**_plan_set(), "rates_locked_at": "2026-10-06T12:00:00Z",
+                "rate_book_snapshot_hash": "a" * 64}
+
     def get_day(
         self,
         plan_set_id: str,
@@ -219,6 +226,16 @@ def fake_service() -> FakeDepotPlanService:
     api_app.dependency_overrides[get_depot_plan_service] = lambda: service
     yield service
     api_app.dependency_overrides.pop(get_depot_plan_service, None)
+
+
+def test_refresh_rates_api_returns_lock_and_preserves_missing_plan(fake_service):
+    client = TestClient(app)
+    response = client.post("/api/depot-plans/DPS-1/refresh-rates")
+    assert response.status_code == 200
+    assert response.json()["rate_book_snapshot_hash"] == "a" * 64
+    assert response.json()["rates_locked_at"] == "2026-10-06T12:00:00Z"
+    assert fake_service.calls == [("refresh_rates", ("DPS-1",), {})]
+    assert client.post("/api/depot-plans/missing/refresh-rates").status_code == 404
 
 
 def test_depot_plan_routes_delegate_with_exact_contract(

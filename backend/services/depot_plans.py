@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import uuid
@@ -15,6 +16,7 @@ from typing import Any
 
 from route_opt.cost import CostParameters
 from route_opt.depot_planning import materialize_depot_targets, _available_fleet
+from route_opt.rates import contract_status
 
 from ..depot_plan_models import DayDetail, PlanSet, RouteScenario
 from ..config import (
@@ -23,7 +25,9 @@ from ..config import (
     allow_haversine_fallback, get_valhalla_app_url,
 )
 from .depot_route_execution import dated_route_executor
-from .depot_contracted_overflow import apply_contracted_overflow
+from .depot_contracted_overflow import (
+    apply_contracted_overflow, depot_delivery_contract_details, rate_book_content_hash,
+)
 from .rates import list_rate_contract_details
 from .depot_plan_jobs import DepotPlanJobManager, JobKey, depot_plan_job_manager
 from .depot_plan_repository import depot_plan_repository
@@ -36,6 +40,7 @@ FINISHED_STATUSES = {"completed", "infeasible"}
 PENDING_STATUSES = {"queued", "running"}
 MAX_ROUTE_SCENARIOS_PER_PLAN = 20
 MAX_PENDING_OVERRIDE_JOBS_PER_PLAN = 20
+logger = logging.getLogger(__name__)
 
 
 class DepotPlanService:
@@ -120,6 +125,14 @@ class DepotPlanService:
         )
         plan_set_id = f"depot-plan-{uuid.uuid4()}"
         created_at = self._timestamp()
+        try:
+            rate_book = _freeze_rate_book(depot_id, dates)
+        except Exception:
+            logger.warning(
+                "Could not freeze rate book for depot %s; overflow will use live rates.",
+                depot_id, exc_info=True,
+            )
+            rate_book = None
         record: dict[str, object] = {
             "plan_set_id": plan_set_id,
             "parent_run_id": run_id,
@@ -133,6 +146,9 @@ class DepotPlanService:
             "route_cost_parameters": deepcopy(frozen_cost_rows),
             "cost_resource_source": cost_resource_source,
             "cost_snapshot": cost_snapshot,
+            "rate_book_snapshot": rate_book,
+            "rate_book_snapshot_hash": rate_book_content_hash(rate_book) if rate_book is not None else None,
+            "rates_locked_at": created_at if rate_book is not None else None,
             "scenarios": {
                 DEFAULT_SCENARIO_ID: {
                     "route_scenario_id": DEFAULT_SCENARIO_ID,
@@ -249,6 +265,22 @@ class DepotPlanService:
                 priority=0,
             )
         return self.get_day(plan_set_id, service_date_text)
+
+    def refresh_rates(self, plan_set_id: str) -> PlanSet:
+        record = self.repository.get(plan_set_id)
+        rate_book = _freeze_rate_book(
+            str(record["depot"]["depot_id"]),
+            _date_range(str(record["horizon_start"]), str(record["horizon_end"])),
+        )
+        timestamp = self._timestamp()
+
+        self.repository.update_plan_fields(plan_set_id, {
+            "rate_book_snapshot": rate_book,
+            "rate_book_snapshot_hash": rate_book_content_hash(rate_book),
+            "rates_locked_at": timestamp,
+            "updated_at": timestamp,
+        })
+        return self.get_plan(plan_set_id)
 
     def get_plan(
         self, plan_set_id: str, route_scenario_id: str = DEFAULT_SCENARIO_ID
@@ -658,11 +690,20 @@ class DepotPlanService:
                     cost_parameters=cost_parameters,
                 )
             if (request or {}).get("allow_contracted_overflow", False):
+                rate_book = running_record.get("rate_book_snapshot")
+                if rate_book is None:
+                    rate_book = _freeze_rate_book(str(running_record["depot"]["depot_id"]), [service_date])
+                    snapshot_hash = rate_book_content_hash(rate_book)
+                else:
+                    snapshot_hash = running_record.get("rate_book_snapshot_hash")
+                    if snapshot_hash != rate_book_content_hash(rate_book):
+                        raise ValueError("Frozen rate book does not match its pinned content hash.")
                 apply_contracted_overflow(
                     solved, network_rows=network_rows,
                     depot_id=str(running_record["depot"]["depot_id"]),
                     service_date=service_date, cost_parameters=cost_parameters,
-                    contract_details=[detail.model_dump(mode="json") for detail in list_rate_contract_details(get_store())],
+                    contract_details=rate_book,
+                    snapshot_hash=snapshot_hash,
                     enabled=True,
                 )
             execution = solved.setdefault("execution", {})
@@ -792,6 +833,15 @@ class DepotPlanService:
         return self.now().isoformat().replace("+00:00", "Z")
 
 
+def _freeze_rate_book(depot_id: str, dates: list[str]) -> list[dict]:
+    scoped = depot_delivery_contract_details(
+        [model.model_dump(mode="json") for model in list_rate_contract_details(get_store())], depot_id,
+    )
+    details = [detail for detail in scoped
+               if any(contract_status(detail, day) == "published" for day in dates)]
+    return sorted(details, key=lambda detail: (detail["contract_id"], detail["version"]["version_id"]))
+
+
 def _plan_set_payload(record: Mapping[str, object], scenario_id: str) -> dict[str, object]:
     day_payloads = [
         _day_summary_payload(record, day, scenario_id)
@@ -829,6 +879,8 @@ def _plan_set_payload(record: Mapping[str, object], scenario_id: str) -> dict[st
         "resource_source": record["resource_source"],
         "fleet_snapshot": record.get("fleet_snapshot"),
         "customer_constraint_snapshot": record.get("customer_constraint_snapshot"),
+        "rate_book_snapshot_hash": record.get("rate_book_snapshot_hash"),
+        "rates_locked_at": record.get("rates_locked_at"),
     }
 
 

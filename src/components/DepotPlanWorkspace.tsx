@@ -53,6 +53,7 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
   const [showRelease, setShowRelease] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [restoring, setRestoring] = useState(false)
+  const [refreshingRates, setRefreshingRates] = useState(false)
 
   useEffect(() => {
     if (!planData) return
@@ -183,6 +184,21 @@ export default function DepotPlanWorkspace({ mode }: { mode: 'analyze' | 'scenar
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
+      <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+        <span>Rates locked: {planData.rates_locked_at ? `${new Date(planData.rates_locked_at).toLocaleString()} · ${planData.rate_book_snapshot_hash?.slice(0, 8) || 'Hash unavailable'}` : 'Legacy plan — live rates until refreshed'}</span>
+        <button type="button" disabled={refreshingRates} className="rounded-md border border-border px-3 py-2 disabled:opacity-50"
+          onClick={async () => {
+            if (!window.confirm('Refresh rates for future solves? Existing results keep their rates. This does not re-solve the plan.')) return
+            setRefreshingRates(true)
+            setActionError(null)
+            try {
+              await api.refreshDepotPlanRates(planSetId)
+              await queryClient.invalidateQueries({ queryKey: ['depot-plan'] })
+            } catch (err) { setActionError(String(err)) }
+            finally { setRefreshingRates(false) }
+          }}>Refresh rates</button>
+        <span>Existing results keep their rates. Future solves use the refreshed rate book.</span>
+      </div>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-end gap-2">
           {mode === 'scenario' && <label className="text-xs text-muted-foreground">

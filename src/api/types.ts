@@ -1010,12 +1010,16 @@ export interface DepotPlanDayResult {
     available_vehicle_count?: number
     driver_delta?: number
     contract_versions?: Array<{ contract_id: string; version_id: string }>
+    contract_snapshots?: RateContractDetail[]
+    rate_book_snapshot_hash?: string
     allow_contracted_overflow?: boolean
   } | null
   created_at: string
 }
 
 export interface DepotPlanSet {
+  rates_locked_at?: string | null
+  rate_book_snapshot_hash?: string | null
   contracted_cost?: number
   contracted_revenue?: number
   plan_set_id: string

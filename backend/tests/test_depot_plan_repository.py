@@ -9,6 +9,61 @@ from fastapi import HTTPException
 from backend.services.depot_plan_repository import DepotPlanRepository
 
 
+@pytest.mark.parametrize("lakebase", [False, True])
+def test_update_plan_fields_never_writes_days_or_jobs(monkeypatch, lakebase):
+    from copy import deepcopy
+    from backend.services.depot_plan_repository import lakebase_store
+
+    repository = DepotPlanRepository()
+    record = _record()
+    repository.create(record)
+    writes = []
+    monkeypatch.setattr(repository, "_sync_normalized", lambda *args: pytest.fail("No normalized writes"))
+    if lakebase:
+        monkeypatch.setattr(DepotPlanRepository, "_uses_lakebase", property(lambda _: True))
+        monkeypatch.setattr(repository, "_table", lambda: "plans")
+        monkeypatch.setattr(lakebase_store.postgres, "jsonb", deepcopy)
+
+        def query_one(sql, parameters):
+            writes.append(sql)
+            assert "UPDATE plans" in sql
+            assert "payload = payload || %s" in sql
+            assert "RETURNING plan_set_id" in sql
+            fields, timestamp, plan_id = parameters
+            assert plan_id == "DPS-1"
+            assert "days" not in fields
+            record.update(fields)
+            return {"plan_set_id": plan_id}
+
+        monkeypatch.setattr(lakebase_store.postgres, "query_one", query_one)
+        monkeypatch.setattr(lakebase_store.postgres, "execute", lambda *args, **kwargs: pytest.fail("Unexpected write"))
+        monkeypatch.setattr(lakebase_store.postgres, "query", lambda *args, **kwargs: pytest.fail("No day reads"))
+    before = deepcopy(record["days"])
+    fields = {"rate_book_snapshot": [], "rates_locked_at": "now"}
+    repository.update_plan_fields("DPS-1", fields)
+    fields["rate_book_snapshot"].append("mutated")
+    saved = record if lakebase else repository.get("DPS-1")
+    assert saved["days"] == before
+    assert saved["rate_book_snapshot"] == []
+    assert len(writes) == int(lakebase)
+    with pytest.raises(ValueError, match="plan-level"):
+        repository.update_plan_fields("DPS-1", {"days": {}})
+
+
+@pytest.mark.parametrize("lakebase", [False, True])
+def test_update_plan_fields_missing_plan_is_404(monkeypatch, lakebase):
+    from backend.services.depot_plan_repository import lakebase_store
+
+    repository = DepotPlanRepository()
+    if lakebase:
+        monkeypatch.setattr(DepotPlanRepository, "_uses_lakebase", property(lambda _: True))
+        monkeypatch.setattr(repository, "_table", lambda: "plans")
+        monkeypatch.setattr(lakebase_store.postgres, "query_one", lambda *args: None)
+    with pytest.raises(HTTPException) as error:
+        repository.update_plan_fields("missing", {"rates_locked_at": "now"})
+    assert error.value.status_code == 404
+
+
 def _record(
     plan_set_id: str = "DPS-1",
     parent_run_id: str = "RUN-1",
