@@ -85,6 +85,34 @@ def test_san_antonio_no_fleet_overflow_is_priced_and_capacity_limited(demo):
     }))
 
 
+@pytest.mark.parametrize("projected", [0, 40, 120])
+def test_san_antonio_graduated_tier_before_after(demo, projected):
+    rows, details = demo
+    frozen = [detail.model_dump(mode="json") for detail in details]
+    solved = solve_depot_plan(rows, rows["baseline_network_flow_daily"], DEPOT, "2026-10-06", [])
+    before = deepcopy(solved)
+    for result, volume in [(before, 0), (solved, projected)]:
+        apply_contracted_overflow(result, network_rows=rows, depot_id=DEPOT,
+            service_date="2026-10-06", cost_parameters=CostParameters(),
+            contract_details=frozen, enabled=True, projected_period_volume=volume)
+    assert solved["contracted_deliveries"] == before["contracted_deliveries"] == 18
+    assert solved["contracted_revenue"] == before["contracted_revenue"]
+    assert solved["contracted_cost"] <= before["contracted_cost"]
+    for quote in before["contracted_quotes"]:
+        detail = next(detail for detail in frozen if detail["contract_id"] == quote["contract_id"])
+        old = quote_contract(detail, {"service_date": "2026-10-06", "origin": DEPOT,
+            "destination": quote["destination"], "miles": quote["miles"], "stops": quote["stops"],
+            "cases": quote["cases"], "period_volume": 0, "commitment_policy": "honor"})
+        assert old["total_cost"] == quote["total_cost"]
+    print("SAN_ANTONIO_TIERS", json.dumps({"projected": projected,
+        "before_cost": before["contracted_cost"], "after_cost": solved["contracted_cost"],
+        "tier_discount": -solved["kpis"]["cost_breakdown"]["volume_tier_adjustment"],
+        "contracted_deliveries": solved["contracted_deliveries"],
+        "contracted_revenue": solved["contracted_revenue"], "unserved_cases": solved["unserved_cases"],
+        "quotes": [{"contract": quote["contract_id"], "cost": quote["total_cost"],
+                    "tier_breakdown": quote["tier_breakdown"]} for quote in solved["contracted_quotes"]]}))
+
+
 def test_delivery_contracts_do_not_change_network_ratings_when_option_off(demo):
     rows, details = demo
     flows = rows["baseline_network_flow_daily"]
