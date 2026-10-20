@@ -312,6 +312,29 @@ class DepotPlanRepository:
             )
         return self.get(plan_set_id)
 
+    def update_plan_fields(self, plan_set_id: str, fields: DepotPlanRecord) -> None:
+        if {"days", "plan_set_id", "parent_run_id", "depot_id", "depot"} & fields.keys():
+            raise ValueError("Only mutable plan-level payload fields may be updated.")
+        detached_fields = deepcopy(fields)
+        if not self._uses_lakebase:
+            with self._lock:
+                record = self._records.get(plan_set_id)
+                if record is None:
+                    raise HTTPException(status_code=404, detail="Depot plan not found.")
+                record.update(detached_fields)
+            return
+        row = lakebase_store.postgres.query_one(
+            f"UPDATE {self._table()} SET payload = payload || %s::jsonb, updated_at = %s "
+            "WHERE plan_set_id = %s RETURNING plan_set_id",
+            (
+                lakebase_store.postgres.jsonb(detached_fields),
+                datetime.now(timezone.utc).isoformat(),
+                plan_set_id,
+            ),
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Depot plan not found.")
+
     def mutate(
         self, plan_set_id: str, callback: DepotPlanMutation
     ) -> DepotPlanRecord:

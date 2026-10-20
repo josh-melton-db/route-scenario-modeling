@@ -80,6 +80,21 @@ def test_prices_overflow_and_preserves_fleet_with_auditable_quote():
     assert solved["execution"]["contract_versions"] == [{"contract_id": "DELIVERY", "version_id": "DELIVERY_V1"}]
 
 
+def test_execution_snapshot_only_contains_applicable_delivery_lanes():
+    solved, rows = inputs()
+    detail = contract()
+    detail["lane_rates"].extend([
+        contract(lane_type="LINEHAUL")["lane_rates"][0],
+        contract(origin="OTHER", origin_endpoint_id="OTHER")["lane_rates"][0],
+    ])
+    original = deepcopy(detail)
+    apply(solved, rows, [detail])
+    assert detail == original
+    expected = deepcopy(detail)
+    expected["lane_rates"] = expected["lane_rates"][:1]
+    assert solved["execution"]["contract_snapshots"] == [expected]
+
+
 @pytest.mark.parametrize("details", [[], [contract(lane_type="LINEHAUL")],
     [contract(origin="OTHER", origin_endpoint_id="OTHER")], [contract(destination="OTHER")]])
 def test_inapplicable_contract_stays_unserved(details):

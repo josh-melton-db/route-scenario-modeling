@@ -15,6 +15,22 @@ def rate_book_content_hash(details: list[dict]) -> str:
     return hashlib.sha256(json.dumps(details, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def depot_delivery_contract_details(contract_details: list[dict], depot_id: str) -> list[dict]:
+    details = []
+    for original in contract_details:
+        detail = deepcopy(original)
+        detail["lane_rates"] = [
+            lane for lane in detail["lane_rates"]
+            if str(lane.get("lane_type", "")).upper() == "DELIVERY"
+            and str(lane.get("origin_endpoint_type", "")).lower() == "facility"
+            and str(lane.get("origin_endpoint_id") or lane.get("origin")) == depot_id
+            and str(lane.get("origin")) == depot_id
+        ]
+        if detail["lane_rates"]:
+            details.append(detail)
+    return details
+
+
 def apply_contracted_overflow(
     solved: dict, *, network_rows: dict, depot_id: str, service_date: str,
     cost_parameters: CostParameters, contract_details: list[dict], enabled: bool,
@@ -29,18 +45,7 @@ def apply_contracted_overflow(
         current = details_by_contract.get(detail["contract_id"])
         if current is None or detail["version"]["version_number"] > current["version"]["version_number"]:
             details_by_contract[detail["contract_id"]] = detail
-    details = []
-    for original in details_by_contract.values():
-        detail = deepcopy(original)
-        detail["lane_rates"] = [
-            lane for lane in detail["lane_rates"]
-            if str(lane.get("lane_type", "")).upper() == "DELIVERY"
-            and str(lane.get("origin_endpoint_type", "")).lower() == "facility"
-            and str(lane.get("origin_endpoint_id") or lane.get("origin")) == depot_id
-            and str(lane.get("origin")) == depot_id
-        ]
-        if detail["lane_rates"]:
-            details.append(detail)
+    details = depot_delivery_contract_details(list(details_by_contract.values()), depot_id)
     depot = next(dict(row) for row in network_rows["dim_facilities"] if row["facility_id"] == depot_id)
     depot["depot_id"] = depot_id
     customers = {row["customer_id"]: row for row in network_rows["dim_network_customers"]}
@@ -169,7 +174,7 @@ def apply_contracted_overflow(
         {"contract_id": contract_id, "version_id": version_id} for contract_id, version_id in sorted(versions)
     ]
     solved["execution"]["contract_snapshots"] = deepcopy([
-        detail for detail in contract_details
+        detail for detail in details
         if (detail["contract_id"], detail["version"]["version_id"]) in versions
     ])
     solved["execution"]["rate_book_snapshot_hash"] = snapshot_hash or rate_book_content_hash(contract_details)
