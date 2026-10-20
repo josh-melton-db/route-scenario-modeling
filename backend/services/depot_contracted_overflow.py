@@ -5,6 +5,7 @@ from copy import deepcopy
 
 from route_opt.baseline import build_route_from_ordered_stops
 from route_opt.cost import CostParameters
+from route_opt.pricing import revenue_for_cases
 from route_opt.rates import contract_status, quote_contract
 
 
@@ -132,8 +133,9 @@ def apply_contracted_overflow(
                 })
     fleet_cost = solved["kpis"]["cost_breakdown"]["total_cost"]
     contracted_cost = round(sum(quote["total_cost"] for quote in quotes), 2)
+    contracted_revenue = revenue_for_cases(sum(order["demand_cases"] for order in contracted))
     solved.update(
-        fleet_cost=fleet_cost, contracted_cost=contracted_cost,
+        fleet_cost=fleet_cost, contracted_cost=contracted_cost, contracted_revenue=contracted_revenue,
         contracted_deliveries=len(contracted), contracted_cases=sum(order["demand_cases"] for order in contracted),
         contracted_orders=contracted, contracted_quotes=quotes, unserved_orders=remaining,
         unserved_cases=sum(order["demand_cases"] for order in remaining),
@@ -152,7 +154,10 @@ def apply_contracted_overflow(
             if line["category"] in categories
         ), 2)
     solved["kpis"]["cost_breakdown"]["total_cost"] = round(fleet_cost + contracted_cost, 2)
-    solved["kpis"]["profit"] = round(solved["kpis"].get("profit", 0) - contracted_cost, 2)
+    solved["kpis"]["total_revenue"] = round(solved["kpis"].get("total_revenue", 0) + contracted_revenue, 2)
+    solved["kpis"]["profit"] = round(
+        solved["kpis"]["total_revenue"] - solved["kpis"]["cost_breakdown"]["total_cost"], 2,
+    )
     solved.setdefault("execution", {})["contract_versions"] = [
         {"contract_id": contract_id, "version_id": version_id} for contract_id, version_id in sorted(versions)
     ]

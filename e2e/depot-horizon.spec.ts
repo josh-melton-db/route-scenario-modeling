@@ -77,7 +77,8 @@ test('contracted overflow defaults off, submits on, and displays rated and unrat
       selected_result: submitted ? {
         ...result('2026-09-01', 'overflow', 10), routed_cases: 80,
         contracted_deliveries: 1, contracted_cases: 10, fleet_cost: 35, contracted_cost: 100,
-        kpis: { ...kpis, cost_breakdown: { ...costBreakdown, total_cost: 135 } },
+        contracted_revenue: 62.5,
+        kpis: { ...kpis, total_revenue: 162.5, profit: 27.5, cost_breakdown: { ...costBreakdown, total_cost: 135 } },
         unserved_orders: [{ customer_id: 'no-rate', demand_cases: 10, reason: 'no_contract_rate' }],
       } : result('2026-09-01', 'default'),
     } })
@@ -89,18 +90,21 @@ test('contracted overflow defaults off, submits on, and displays rated and unrat
   await page.getByRole('button', { name: 'Run scenario', exact: true }).click()
   await expect.poll(() => submitted).toMatchObject({ allow_contracted_overflow: true })
   await expect(page.getByText('Contracted: 1 deliveries · 10 cases')).toBeVisible()
-  await expect(page.getByText('Fleet cost: $35.00 · Contracted cost: $100.00 · Total cost: $135.00')).toBeVisible()
+  await expect(page.getByText('Fleet cost: $35.00 · Contracted cost: $100.00 · Contracted revenue: $62.50 · Total cost: $135.00')).toBeVisible()
   await expect(page.getByText('no-rate · 10 cases · No contract rate')).toBeVisible()
 })
 
 for (const mode of ['off', 'enabled-unpriced', 'contracted'] as const) {
-  test(`overflow cost lines respect saved result mode: ${mode}`, async ({ page }) => {
+  test(`overflow cost and revenue lines respect saved result mode: ${mode}`, async ({ page }) => {
     const contracted = mode === 'contracted'
     const stored = {
       ...result('2026-09-01', 'stored', contracted ? 10 : 0),
       routed_cases: contracted ? 70 : 100,
       contracted_cases: contracted ? 20 : 0,
       contracted_deliveries: contracted ? 2 : 0,
+      contracted_revenue: contracted ? 125 : 0,
+      contracted_cost: contracted ? 20 : 0,
+      kpis: contracted ? { ...kpis, total_revenue: 225, profit: 170, cost_breakdown: { ...costBreakdown, total_cost: 55 } } : kpis,
       execution: mode === 'enabled-unpriced' ? { allow_contracted_overflow: true } : {},
     }
     await page.route(/^https?:\/\/[^/]+\/api\//, async route => {
@@ -118,7 +122,12 @@ for (const mode of ['off', 'enabled-unpriced', 'contracted'] as const) {
     await expect(page.getByText('2026-09-01 routes')).toBeVisible()
     await expect(page.getByText(/^Fleet cost:/)).toHaveCount(mode === 'off' ? 0 : 1)
     await expect(page.getByText(/^Contracted:/)).toHaveCount(mode === 'off' ? 0 : 1)
+    await expect(page.getByText(/Contracted revenue:/)).toHaveCount(mode === 'off' ? 0 : 1)
+    if (mode === 'enabled-unpriced') await expect(page.getByText(/Contracted revenue: \$0.00/)).toBeVisible()
     if (contracted) {
+      await expect(page.getByText(/Contracted revenue: \$125.00/)).toBeVisible()
+      await expect(page.getByText('Revenue', { exact: true }).locator('..')).toContainText('$225')
+      await expect(page.getByText('Profit', { exact: true }).locator('..')).toContainText('$170')
       await page.getByLabel('Depot plan date', { exact: true }).getByRole('button').click()
       await expect(page.getByText('90/100 cases · 20 contracted')).toBeVisible()
     }
