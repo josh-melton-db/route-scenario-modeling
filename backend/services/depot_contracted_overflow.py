@@ -8,7 +8,7 @@ import json
 from route_opt.baseline import build_route_from_ordered_stops
 from route_opt.cost import CostParameters
 from route_opt.pricing import revenue_for_cases
-from route_opt.rates import contract_status, quote_contract
+from route_opt.rates import contract_status, quote_contract, quote_graduated_contract
 
 
 def rate_book_content_hash(details: list[dict]) -> str:
@@ -35,6 +35,7 @@ def apply_contracted_overflow(
     solved: dict, *, network_rows: dict, depot_id: str, service_date: str,
     cost_parameters: CostParameters, contract_details: list[dict], enabled: bool,
     snapshot_hash: str | None = None,
+    projected_period_volume: float | None = None,
 ) -> None:
     if not enabled:
         return
@@ -93,6 +94,7 @@ def apply_contracted_overflow(
     contracted = []
     versions = set()
     contract_usage = defaultdict(int)
+    tier_usage = defaultdict(float)
     for key, stops in groups.items():
         for offset in range(0, len(stops), 6):
             entries = stops[offset:offset + 6]
@@ -120,12 +122,14 @@ def apply_contracted_overflow(
                     if current + len(chunk) > float(commitment.get("capacity_quantity", 0)):
                         continue
                     commitment["current_utilization"] = current
-                quote = quote_contract(pricing_detail, {
+                tier_unit = next(iter(detail.get("volume_tiers") or []), {}).get("unit", "stops")
+                quote = quote_graduated_contract(pricing_detail, {
                     "service_date": service_date, "origin": depot_id, "destination": destination,
                     "miles": route["total_miles"], "stops": len(chunk),
                     "cases": sum(stop["demand_cases"] for stop in chunk),
                     "period_volume": 0, "accessorial_codes": sorted(accessorials), "commitment_policy": "honor",
-                })
+                }, projected_period_volume=projected_period_volume,
+                    consumed_volume=tier_usage[(detail["contract_id"], tier_unit)])
                 if quote["eligible"]:
                     candidates.append(quote)
             if not candidates:
@@ -133,6 +137,10 @@ def apply_contracted_overflow(
                 continue
             quote = min(candidates, key=lambda value: value["total_cost"])
             contract_usage[quote["contract_id"]] += len(chunk)
+            tier_unit = quote["tier_breakdown"]["unit"]
+            tier_usage[(quote["contract_id"], tier_unit)] += (
+                sum(stop["demand_cases"] for stop in chunk) if tier_unit == "cases" else len(chunk)
+            )
             quote.update(stops=len(chunk), cases=sum(stop["demand_cases"] for stop in chunk),
                          miles=route["total_miles"], mileage_source="classic_fallback_haversine_circuity")
             quotes.append(quote)

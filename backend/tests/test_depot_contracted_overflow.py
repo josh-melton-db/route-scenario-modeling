@@ -175,15 +175,15 @@ def test_failed_quotes_return_each_original_order_once(monkeypatch):
     for index, order in enumerate(solved["unserved_orders"]):
         order.update(customer_id="C0", order_id=f"ORDER-{index}")
     original = deepcopy(solved["unserved_orders"])
-    quote_contract = overflow.quote_contract
+    quote_contract = overflow.quote_graduated_contract
 
-    def reject_final_quote(detail, request):
-        quote = quote_contract(detail, request)
+    def reject_final_quote(detail, request, **kwargs):
+        quote = quote_contract(detail, request, **kwargs)
         if request["miles"] > 0:
             quote["eligible"] = False
         return quote
 
-    monkeypatch.setattr(overflow, "quote_contract", reject_final_quote)
+    monkeypatch.setattr(overflow, "quote_graduated_contract", reject_final_quote)
     apply(solved, rows, [contract()])
     assert solved["unserved_orders"] == [{**order, "reason": "no_contract_rate"} for order in original]
     assert solved["unserved_cases"] == solved["assigned_cases"]

@@ -58,6 +58,8 @@ export default function DepotOperationalOverrideForm({
     [value.max_stops_per_route, 1, 149],
   ] as const).some(([number, minimum, maximum]) => number != null && (!Number.isInteger(number) || number < minimum || number > maximum))
   const hasInvalidWindow = windowChanges.some((change) => !change.receiving_window_start || change.receiving_window_end <= change.receiving_window_start)
+  const hasInvalidProjectedVolume = Boolean(value.allow_contracted_overflow && value.projected_period_volume != null &&
+    (!Number.isFinite(value.projected_period_volume) || value.projected_period_volume < 0))
   const hasInvalidCases = deliveryChange?.deliveries.some(row => !Number.isInteger(row.demand_cases) || row.demand_cases < 1)
   const hasEmptyDeliveryChange = deliveryChange?.kind === 'add_deliveries' && deliveryChange.deliveries.length === 0
   const replaceChange = (kind: DepotPlanDailyChange['kind'], next: DepotPlanDailyChange) =>
@@ -85,6 +87,11 @@ export default function DepotOperationalOverrideForm({
         Allow contracted overflow
       </label>
       <p className="mt-1 text-xs text-muted-foreground">Price deliveries left unserved by the fleet using this depot’s delivery contracts. Deliveries without a rate remain unserved.</p>
+      {value.allow_contracted_overflow && <div className="mt-3">
+        <NumberField label="Projected monthly volume" value={value.projected_period_volume ?? undefined}
+          onChange={raw => setNumber('projected_period_volume', raw)} />
+        <p className="mt-1 text-xs text-muted-foreground">Volume before today, in each contract’s tier unit (stops or cases). Today’s contracted volume is stacked on top using graduated tiers. Each band discounts only the volume in that band, not the whole bill. Blank or 0 counts only today. Routes/miles tiers receive no discount.</p>
+      </div>}
       <div className="mt-4 flex flex-wrap gap-2">
         {!deliveryChange && <button type="button" onClick={() => onChange({ ...value, changes: [...changes, { kind: 'add_deliveries', deliveries: [] }] })} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"><Plus className="h-3.5 w-3.5" />Add deliveries</button>}
         {!facilityChange && <button type="button" onClick={() => onChange({ ...value, changes: [...changes, { kind: 'facility_move', new_depot_location: depot.location, preserve_service_windows: true }] })} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-accent/40"><Plus className="h-3.5 w-3.5" />Move facility</button>}
@@ -148,13 +155,14 @@ export default function DepotOperationalOverrideForm({
       </ChangeCard>}
       {hasInvalidLimits && <p role="alert" className="mt-3 text-xs text-destructive">Use whole numbers: drivers −64 to64, route minutes1–1440, stops1–149.</p>}
       {hasInvalidWindow && <p role="alert" className="mt-3 text-xs text-destructive">Closing time must be after opening time.</p>}
+      {hasInvalidProjectedVolume && <p role="alert" className="mt-3 text-xs text-destructive">Projected monthly volume must be a finite, nonnegative number.</p>}
       {hasInvalidCases && <p className="mt-3 text-xs text-destructive">Every delivery needs a positive whole-number case quantity.</p>}
       {hasEmptyDeliveryChange && <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">Drop at least one delivery pin before optimizing.</p>}
       <div className="mt-4 flex flex-wrap justify-end gap-2">
         <button type="button" onClick={onReset} disabled={!canReset || busy} className="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-50">
           Reset selected day to default
         </button>
-        <button type="button" onClick={onOptimize} disabled={busy || checkingDeliveries || !canOptimize || hasEmptyDeliveryChange || hasInvalidCases || hasInvalidWindow || hasInvalidLimits} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">
+        <button type="button" onClick={onOptimize} disabled={busy || checkingDeliveries || !canOptimize || hasEmptyDeliveryChange || hasInvalidCases || hasInvalidWindow || hasInvalidLimits || hasInvalidProjectedVolume} className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">
           {busy ? 'Queueing…' : 'Run scenario'}
         </button>
       </div>

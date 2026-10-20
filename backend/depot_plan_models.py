@@ -213,6 +213,7 @@ class DailyPlanChange(StrictModel):
 class OverrideRequest(StrictModel):
     route_scenario_id: str = Field(min_length=1)
     allow_contracted_overflow: bool = False
+    projected_period_volume: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     driver_delta: int = Field(default=0, ge=-64, le=64)
     allow_overtime: bool | None = None
     max_route_minutes: int | None = Field(default=None, ge=1, le=1_440)

@@ -505,3 +505,72 @@ def quote_contract(detail: dict[str, object], request: dict[str, object]) -> dic
         }
     )
     return base_response
+
+
+def quote_graduated_contract(
+    detail: dict[str, Any], request: dict[str, Any], *,
+    projected_period_volume: float | None = None, consumed_volume: float = 0,
+) -> dict[str, Any]:
+    """Rate a dated overflow chunk, leaving classic whole-volume quotes unchanged.
+
+    Card maxima are inclusive unit positions (49 ends at position 50).
+    Routes/miles and mixed-unit ladders are not supported by dated overflow.
+    """
+    tiers = sorted(detail.get("volume_tiers", []), key=lambda row: float(row.get("min_volume", 0)))
+    units = {str(tier.get("unit", "stops")) for tier in tiers}
+    unit = next(iter(units)) if len(units) == 1 else None
+    projected = max(0.0, float(projected_period_volume or 0))
+    start = projected + consumed_volume
+    quantity = max(0.0, float(request.get(unit, 0))) if unit in {"stops", "cases"} else 0.0
+    end = start + quantity
+    bands = []
+    reason = None
+    if tiers and (len(units) != 1 or unit not in {"stops", "cases"}):
+        reason = f"No graduated discount: unsupported tier unit(s): {', '.join(sorted(units))}; only stops and cases are supported."
+    elif not tiers:
+        reason = "No volume tiers in the frozen contract."
+    elif quantity:
+        boundaries = {start, end}
+        for tier in tiers:
+            boundaries.add(max(start, min(end, float(tier.get("min_volume", 0)))))
+            if tier.get("max_volume") is not None:
+                boundaries.add(max(start, min(end, float(tier["max_volume"]) + 1)))
+        positions = sorted(boundaries)
+        for lower, upper in zip(positions, positions[1:]):
+            tier = next((row for row in reversed(tiers)
+                         if lower >= float(row.get("min_volume", 0))
+                         and (row.get("max_volume") is None or lower < float(row["max_volume"]) + 1)), None)
+            bands.append({
+                "rule_id": tier["rule_id"] if tier else None,
+                "name": tier["name"] if tier else "Unrated band",
+                "starting_volume": lower, "ending_volume": upper,
+                "units": upper - lower, "discount_pct": float(tier.get("discount_pct", 0)) if tier else 0.0,
+            })
+    effective_pct = sum(band["units"] * band["discount_pct"] for band in bands) / quantity if quantity else 0.0
+    pricing_detail = {**detail, "volume_tiers": []}
+    if bands:
+        pricing_detail["volume_tiers"] = [{
+            "rule_id": "GRADUATED", "name": "Graduated volume tier discount",
+            "min_volume": 0, "max_volume": None, "unit": unit, "discount_pct": effective_pct,
+        }]
+    quote = quote_contract(pricing_detail, {**request, "period_volume": 0})
+    for line in quote["charge_lines"]:
+        if line["category"] == "volume_tier":
+            line["quantity"] = round(quantity, 3)
+    lane = _lane_rule(detail, str(request.get("origin", "")), str(request.get("destination", "")))
+    base = 0.0
+    if lane is not None:
+        base = (float(lane.get("flat_rate", 0))
+                + _rounded_miles(float(request.get("miles", 0)), lane.get("mileage_rounding")) * float(lane.get("rate_per_mile", 0))
+                + max(0, int(request.get("stops", 0)) - int(lane.get("included_stops", 0))) * float(lane.get("rate_per_stop", 0)))
+    for band in bands:
+        band["discount_amount"] = _money(base * band["units"] / quantity * band["discount_pct"] / 100)
+    discount = _money(base * effective_pct / 100)
+    discounted_bands = [band for band in bands if band["discount_pct"]]
+    if discounted_bands:
+        discounted_bands[-1]["discount_amount"] = _money(discounted_bands[-1]["discount_amount"] + discount - sum(band["discount_amount"] for band in bands))
+    quote["tier_breakdown"] = {
+        "projected_period_volume": projected, "starting_volume": start,
+        "unit": unit, "bands": bands, "discount_amount": discount, "reason": reason,
+    }
+    return quote

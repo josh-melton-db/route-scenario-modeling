@@ -134,7 +134,7 @@ test('contracted overflow defaults off, submits on, and displays rated and unrat
         ...result('2026-09-01', 'overflow', 10), routed_cases: 80,
         contracted_deliveries: 1, contracted_cases: 10, fleet_cost: 35, contracted_cost: 100,
         contracted_revenue: 62.5,
-        kpis: { ...kpis, total_revenue: 162.5, profit: 27.5, cost_breakdown: { ...costBreakdown, total_cost: 135 } },
+        kpis: { ...kpis, total_revenue: 162.5, profit: 27.5, cost_breakdown: { ...costBreakdown, total_cost: 135, volume_tier_adjustment: -4 } },
         unserved_orders: [{ customer_id: 'no-rate', demand_cases: 10, reason: 'no_contract_rate' }],
       } : result('2026-09-01', 'default'),
     } })
@@ -142,12 +142,18 @@ test('contracted overflow defaults off, submits on, and displays rated and unrat
   })
   await page.goto(`${appUrl}/scenario?networkRun=run-1&depot=DPT_NORTH&depotPlan=plan-1&routePlanScenario=named-1&date=2026-09-01`)
   await expect(page.getByLabel('Allow contracted overflow', { exact: true })).not.toBeChecked()
+  await expect(page.getByLabel('Projected monthly volume', { exact: true })).toHaveCount(0)
   await page.getByLabel('Allow contracted overflow', { exact: true }).check()
+  await expect(page.getByText(/Each band discounts only the volume in that band/)).toBeVisible()
+  await page.getByLabel('Projected monthly volume', { exact: true }).fill('40')
   await page.getByRole('button', { name: 'Run scenario', exact: true }).click()
-  await expect.poll(() => submitted).toMatchObject({ allow_contracted_overflow: true })
+  await expect.poll(() => submitted).toMatchObject({ allow_contracted_overflow: true, projected_period_volume: 40 })
   await expect(page.getByText('Contracted: 1 deliveries · 10 cases')).toBeVisible()
   await expect(page.getByText('Fleet cost: $35.00 · Contracted cost: $100.00 · Contracted revenue: $62.50 · Total cost: $135.00')).toBeVisible()
   await expect(page.getByText('no-rate · 10 cases · No contract rate')).toBeVisible()
+  await expect(page.getByText('Total tier discount: $4.00', { exact: true })).toBeVisible()
+  await page.reload()
+  await expect(page.getByText('Total tier discount: $4.00', { exact: true })).toBeVisible()
 })
 
 for (const mode of ['off', 'enabled-unpriced', 'contracted'] as const) {

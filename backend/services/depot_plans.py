@@ -704,6 +704,7 @@ class DepotPlanService:
                     service_date=service_date, cost_parameters=cost_parameters,
                     contract_details=rate_book,
                     snapshot_hash=snapshot_hash,
+                    projected_period_volume=(request or {}).get("projected_period_volume"),
                     enabled=True,
                 )
             execution = solved.setdefault("execution", {})

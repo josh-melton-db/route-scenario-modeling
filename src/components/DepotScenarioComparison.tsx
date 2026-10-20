@@ -61,6 +61,7 @@ function Unserved({ result }: { result: DepotPlanDayResult }) {
     {showOverflow && <>
       <p>Fleet cost: {money(result.fleet_cost ?? result.kpis.cost_breakdown.total_cost)} · Contracted cost: {money(result.contracted_cost ?? 0)} · Contracted revenue: {money(result.contracted_revenue ?? 0)} · Total cost: {money(result.kpis.cost_breakdown.total_cost)}</p>
       <p>Contracted: {result.contracted_deliveries ?? 0} deliveries · {result.contracted_cases ?? 0} cases</p>
+      {(result.kpis.cost_breakdown.volume_tier_adjustment ?? 0) < 0 && <p>Total tier discount: {money(-result.kpis.cost_breakdown.volume_tier_adjustment)}</p>}
     </>}
     {(result.contracted_orders?.length ?? 0) > 0 && <details className="mt-2">
       <summary>Contracted delivery rates</summary>

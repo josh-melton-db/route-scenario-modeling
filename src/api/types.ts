@@ -981,7 +981,14 @@ export interface DepotPlanDayResult {
     charge_lines: RateChargeLine[]
     rate_book_snapshot_id: string
   }>
-  contracted_quotes?: Array<RateQuote & { stops: number; cases: number; miles: number; mileage_source: string }>
+  contracted_quotes?: Array<RateQuote & {
+    stops: number; cases: number; miles: number; mileage_source: string
+    tier_breakdown?: {
+      projected_period_volume: number; starting_volume: number; unit: string | null
+      discount_amount: number; reason: string | null
+      bands: Array<{ rule_id: string | null; name: string; starting_volume: number; ending_volume: number; units: number; discount_pct: number; discount_amount: number }>
+    }
+  }>
   depot?: Depot | null
   result_id: string
   service_date: string
@@ -1055,6 +1062,7 @@ export type DepotPlanDailyChange =
 
 export interface DepotPlanOverrideRequest {
   allow_contracted_overflow?: boolean
+  projected_period_volume?: number | null
   route_scenario_id: string
   driver_delta?: number
   allow_overtime?: boolean
