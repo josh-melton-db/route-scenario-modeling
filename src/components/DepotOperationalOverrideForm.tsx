@@ -11,7 +11,7 @@ export type OperationalDraft = Omit<DepotPlanOverrideRequest, 'route_scenario_id
 
 export const emptyOperationalDraft: OperationalDraft = {
   driver_delta: 0,
-  allow_overtime: false,
+  allow_overtime: true,
   changes: [],
 }
 

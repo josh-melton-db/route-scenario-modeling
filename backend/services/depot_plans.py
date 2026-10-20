@@ -1035,11 +1035,6 @@ def _apply_override(
                 int(vehicle.get("max_route_minutes", params.max_route_minutes)),
                 params.overtime_threshold_minutes,
             )
-        elif allow_overtime is True:
-            vehicle["max_route_minutes"] = max(
-                int(vehicle.get("max_route_minutes", params.max_route_minutes)),
-                params.max_route_minutes,
-            )
         if max_stops is not None:
             vehicle["max_stops_per_route"] = int(max_stops)
         vehicle["available_dates"] = [service_date]

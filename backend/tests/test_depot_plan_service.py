@@ -14,6 +14,7 @@ from backend.models import Kpis, Route
 from backend.services.depot_plan_jobs import DepotPlanJobManager
 from backend.services.depot_plans import (
     DepotPlanService,
+    _apply_override,
     _cost_content_hash,
     _fleet_content_hash,
     _apply_customer_constraint_snapshot,
@@ -24,7 +25,7 @@ from backend.services.depot_plans import (
     _verify_cost_snapshot,
 )
 from route_opt.cost import CostParameters
-from route_opt.depot_planning import solve_depot_plan
+from route_opt.depot_planning import materialize_depot_targets, solve_depot_plan
 from backend.services.depot_route_preparation import prepare_depot_routes
 
 
@@ -168,6 +169,51 @@ def _payload(value: object) -> dict[str, object]:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     return value
+
+
+@pytest.mark.parametrize("route_minutes", [420, 600, 720])
+def test_untouched_overtime_override_preserves_baseline_solver_inputs(route_minutes) -> None:
+    snapshot = _snapshot()
+    fleet, _ = _fleet_provider(snapshot, DEPOT_ID)
+    fleet[0].update(max_route_minutes=route_minutes, available_dates=[DATE_ONE])
+    original_fleet = deepcopy(fleet)
+    original_rows = deepcopy(snapshot["network_rows"])
+    params = CostParameters(labor_regular_hour=95.0)
+    baseline_targets = materialize_depot_targets(
+        snapshot["network_rows"], snapshot["flow_rows"], DEPOT_ID, DATE_ONE
+    )
+
+    adjusted_fleet, adjusted_rows, adjusted_params = _apply_override(
+        fleet, snapshot["network_rows"], DEPOT_ID, DATE_ONE,
+        {"driver_delta": 0, "allow_overtime": True, "changes": []}, params,
+    )
+
+    assert adjusted_fleet == original_fleet
+    assert adjusted_rows == original_rows
+    assert materialize_depot_targets(
+        adjusted_rows, snapshot["flow_rows"], DEPOT_ID, DATE_ONE
+    ) == baseline_targets
+    assert adjusted_params == params
+    assert fleet == original_fleet
+    assert snapshot["network_rows"] == original_rows
+
+
+@pytest.mark.parametrize("route_minutes", [420, 480, 600, 720])
+def test_disallowing_overtime_caps_vehicle_duration(route_minutes) -> None:
+    snapshot = _snapshot()
+    fleet, _ = _fleet_provider(snapshot, DEPOT_ID)
+    fleet[0]["max_route_minutes"] = route_minutes
+    params = CostParameters()
+
+    adjusted_fleet, _, _ = _apply_override(
+        fleet, snapshot["network_rows"], DEPOT_ID, DATE_ONE,
+        {"driver_delta": 0, "allow_overtime": False, "changes": []}, params,
+    )
+
+    assert adjusted_fleet[0]["max_route_minutes"] == min(
+        route_minutes, params.overtime_threshold_minutes
+    )
+    assert fleet[0]["max_route_minutes"] == route_minutes
 
 
 def _service():
