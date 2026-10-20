@@ -823,6 +823,8 @@ def _plan_set_payload(record: Mapping[str, object], scenario_id: str) -> dict[st
         "days": day_payloads,
         "coverage": coverage,
         "kpis": _rollup_kpis(selected_results) if selected_results else None,
+        "contracted_cost": round(sum(float(result.get("contracted_cost", 0)) for result in selected_results), 2),
+        "contracted_revenue": round(sum(float(result.get("contracted_revenue", 0)) for result in selected_results), 2),
         "is_partial": coverage["solved_days"] != coverage["total_days"],
         "resource_source": record["resource_source"],
         "fleet_snapshot": record.get("fleet_snapshot"),
@@ -845,6 +847,10 @@ def _day_summary_payload(
         "contracted_deliveries": result.get("contracted_deliveries", 0) if result else None,
         "unserved_cases": result["unserved_cases"] if result else None,
         "total_cost": result["kpis"]["cost_breakdown"]["total_cost"] if result else None,
+        "contracted_cost": result.get("contracted_cost", 0) if result else None,
+        "contracted_revenue": result.get("contracted_revenue", 0) if result else None,
+        "total_revenue": result["kpis"].get("total_revenue", 0) if result else None,
+        "profit": result["kpis"].get("profit", 0) if result else None,
         "is_overridden": scenario_id != DEFAULT_SCENARIO_ID
         and scenario_id in day["selected_result_ids"],
         "selected_result_id": result["result_id"] if result else None,
@@ -968,7 +974,7 @@ def _day_result(
         "unserved_orders": deepcopy(solved.get("unserved_orders", [])),
         **{key: deepcopy(solved[key]) for key in (
             "contracted_orders", "contracted_quotes", "contracted_deliveries",
-            "contracted_cases", "fleet_cost", "contracted_cost",
+            "contracted_cases", "fleet_cost", "contracted_cost", "contracted_revenue",
         ) if key in solved},
         "diagnostics": deepcopy(solved["diagnostics"]),
         "matrix_source": solved["matrix_source"],

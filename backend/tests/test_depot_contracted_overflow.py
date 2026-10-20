@@ -6,6 +6,7 @@ import pytest
 from backend.depot_plan_models import OverrideRequest
 from backend.services.depot_contracted_overflow import apply_contracted_overflow
 from route_opt.cost import CostParameters
+from route_opt.pricing import revenue_for_cases
 from route_opt.rates import contract_detail_from_legacy
 
 
@@ -68,7 +69,9 @@ def test_prices_overflow_and_preserves_fleet_with_auditable_quote():
     assert solved["fleet_cost"] == 25
     assert solved["contracted_cost"] == 10
     assert solved["kpis"]["cost_breakdown"]["total_cost"] == 35
-    assert solved["kpis"]["profit"] == -35
+    assert solved["contracted_revenue"] == revenue_for_cases(5)
+    assert solved["kpis"]["total_revenue"] == revenue_for_cases(5)
+    assert solved["kpis"]["profit"] == -3.75
     assert solved["kpis"]["cost_breakdown"]["carrier_stop_cost"] == 10
     delivery = solved["contracted_orders"][0]
     assert delivery["contract_id"] == "DELIVERY"
@@ -85,6 +88,9 @@ def test_inapplicable_contract_stays_unserved(details):
     assert solved["unserved_orders"][0]["reason"] == "no_contract_rate"
     assert solved["unserved_cases"] == 5
     assert solved["contracted_cost"] == 0
+    assert solved["contracted_revenue"] == 0
+    assert solved["kpis"]["total_revenue"] == 0
+    assert solved["kpis"]["profit"] == -25
 
 
 def test_toggle_off_is_byte_identical_even_with_rates():
@@ -239,6 +245,18 @@ def test_service_persists_overflow_and_reconciles_day_result(monkeypatch):
     summary = next(day for day in service.get_plan(plan.plan_set_id, scenario.route_scenario_id).days if day.service_date == DATE_ONE)
     assert summary.contracted_cases == 100
     assert summary.contracted_deliveries == 1
+    assert result.contracted_revenue == revenue_for_cases(100)
+    assert result.kpis.total_revenue == result.contracted_revenue
+    assert result.kpis.profit == round(result.kpis.total_revenue - result.kpis.cost_breakdown.total_cost, 2)
+    assert summary.contracted_revenue == result.contracted_revenue
+    assert summary.contracted_cost == result.contracted_cost
+    assert summary.total_revenue == result.kpis.total_revenue
+    assert summary.profit == result.kpis.profit
+    horizon = service.get_plan(plan.plan_set_id, scenario.route_scenario_id)
+    assert horizon.kpis.total_revenue == sum(day.total_revenue or 0 for day in horizon.days)
+    assert horizon.kpis.profit == round(horizon.kpis.total_revenue - horizon.kpis.cost_breakdown.total_cost, 2)
+    assert horizon.contracted_revenue == sum(day.contracted_revenue or 0 for day in horizon.days)
+    assert horizon.contracted_cost == sum(day.contracted_cost or 0 for day in horizon.days)
     assert summary.routed_cases + summary.contracted_cases + summary.unserved_cases == summary.assigned_cases
     assert "rate_contract_details" not in solve_inputs[-1]["network_rows"]
     assert service.get_day(plan.plan_set_id, DATE_ONE).default_result.model_dump() == baseline
@@ -250,6 +268,19 @@ def test_only_deliveries_with_matching_destination_leave_unserved():
     assert [order["customer_id"] for order in solved["contracted_orders"]] == ["C0"]
     assert solved["unserved_orders"] == [{"customer_id": "C1", "demand_cases": 5, "reason": "no_contract_rate"}]
     assert solved["routed_cases"] + solved["contracted_cases"] + solved["unserved_cases"] == solved["assigned_cases"]
+    assert solved["contracted_revenue"] == revenue_for_cases(5)
+    assert solved["kpis"]["total_revenue"] == revenue_for_cases(5)
+    assert solved["contracted_cost"] == 10
+
+
+def test_contracted_revenue_adds_to_fleet_revenue_and_reconciles_profit():
+    solved, rows = inputs(2)
+    solved["kpis"].update(total_revenue=revenue_for_cases(10), profit=37.5)
+    apply(solved, rows, [contract()])
+    assert solved["contracted_revenue"] == revenue_for_cases(10)
+    assert solved["kpis"]["total_revenue"] == 125
+    assert solved["kpis"]["profit"] == 80
+    assert solved["kpis"]["profit"] == solved["kpis"]["total_revenue"] - solved["kpis"]["cost_breakdown"]["total_cost"]
 
 
 def test_market_scope_and_shared_quote_charge_lines_use_quote_engine():

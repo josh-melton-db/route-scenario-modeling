@@ -61,6 +61,10 @@ class DaySummary(StrictModel):
     contracted_deliveries: int | None = Field(default=None, ge=0)
     unserved_cases: int | None = Field(default=None, ge=0)
     total_cost: float | None = Field(default=None, ge=0)
+    contracted_cost: float | None = Field(default=None, ge=0)
+    contracted_revenue: float | None = Field(default=None, ge=0)
+    total_revenue: float | None = Field(default=None, ge=0)
+    profit: float | None = None
     is_overridden: bool = False
     selected_result_id: str | None = None
     error: str | None = None
@@ -88,6 +92,7 @@ class DayResult(StrictModel):
     contracted_cases: int = Field(default=0, ge=0)
     fleet_cost: float | None = Field(default=None, ge=0)
     contracted_cost: float = Field(default=0, ge=0)
+    contracted_revenue: float = Field(default=0, ge=0)
     diagnostics: list[dict[str, Any]] = Field(default_factory=list)
     matrix_source: MatrixSource
     execution: dict[str, Any] | None = None
@@ -136,6 +141,8 @@ class PlanSet(StrictModel):
     days: list[DaySummary]
     coverage: Coverage
     kpis: Kpis | None = None
+    contracted_cost: float = Field(default=0, ge=0)
+    contracted_revenue: float = Field(default=0, ge=0)
     is_partial: bool
     resource_source: str
     fleet_snapshot: dict[str, object] | None = None

@@ -930,6 +930,10 @@ export interface DepotPlanCoverage {
 }
 
 export interface DepotPlanDaySummary {
+  contracted_cost?: number | null
+  contracted_revenue?: number | null
+  total_revenue?: number | null
+  profit?: number | null
   contracted_cases?: number | null
   contracted_deliveries?: number | null
   service_date: string
@@ -945,6 +949,7 @@ export interface DepotPlanDaySummary {
 }
 
 export interface DepotPlanDayResult {
+  contracted_revenue?: number
   fleet_cost?: number | null
   contracted_cost?: number
   contracted_deliveries?: number
@@ -997,6 +1002,8 @@ export interface DepotPlanDayResult {
 }
 
 export interface DepotPlanSet {
+  contracted_cost?: number
+  contracted_revenue?: number
   plan_set_id: string
   parent_run_id: string
   depot: Depot
