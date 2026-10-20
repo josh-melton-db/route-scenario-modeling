@@ -38,9 +38,34 @@ restricted to the operator. OAuth tokens refresh automatically through the SDK.
 Credentials are never stored in source code or printed. The App must be running
 and accessible from job compute. Rotate the OAuth secret before it expires.
 
+For Unity Catalog secrets instead of a workspace scope, add
+`"depot_routes_app_auth_uc_secret_schema": "manufacturing.route_scenario_modeling"`
+to the deployment JSON's `variables` (or use your own `catalog.schema`). An operator
+must create the two UC secrets manually in that existing schema, using the fixed
+keys `depot_job_client_id` and `depot_job_client_secret`. Bundles do not create UC
+secrets. Give the job run-as identity `USE CATALOG` on the catalog, `USE SCHEMA` on
+the schema, and `READ SECRET` on the secrets. Keep secret administration restricted
+to the operator; do not put credential values in the JSON or repository.
+
+The notebook widget `app_auth_uc_secret_schema` takes precedence over the workspace
+scope when nonempty. A missing, empty or unreadable UC key fails the run without
+falling back to another identity or printing the secret. When empty (the default),
+workspace scope authentication is unchanged for dev and other deployments.
+
+Only the depot notebook pins serverless environment version **4** using Databricks'
+source-export metadata (`[tool.databricks.environment]`); no other job is changed.
+This is the minimum version supporting `dbutils.secrets.get(catalog=, schema=, key=)`
+(classic compute needs DBR 17.3+). The existing `%pip install faker==40.38.0`
+dependency stays unchanged. Notebook metadata selects the notebook environment
+without replacing dependencies with a job-level `environment_key`. After deployment,
+before enabling UC authentication, check the deployed depot notebook's **Environment**
+pane and the job task's environment selection: it must use the notebook's version
+4 environment (or a version 4+ override). An older API gives a clear runtime error.
+
 For workspaces that support notebook-to-App token exchange, explicitly set
-`app_auth_secret_scope` to an empty string on a manual run to use an ephemeral
-notebook token instead. The scheduled job uses the dedicated OAuth identity.
+both `app_auth_secret_scope` and `app_auth_uc_secret_schema` to empty strings on a
+manual run to use an ephemeral notebook token instead. The scheduled job uses the
+dedicated OAuth identity.
 
 The schedule is enabled at 5 AM, including the dev target. Run it manually after deployment to prepare today's routes immediately:
 
