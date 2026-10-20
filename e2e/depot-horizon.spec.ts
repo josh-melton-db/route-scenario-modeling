@@ -2,6 +2,32 @@ import { expect, test } from '@playwright/test'
 
 const appUrl = process.env.E2E_BASE_URL ?? ''
 
+test('shared sidebar keeps classic carrier rendering unless dated style is enabled', async ({ page }) => {
+  await page.goto(`${appUrl}/`)
+  const renderSidebar = async (datedContractedStyle: boolean) => {
+    await page.evaluate(async (datedStyle) => {
+      const reactPath = '/node_modules/.vite/deps/react.js'
+      const clientPath = '/node_modules/.vite/deps/react-dom_client.js'
+      const sidebarPath = '/src/components/RouteSidebar.tsx'
+      const React = (await import(reactPath)).default
+      const { createRoot } = (await import(clientPath)).default
+      const { default: Sidebar } = await import(sidebarPath)
+      document.body.innerHTML = '<div id="sidebar-scope-test"></div>'
+      createRoot(document.getElementById('sidebar-scope-test')).render(React.createElement(Sidebar, {
+        routes: [{ route_id: 'carrier', route_name: 'Carrier route', driver_name: 'Carrier',
+          fulfillment_method: 'carrier', stops: [], total_cases: 0, total_miles: 0,
+          drive_minutes: 0, service_minutes: 0, overtime_minutes: 0 }],
+        selectedRouteId: null, onSelectRoute: () => {}, datedContractedStyle: datedStyle,
+      }))
+    }, datedContractedStyle)
+  }
+  await renderSidebar(false)
+  await expect(page.getByText('Carrier route', { exact: true })).toBeVisible()
+  await expect(page.getByText('Contracted', { exact: true })).toHaveCount(0)
+  await renderSidebar(true)
+  await expect(page.getByText('Contracted', { exact: true })).toBeVisible()
+})
+
 test('cost-based outsourcing requires overflow and shows informational contracted routes', async ({ page }) => {
   let submitted: Record<string, unknown> | null = null
   const carrierRoute = {

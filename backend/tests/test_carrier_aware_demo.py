@@ -1,5 +1,8 @@
 from copy import deepcopy
 import json
+import os
+
+import pytest
 
 from backend.services.depot_contracted_overflow import apply_contracted_overflow
 from backend.services.depot_route_execution import DatedRouteExecutor
@@ -8,6 +11,7 @@ from route_opt.cost import CostParameters
 from route_opt.network_synthetic import national_dataset_cached
 
 
+@pytest.mark.skipif(os.environ.get("RUN_CARRIER_AWARE_DEMO") != "1", reason="Opt-in 28-day demo audit")
 def test_san_antonio_full_fleet_horizon_before_after(monkeypatch):
     from route_opt import demo_dates
 

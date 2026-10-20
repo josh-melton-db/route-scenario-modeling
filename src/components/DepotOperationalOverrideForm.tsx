@@ -94,7 +94,7 @@ export default function DepotOperationalOverrideForm({
           onChange={event => onChange({ ...value, allow_cost_based_outsourcing: event.target.checked })} />
         Outsource stops when the contractor is cheaper
       </label>
-      <p className="mt-1 text-xs text-muted-foreground">Requires contracted overflow. Moves feasible fleet stops only when the exact carrier quote lowers total cost. Any saving qualifies; fixed vehicle and guaranteed shift costs remain.</p>
+      <p className="mt-1 text-xs text-muted-foreground">Requires contracted overflow. Moves feasible fleet stops only when the exact carrier quote lowers total cost. Any saving qualifies; fully emptied routes avoid vehicle and shift costs.</p>
       <p className="mt-1 text-xs text-muted-foreground">Price deliveries left unserved by the fleet using this depot’s delivery contracts. Deliveries without a rate remain unserved.</p>
       {value.allow_contracted_overflow && <div className="mt-3">
         <NumberField label="Projected monthly volume" value={value.projected_period_volume ?? undefined}

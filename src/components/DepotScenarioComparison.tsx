@@ -47,9 +47,9 @@ export default function DepotScenarioComparison({ plan, serviceDate, leftId, rig
       </label>
       {value.pending ? <div role="status" className="flex h-[480px] items-center justify-center gap-2"><Loader2 className="h-5 w-5 animate-spin" />Optimizing…</div> : value.error ? <p role="alert" className="text-destructive">{value.error}</p> : value.result ? <>
         <p className="mb-2 text-xs text-muted-foreground">{serviceDate} routes</p>
-        <div className="h-[480px]"><MapView depot={value.result.depot ?? plan.depot} routes={displayRoutes[side]} selectedRouteId={selectedRoute} onSelectRoute={setSelectedRoute} viewState={viewState} onViewStateChange={setViewState} /></div>
+        <div className="h-[480px]"><MapView datedContractedStyle depot={value.result.depot ?? plan.depot} routes={displayRoutes[side]} selectedRouteId={selectedRoute} onSelectRoute={setSelectedRoute} viewState={viewState} onViewStateChange={setViewState} /></div>
         {(value.result.contracted_routes?.length ?? 0) > 0 && <div className="mt-2 max-h-80 overflow-auto rounded-md border border-sky-500/40">
-          <RouteSidebar title="Contracted routes · informational" routes={value.result.contracted_routes ?? []} selectedRouteId={selectedRoute} onSelectRoute={setSelectedRoute} />
+          <RouteSidebar datedContractedStyle title="Contracted routes · informational" routes={value.result.contracted_routes ?? []} selectedRouteId={selectedRoute} onSelectRoute={setSelectedRoute} />
         </div>}
         <Unserved result={value.result} />
       </> : <div className="flex h-[480px] items-center justify-center text-sm text-muted-foreground">No optimization saved for this scenario and date. Run it from Scenarios.</div>}

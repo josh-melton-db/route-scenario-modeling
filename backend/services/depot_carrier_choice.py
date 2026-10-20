@@ -59,6 +59,8 @@ def _rebuild(original: dict, stops: list[dict], *, depot: dict, service_date: st
                                                    cost_parameters.overtime_threshold_minutes, 1))
     costs = route_cost(miles=route["total_miles"], route_minutes=route["route_minutes"],
                        late_stops=route["missed_windows"], params=cost_parameters)
+    if not stops:
+        costs = {field: 0 for field in costs}
     route.update(costs)
     route.update(route_id=original["route_id"], route_name=original["route_name"],
                  driver_name=original["driver_name"],
@@ -81,9 +83,11 @@ def apply_carrier_choice(solved: dict, **arguments) -> None:
     depot["depot_id"] = arguments["depot_id"]
     rebuild_arguments = dict(depot=depot, service_date=arguments["service_date"],
                              cost_parameters=arguments["cost_parameters"], matrix=matrix)
+    off_result = deepcopy(source)
+    apply_contracted_overflow(off_result, **arguments, enabled=True)
+    arguments["travel_matrix"] = matrix_rows
     best = deepcopy(source)
     apply_contracted_overflow(best, **arguments, enabled=True)
-    arguments["travel_matrix"] = matrix_rows
     initial_cost = best["kpis"]["cost_breakdown"]["total_cost"]
     initial_revenue = best["kpis"].get("total_revenue", 0)
     required_contracts = {order["customer_id"] for order in best["contracted_orders"]}
@@ -110,6 +114,8 @@ def apply_carrier_choice(solved: dict, **arguments) -> None:
                     marginal.append((-saving, route_index, stop_index))
         ranked = [(route_index, stop_index) for _, route_index, stop_index in sorted(marginal)]
         groups = {(entry,) for entry in ranked}
+        groups.update(tuple((route_index, stop_index) for stop_index in range(len(route["stops"])))
+                      for route_index, route in enumerate(best["routes"]) if route["stops"])
         rankings = [ranked, *[[entry for entry in ranked if entry[0] == route_index]
                              for route_index in before_routes]]
         for ranking in rankings:
@@ -129,7 +135,8 @@ def apply_carrier_choice(solved: dict, **arguments) -> None:
                 if (after["missed_windows"] or after["route_minutes"] > min(vehicle_limit, arguments["cost_parameters"].max_route_minutes)
                         or after["total_cases"] > after["capacity_cases"]):
                     break
-                after["mileage_cost"] = round(max(0, after["mileage_cost"] + mileage_calibration[route_index]), 2)
+                if after["stops"]:
+                    after["mileage_cost"] = round(max(0, after["mileage_cost"] + mileage_calibration[route_index]), 2)
                 after["total_cost"] = round(sum(after[field] for field in (
                     "mileage_cost", "labor_cost", "overtime_cost", "fixed_vehicle_cost", "sla_penalty_cost")), 2)
                 route_saving = round(original["total_cost"] - after["total_cost"], 2)
@@ -148,6 +155,7 @@ def apply_carrier_choice(solved: dict, **arguments) -> None:
             moved = [*chosen, *[{**best["routes"][route_index]["stops"][stop_index],
                                  "decision_reason": "outsourced_by_cost"}
                                 for route_index, stop_index in group]]
+            trial["routes"] = [route for route in trial["routes"] if route["stops"]]
             trial["unserved_orders"] = [*source["unserved_orders"], *moved]
             trial["routed_cases"] = source["routed_cases"] - sum(order["demand_cases"] for order in moved)
             trial["kpis"] = deepcopy(source["kpis"])
@@ -172,6 +180,9 @@ def apply_carrier_choice(solved: dict, **arguments) -> None:
             break
         if not accepted:
             break
+    if best["kpis"]["cost_breakdown"]["total_cost"] > off_result["kpis"]["cost_breakdown"]["total_cost"]:
+        best, chosen = off_result, []
+        initial_cost = best["kpis"]["cost_breakdown"]["total_cost"]
     for quote_index, quote in enumerate(best["contracted_quotes"]):
         old_id = quote["quote_id"]
         payload = {key: value for key, value in quote.items() if key != "quote_id"}
@@ -191,6 +202,9 @@ def apply_carrier_choice(solved: dict, **arguments) -> None:
         if chosen:
             best["kpis"][field] = round(sum(route.get(field, 0) for route in best["routes"]), 3)
     if chosen:
+        best["kpis"].update(route_count=len(best["routes"]),
+                            driver_count=len({route["driver_id"] for route in best["routes"]}),
+                            vehicle_count=len({route["vehicle_id"] for route in best["routes"]}))
         best["kpis"]["total_cases"] = best["routed_cases"]
         best["kpis"]["avg_stops_per_route"] = round(sum(len(route["stops"]) for route in best["routes"]) / max(1, len(best["routes"])), 1)
         for field in ("capacity_utilization_pct", "driver_utilization_pct"):
@@ -199,6 +213,6 @@ def apply_carrier_choice(solved: dict, **arguments) -> None:
                 outsourcing_savings=round(initial_cost - best["kpis"]["cost_breakdown"]["total_cost"], 2))
     best["execution"].update(allow_cost_based_outsourcing=True,
                              outsourcing_mileage_basis="solve_matrix" if matrix else "haversine_circuity_marginal_estimate",
-                             outsourcing_fixed_cost_policy="Retain vehicle fixed cost and guaranteed shift labor, including empty routes.")
+                             outsourcing_fixed_cost_policy="Remove unused routes and avoid their full vehicle, shift and mileage cost.")
     solved.clear()
     solved.update(best)

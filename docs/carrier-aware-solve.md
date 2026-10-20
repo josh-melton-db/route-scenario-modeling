@@ -11,7 +11,8 @@ The backend runs the private-fleet solve unchanged, then evaluates deterministic
 post-solve swaps. It rebuilds ordered fleet routes with
 `build_route_from_ordered_stops` and `route_cost`, ranks individual removal savings,
 and considers singles plus the highest-saving prefixes of up to six stops globally
-and per route. After each accepted swap it recomputes the marginal savings.
+and per route, plus each whole route (including routes longer than six stops).
+After each accepted swap it recomputes the marginal savings.
 This is a greedy heuristic, not a globally optimal fleet/carrier assignment.
 
 Each trial re-runs the existing overflow allocator on the original overflow orders
@@ -24,10 +25,10 @@ minimum savings margin beyond the existing cent-level currency precision.
 
 Fleet capacity, receiving windows, waiting time, return travel and the tighter of
 the vehicle/day route-duration limits are checked again after removal. Retained
-stop order is unchanged. Empty fleet routes stay in the result: `route_cost`
-charges the daily vehicle cost and a guaranteed regular shift even with zero
-miles/minutes. Those costs are **not avoidable** in this implementation. They do
-not become savings when a route is emptied.
+stop order is unchanged. Empty fleet routes are removed and their full vehicle,
+shift and mileage costs are avoided. This matches the solver's used-vehicle
+fixed-cost policy and the day result's zero cost for unused trucks. The route
+cost function's minimum shift applies only to routes that remain in use.
 
 The execution adapter passes the in-memory solve matrix to the postprocessor,
 including partition matrices. It is not stored in results or sent to the serving
@@ -38,7 +39,11 @@ When no matrix is exposed by a custom/legacy executor, both fleet alternatives
 use the existing haversine/circuity builder; carrier chunks use that same estimator.
 The original fleet cost is the accounting anchor. Any discrepancy between its
 stored cost and the rebuilt estimate is retained as a mileage-cost calibration,
-floored at zero, so it cannot erase guaranteed shift/vehicle costs. Execution
+floored at zero for routes that remain in use. Both the starting overflow quotes
+and trial quotes use the solve matrix, so repricing existing overflow cannot be
+attributed to outsourcing savings. Savings are measured from that consistent
+starting result. A final guard restores the overflow-only off-path result if the
+chosen outcome costs more than that result. Execution
 metadata records the matrix/estimate basis and fixed-cost policy; each carrier
 quote records its mileage source. A cross-partition carrier chunk without all
 matrix arcs retains the overflow allocator's explicitly identified mileage estimate.
@@ -48,7 +53,8 @@ and carrier costs; outsourcing moves revenue between fleet and carrier, rather
 than adding it twice. Day summaries and horizon rollups sum the recorded
 outsourced-by-cost counts and savings. Contracted orders distinguish
 `outsourced_by_cost` from `overflow`. Contracted routes have separate IDs, a sky-blue
-map/list style and a Contracted badge; unserved deliveries remain warnings.
+map/list style and a Contracted badge in dated depot views only; classic rendering
+is unchanged and unserved deliveries remain warnings.
 Contractor geometry/timing is informational, not a contractor vehicle schedule.
 
 ## San Antonio audit
@@ -71,21 +77,31 @@ comparison, eliminating solver-search variation between the two alternatives.
 | Outsourced-by-cost stops / savings | 0 / $0.00 | 0 / $0.00 |
 
 Across **October 6–November 2 (28 days / 2,800 fleet stops)**, the option fires on
-**0/28 days**, outsourcing **0 stops** and saving **$0.00**. The seeded carriers
-are expensive relative to avoidable private-fleet costs, and the daily vehicle
-and regular shift remain payable. This intentionally does not manufacture a
-demo saving by changing the seed, dropping sunk costs, or weakening the comparison.
+**8/28 days**, outsourcing **92 stops** and saving **$3,906.14**. October 6 remains
+unchanged. On October 7, for example, fleet stops fall from 100 to 82 and 18 stops
+are contracted; fleet cost falls from $13,458.81 to $10,326.27, carrier cost becomes
+$2,502.16, and total cost falls to $12,828.43 (a $630.38 saving). Revenue remains
+$49,506.25 and no deliveries are unserved. The earlier 0/28 expectation depended
+on retaining costs for empty routes; allowing the full used-route cost to be
+avoided makes whole-route swaps worthwhile on eight days without changing rates
+or seed data.
+Across the horizon, total cost falls from **$333,555.52 to $329,649.38**:
+fleet cost becomes $316,763.03 and carrier cost $12,886.35. Revenue remains
+$1,178,887.50 and unserved deliveries remain zero.
 The focused tests demonstrate positive swaps, shared-minimum batching and cases
 that remain on the fleet.
 
 Reproduce the audit (local only):
 
 ```sh
-DEMO_DATE_ANCHOR=2026-10-06 /Users/josh.melton/Desktop/route-scenario-modeling/.venv/bin/python -m pytest backend/tests/test_carrier_aware_demo.py -q -s
+RUN_CARRIER_AWARE_DEMO=1 DEMO_DATE_ANCHOR=2026-10-06 /Users/josh.melton/Desktop/route-scenario-modeling/.venv/bin/python -m pytest backend/tests/test_carrier_aware_demo.py -q -s
 ```
 
 The audit prints the before/after counts and costs for every day, plus its firing
-frequency. OR-Tools uses a timed search, so a new local solve can find a slightly
+frequency. This slow audit is opt-in and skipped by the default backend gate.
+The off-path regression golden in `backend/tests/fixtures/carrier_choice_off.json`
+records routes, KPIs and costs generated by the overflow service at base `5da2c74`.
+OR-Tools uses a timed search, so a new local solve can find a slightly
 different fleet plan; each recorded off/on pair still shares exactly one source.
 
 ## Change boundary

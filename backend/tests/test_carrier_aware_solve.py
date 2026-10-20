@@ -1,4 +1,6 @@
 from copy import deepcopy
+import json
+from pathlib import Path
 
 import pytest
 
@@ -10,9 +12,10 @@ from route_opt.baseline import build_route_from_ordered_stops, summarize_kpis
 from route_opt.cost import CostParameters
 
 
-def fleet_input():
-    solved, rows = inputs(2)
-    rows["dim_network_customers"][1].update(lat=40, lng=-87)
+def fleet_input(count=2):
+    solved, rows = inputs(count)
+    if count == 2:
+        rows["dim_network_customers"][1].update(lat=40, lng=-87)
     stops = [{**customer, "customer_name": customer["customer_id"], "demand_cases": 5}
              for customer in rows["dim_network_customers"]]
     route, sequence = build_route_from_ordered_stops(
@@ -21,8 +24,8 @@ def fleet_input():
     route["stops"] = [{**stop, "stop_id": stop["customer_id"],
                        "delivery_day": DATE, "location": {"lat": stop["lat"], "lng": stop["lng"]}}
                       for stop in sequence]
-    route["total_revenue"] = 62.5
-    solved.update(routes=[route], kpis=summarize_kpis([route]), routed_cases=10,
+    route["total_revenue"] = count * 5 * 6.25
+    solved.update(routes=[route], kpis=summarize_kpis([route]), routed_cases=count * 5,
                   unserved_cases=0, unserved_orders=[])
     solved["routes"] = [{key: value for key, value in route.items() if key in Route.model_fields}]
     solved["routes"][0]["stops"] = [{key: value for key, value in stop.items() if key in Stop.model_fields}
@@ -34,6 +37,41 @@ def run(solved, rows, details, **kwargs):
     apply_contracted_overflow(solved, network_rows=rows, depot_id="DPT", service_date=DATE,
                               cost_parameters=CostParameters(), contract_details=details, enabled=True,
                               allow_cost_based_outsourcing=True, **kwargs)
+
+
+@pytest.mark.parametrize("count,rate", [(2, 10), (7, 100)])
+def test_whole_route_avoids_all_vehicle_shift_and_mileage_costs(count, rate):
+    solved, rows = fleet_input(count)
+    original_cost = solved["kpis"]["cost_breakdown"]["total_cost"]
+    run(solved, rows, [contract(rate_per_stop=rate)])
+    assert solved["routes"] == []
+    assert solved["fleet_cost"] == 0
+    assert solved["outsourcing_savings"] == pytest.approx(original_cost - count * rate)
+    for field in ("route_count", "driver_count", "vehicle_count"):
+        assert solved["kpis"][field] == 0
+
+
+@pytest.mark.parametrize("matrix_miles", [0.1, 1000])
+def test_existing_overflow_uses_consistent_basis_and_never_exceeds_off_path(matrix_miles):
+    solved, rows = fleet_input()
+    rows["dim_network_customers"].append({**rows["dim_network_customers"][0], "customer_id": "C2"})
+    solved["unserved_orders"] = [{"customer_id": "C2", "demand_cases": 5, "reason": "no_vehicle_available"}]
+    solved.update(assigned_cases=15, unserved_cases=5)
+    nodes = ["DPT:DEPOT", "C0", "C1", "C2"]
+    solved["_cost_based_matrix"] = [
+        {"origin_id": origin, "destination_id": destination,
+         "distance_miles": matrix_miles, "duration_minutes": 1}
+        for origin in nodes for destination in nodes]
+    before = deepcopy(solved)
+    details = [contract(rate_per_stop=1000, rate_per_mile=100)]
+    apply_contracted_overflow(before, network_rows=rows, depot_id="DPT", service_date=DATE,
+                              cost_parameters=CostParameters(), contract_details=details, enabled=True)
+    run(solved, rows, details)
+    assert solved["outsourced_by_cost_deliveries"] == 0
+    assert solved["outsourcing_savings"] == 0
+    assert solved["kpis"]["cost_breakdown"]["total_cost"] <= before["kpis"]["cost_breakdown"]["total_cost"]
+    if matrix_miles == 1000:
+        assert solved["contracted_cost"] == before["contracted_cost"]
 
 
 def test_cheaper_carrier_is_deterministic_feasible_and_preserves_revenue():
@@ -81,15 +119,11 @@ def test_capacity_prevents_outsourcing():
 
 def test_option_off_unchanged():
     solved, rows = fleet_input()
-    original = deepcopy(solved)
-    fleet_before = deepcopy(solved)
     arguments = dict(network_rows=rows, depot_id="DPT", service_date=DATE,
                      cost_parameters=CostParameters(), contract_details=[contract()], enabled=True)
     apply_contracted_overflow(solved, **arguments)
-    apply_contracted_overflow(original, **arguments, allow_cost_based_outsourcing=False)
-    assert solved == original
-    for field in ("routes", "kpis", "routed_cases", "unserved_cases", "unserved_orders"):
-        assert solved[field] == fleet_before[field]
+    golden = json.loads((Path(__file__).parent / "fixtures/carrier_choice_off.json").read_text())
+    assert {field: solved[field] for field in golden} == golden
     assert "allow_cost_based_outsourcing" not in solved["execution"]
 
 
@@ -180,7 +214,7 @@ def test_service_persists_and_rolls_up_choice_without_changing_default(monkeypat
     assert service.get_day(plan.plan_set_id, DATE_ONE).default_result.model_dump(mode="json") == baseline
 
 
-def test_solve_matrix_prices_both_sides_and_keeps_empty_shift_costs():
+def test_solve_matrix_prices_both_sides_and_avoids_empty_route_costs():
     from route_opt.matrix import build_travel_matrix
 
     solved, rows = fleet_input()
@@ -194,7 +228,7 @@ def test_solve_matrix_prices_both_sides_and_keeps_empty_shift_costs():
     assert solved["execution"]["outsourcing_mileage_basis"] == "solve_matrix"
     assert solved["outsourced_by_cost_deliveries"] > 0
     assert all(quote["mileage_source"] == "solve_matrix" for quote in solved["contracted_quotes"])
-    assert solved["fleet_cost"] >= CostParameters().fixed_truck_daily_cost + 640
+    assert solved["fleet_cost"] == 0
     assert solved["kpis"]["cost_breakdown"]["total_cost"] <= original_cost
 
 
@@ -245,7 +279,10 @@ def test_nonmetric_matrix_shortcut_cannot_create_late_or_overlong_fleet_route():
          "duration_minutes": 800 if (origin, destination) == ("DPT:DEPOT", "C1") else
          0 if origin == destination else 1}
         for origin in nodes for destination in nodes]
-    run(solved, rows, [contract()])
+    detail = contract()
+    detail["capacity_commitments"] = [{"name": "Capacity", "rule_id": "CAP", "capacity_quantity": 1,
+                                       "current_utilization": 0, "unit": "stops", "period": "month"}]
+    run(solved, rows, [detail])
     assert solved["outsourced_by_cost_deliveries"] == 0
     assert solved["routes"] == original_routes
 
