@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from datetime import date
 from dataclasses import dataclass
 from typing import Any, Mapping, cast
@@ -176,6 +177,7 @@ def rate_network_flows(
     tariff_by_date_lane: Mapping[tuple[str, str], tuple[float, str]],
     *,
     contracts: list[RateContractDetail],
+    use_delivery_contract_rates: bool = False,
 ) -> NetworkRatingResult:
     """Rate flows comparably using caller-pinned contracts and tariffs."""
 
@@ -184,6 +186,19 @@ def rate_network_flows(
     cost_rows: list[dict[str, Any]] = []
     charges: list[NetworkFlowChargeDetail] = []
     missing: set[str] = set()
+    demand: dict[tuple[str, str, str, str], list[float]] = defaultdict(list)
+    delivery_contracts: dict[str, list[RateContractDetail]] = defaultdict(list)
+    customers = {str(row["customer_id"]): row for row in rows.get("dim_network_customers", [])}
+    if use_delivery_contract_rates:
+        for row in rows.get("demand_plan_daily", []):
+            if float(row["demand_units"]) <= 0:
+                continue
+            for plan in {str(row["demand_plan_version_id"]), ""}:
+                for customer in {str(row["customer_id"]), ""}:
+                    demand[(plan, str(row["service_date"])[:10], str(row["depot_id"]), customer)].append(float(row["demand_units"]))
+        for contract in contracts:
+            for depot in {rule.origin for rule in contract.lane_rates if rule.lane_type == "DELIVERY"}:
+                delivery_contracts[depot].append(contract)
 
     for flow in flow_rows:
         assigned = int(flow["assigned_units"])
@@ -199,6 +214,85 @@ def rate_network_flows(
             (service_date, lane_id), (0.0, "")
         )
         tariff_total = round(assigned * tariff_rate, 2)
+
+        if use_delivery_contract_rates and str(lane["lane_type"]) == "DELIVERY" and assigned > 0:
+            depot = str(lane["origin_endpoint_id"])
+            destination = str(lane["destination_endpoint_id"])
+            customer = customers.get(destination, {})
+            destinations = list(dict.fromkeys(str(value) for value in (
+                destination, customer.get("market_id"), customer.get("sales_territory"),
+            ) if value))
+            prefix = (str(flow.get("demand_plan_version_id", "")), service_date, depot)
+            quantities = demand.get((*prefix, destination), [])
+            demand_source = "lane_demand"
+            if not quantities:
+                quantities = demand.get((*prefix, ""), [])
+                demand_source = "depot_average"
+            assumptions = None
+            candidates = []
+            if quantities:
+                cases_per_stop = sum(quantities) / len(quantities)
+                cases = max(1, round(6 * cases_per_stop))
+                assumptions = {
+                    "stops": 6, "miles": 40, "cases": cases,
+                    "cases_per_stop": cases_per_stop,
+                    "cases_per_stop_source": demand_source,
+                    "period_volume": 1, "commitment_policy": "honor",
+                }
+                for contract in delivery_contracts.get(depot, []) + delivery_contracts.get("*", []):
+                    if contract_status(contract.model_dump(mode="json"), service_date) != "published":
+                        continue
+                    delivery_detail = contract.model_dump(mode="json")
+                    delivery_detail["lane_rates"] = [rule for rule in delivery_detail["lane_rates"] if rule["lane_type"] == "DELIVERY"]
+                    for quote_destination in destinations:
+                        quote = quote_contract(delivery_detail, {
+                            "service_date": service_date, "origin": depot, "destination": quote_destination,
+                            "stops": 6, "miles": 40, "cases": cases,
+                            "period_volume": 1, "commitment_policy": "honor",
+                        })
+                        if quote["matched_lane_rule_id"]:
+                            candidates.append((float(quote["total_cost"]) / cases, contract, quote))
+            cost_per_case = None
+            matched_lane_rule_id = None
+            rate_source = "delivery_planning_fallback"
+            if candidates:
+                cost_per_case, contract, quote = min(candidates, key=lambda candidate: (
+                    candidate[0], candidate[1].contract_id, candidate[1].version.version_id,
+                ))
+                rate_source = "delivery_contract"
+                contract_id = contract.contract_id
+                contract_version_id = contract.version.version_id
+                snapshot_id = str(quote["rate_book_snapshot_id"])
+                matched_lane_rule_id = str(quote["matched_lane_rule_id"])
+                assumptions["origin"] = depot
+                assumptions["destination"] = str(quote["destination"])
+                scale = assigned / assumptions["cases"]
+                charge_lines = [RateChargeLine.model_validate({
+                    **line, "quantity": float(line["quantity"]) * scale,
+                    "amount": round(float(line["amount"]) * scale, 2),
+                    "formula": f"{assigned} cases / {assumptions['cases']} synthetic route cases × ({line['formula']})",
+                }) for line in quote["charge_lines"]]
+                freight_total = round(assigned * cost_per_case, 2)
+                if charge_lines:
+                    largest = max(charge_lines, key=lambda line: line.amount)
+                    largest.amount = round(largest.amount + freight_total - sum(line.amount for line in charge_lines), 2)
+            else:
+                missing.add(lane_id)
+                charge_lines = [RateChargeLine(
+                    category="mileage", label="Planning delivery estimate",
+                    formula=f"max(35, {lane['distance_miles']} miles × 3 + {assigned} cases × 0.55)",
+                    quantity=1, unit="lane", rate=freight_total, amount=freight_total,
+                    rule_id="PLANNING_DELIVERY_FALLBACK",
+                )]
+            charges.append(NetworkFlowChargeDetail(
+                service_date=service_date, lane_id=lane_id, assigned_units=assigned, loads=0,
+                rate_source=rate_source, contract_id=contract_id, contract_version_id=contract_version_id,
+                rate_book_snapshot_id=snapshot_id, matched_lane_rule_id=matched_lane_rule_id,
+                cost_per_case=cost_per_case, synthetic_route_assumptions=assumptions,
+                freight_total=freight_total, tariff_total=tariff_total,
+                tariff_rule_ids=[tariff_rule_id] if tariff_rule_id else [],
+                total_cost=round(freight_total + tariff_total, 2), charge_lines=charge_lines,
+            ))
 
         if str(lane["lane_type"]) == "LINEHAUL" and assigned > 0:
             is_scenario_air_transfer = (

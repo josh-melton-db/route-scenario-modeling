@@ -945,6 +945,7 @@ class NetworkDcTransferRequest(StrictModel):
 
 
 class NetworkScenarioAssumptions(StrictModel):
+    use_delivery_contract_rates: bool = False
     disabled_facility_ids: list[str] = Field(default_factory=list)
     disabled_lane_ids: list[str] = Field(default_factory=list)
     lane_cost_adjustments_pct: dict[str, float] = Field(default_factory=dict)
@@ -1064,7 +1065,10 @@ class NetworkFlowChargeDetail(StrictModel):
     lane_id: str
     assigned_units: int = Field(ge=0)
     loads: int = Field(ge=0)
-    rate_source: Literal["governed_contract", "planning_fallback"]
+    rate_source: Literal["governed_contract", "planning_fallback", "delivery_contract", "delivery_planning_fallback"]
+    matched_lane_rule_id: str | None = None
+    cost_per_case: float | None = None
+    synthetic_route_assumptions: dict[str, Any] | None = None
     contract_id: str | None = None
     contract_version_id: str | None = None
     rate_book_snapshot_id: str | None = None

@@ -265,6 +265,7 @@ export interface NetworkDcTransferRequest {
 }
 
 export interface NetworkScenarioAssumptions {
+  use_delivery_contract_rates?: boolean
   disabled_facility_ids: string[]
   disabled_lane_ids: string[]
   lane_cost_adjustments_pct: Record<string, number>
@@ -361,7 +362,20 @@ export interface NetworkFlowChargeDetail {
   lane_id: string
   assigned_units: number
   loads: number
-  rate_source: 'governed_contract' | 'planning_fallback'
+  rate_source: 'governed_contract' | 'planning_fallback' | 'delivery_contract' | 'delivery_planning_fallback'
+  matched_lane_rule_id?: string | null
+  cost_per_case?: number | null
+  synthetic_route_assumptions?: {
+    origin?: string
+    destination?: string
+    stops: number
+    miles: number
+    cases: number
+    cases_per_stop: number
+    cases_per_stop_source: 'lane_demand' | 'depot_average'
+    period_volume: number
+    commitment_policy: 'honor'
+  } | null
   contract_id: string | null
   contract_version_id: string | null
   rate_book_snapshot_id: string | null

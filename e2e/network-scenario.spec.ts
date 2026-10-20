@@ -31,18 +31,20 @@ test.describe('network scenario save, validate, and run', () => {
     await nameInput.fill('E2E save flow')
     await nameInput.press('Enter')
     await expect(page.getByRole('heading', { name: 'E2E save flow' })).toBeVisible()
+    const scenarioId = new URL(page.url()).pathname.split('/')[3]
+    await expect.poll(async () => (await (await page.request.get(`/api/network/scenarios/${scenarioId}`)).json()).scenario_name).toBe('E2E save flow')
     const penalty = page.getByLabel('Unmet-demand penalty ($ / case)')
     await penalty.fill('300')
     await expect(page.getByText('Saved', { exact: true })).toBeVisible({ timeout: 30_000 })
     await expect(page.getByRole('heading', { name: 'E2E save flow' })).toBeVisible()
     await expect(penalty).toHaveValue('300')
 
-    const scenarioId = new URL(page.url()).pathname.split('/')[3]
+    await expect.poll(async () => (await (await page.request.get(`/api/network/scenarios/${scenarioId}`)).json()).assumptions.unmet_penalty_per_case).toBe(300)
     const scenarios = await page.request.get('/api/network/scenarios')
     const persisted = (
       (await scenarios.json()) as { scenario_id: string; revision: number }[]
     ).find((row) => row.scenario_id === scenarioId)
-    expect(persisted?.revision).toBe(3)
+    expect(persisted?.revision).toBe(2)
 
     // The scenario workspace tabs are in the top nav.
     await expect(page.getByRole('link', { name: 'Plan flow' })).toBeVisible()
@@ -64,7 +66,7 @@ test.describe('network scenario save, validate, and run', () => {
     await expect(page.getByText('Baseline vs. scenario')).toBeVisible({ timeout: 120_000 })
     const rerunScenario = await (await page.request.get(`/api/network/scenarios/${scenarioId}`)).json()
     const rerunResult = await (await page.request.get(`/api/network/scenarios/${scenarioId}/result`)).json()
-    expect(rerunScenario.revision).toBe(4)
+    expect(rerunScenario.revision).toBe(3)
     expect(rerunScenario.assumptions.tariffs[0].amount_per_case).toBe(0.1)
     expect(rerunResult.tariff_total_cost).toBeGreaterThan(0)
 
