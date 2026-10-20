@@ -125,6 +125,10 @@ class DatedRouteExecutor:
                 "time_limit_seconds": 2,
                 "input_hash": _stable_hash({"depot_id": depot_id, "service_date": service_date, "fleet": fleet}),
             }
+            _, solved["_cost_based_matrix"] = build_travel_matrix(
+                scenario_id=scenario_id, depot=list(targets["planning_depots"])[0],
+                stops=list(targets["planning_customers"]), delivery_day=service_date, params=cost_parameters,
+            )
             return solved
         if mode not in {"strict_serving_road", "serving_regional", "local_road"}:
             raise RouteExecutionError(f"Unsupported route execution mode {mode!r}.")
@@ -275,6 +279,7 @@ class DatedRouteExecutor:
             "serving_model": serving_metadata or None,
             "road_unreachable_customers": [order["customer_id"] for order in unreachable_orders],
         }
+        solved["_cost_based_matrix"] = matrix
         return solved
 
     def _road_matrix(
@@ -435,6 +440,7 @@ class DatedRouteExecutor:
                 ],
             },
             "routes": [route for child in child_results for route in child.get("routes", [])],
+            "_cost_based_matrix": [row for child in child_results for row in child.get("_cost_based_matrix", [])],
             "kpis": _merge_partition_kpis([child["kpis"] for child in child_results]),
             "assigned_cases": assigned_cases,
             "routed_cases": routed_cases,

@@ -9,6 +9,7 @@ from route_opt.baseline import build_route_from_ordered_stops
 from route_opt.cost import CostParameters
 from route_opt.pricing import revenue_for_cases
 from route_opt.rates import contract_status, quote_contract, quote_graduated_contract
+from ..models import Route, Stop
 
 
 def rate_book_content_hash(details: list[dict]) -> str:
@@ -36,8 +37,20 @@ def apply_contracted_overflow(
     cost_parameters: CostParameters, contract_details: list[dict], enabled: bool,
     snapshot_hash: str | None = None,
     projected_period_volume: float | None = None,
+    allow_cost_based_outsourcing: bool = False,
+    fleet: list[dict] | None = None,
+    travel_matrix: list[dict] | None = None,
 ) -> None:
     if not enabled:
+        return
+    if allow_cost_based_outsourcing:
+        from .depot_carrier_choice import apply_carrier_choice
+        apply_carrier_choice(
+            solved, network_rows=network_rows, depot_id=depot_id, service_date=service_date,
+            cost_parameters=cost_parameters, contract_details=contract_details,
+            snapshot_hash=snapshot_hash, projected_period_volume=projected_period_volume,
+            fleet=fleet,
+        )
         return
     details_by_contract = {}
     for detail in contract_details:
@@ -91,6 +104,7 @@ def apply_contracted_overflow(
                             "receiving_window_end": customer.get("receiving_window_end") or "18:00",
                             "service_minutes": customer.get("service_minutes") or 20}))
     quotes = []
+    matrix = {(row["origin_id"], row["destination_id"]): row for row in travel_matrix or []}
     contracted = []
     versions = set()
     contract_usage = defaultdict(int)
@@ -105,6 +119,12 @@ def apply_contracted_overflow(
                 depot=depot, ordered_stops=chunk, delivery_day=service_date, params=cost_parameters,
                 vehicle_id="CONTRACTED", driver_id="CONTRACTED",
             )
+            nodes = [f"{depot_id}:DEPOT", *[stop["customer_id"] for stop in chunk], f"{depot_id}:DEPOT"]
+            arcs = [matrix.get((origin, destination)) for origin, destination in zip(nodes, nodes[1:])]
+            mileage_source = "classic_fallback_haversine_circuity"
+            if matrix and all(arc is not None for arc in arcs):
+                route["total_miles"] = round(sum(float(arc["distance_miles"]) for arc in arcs), 3)
+                mileage_source = "solve_matrix"
             accessorials = set()
             for stop in chunk:
                 handling = str(stop.get("special_handling", "")).casefold()
@@ -142,15 +162,42 @@ def apply_contracted_overflow(
                 sum(stop["demand_cases"] for stop in chunk) if tier_unit == "cases" else len(chunk)
             )
             quote.update(stops=len(chunk), cases=sum(stop["demand_cases"] for stop in chunk),
-                         miles=route["total_miles"], mileage_source="classic_fallback_haversine_circuity")
+                         miles=route["total_miles"], mileage_source=mileage_source)
             quotes.append(quote)
             versions.add((quote["contract_id"], quote["contract_version_id"]))
             for order in chunk_orders:
                 contracted.append({
                     **{field: value for field, value in order.items() if field != "reason"},
+                    "decision_reason": order.get("decision_reason", "overflow"),
                     **{field: quote[field] for field in ("quote_id", "contract_id", "contract_version_id",
                        "matched_lane", "matched_lane_rule_id", "charge_lines", "rate_book_snapshot_id")},
                 })
+    solved["contracted_routes"] = []
+    for index, quote in enumerate(quotes, start=1):
+        orders = [order for order in contracted if order["quote_id"] == quote["quote_id"]]
+        stops = [{**customers[order["customer_id"]], **order,
+                  "customer_name": customers[order["customer_id"]].get("customer_name") or order["customer_id"],
+                  "receiving_window_start": customers[order["customer_id"]].get("receiving_window_start") or "06:30",
+                  "receiving_window_end": customers[order["customer_id"]].get("receiving_window_end") or "18:00",
+                  "service_minutes": customers[order["customer_id"]].get("service_minutes") or 20}
+                 for order in orders]
+        route, sequence = build_route_from_ordered_stops(
+            scenario_id="contracted-overflow", route_number=index, depot=depot,
+            ordered_stops=stops, delivery_day=service_date, params=cost_parameters,
+            vehicle_id="CONTRACTED", driver_id="CONTRACTED")
+        route.update(
+            route_id=f"CONTRACTED-{index:03d}",
+            route_name=f"Contracted {index}", fulfillment_method="carrier", total_cost=quote["total_cost"],
+            total_miles=quote["miles"],
+            contract_version_id=quote["contract_version_id"], carrier_charge_lines=quote["charge_lines"],
+            decision_reason=", ".join(sorted({order["decision_reason"] for order in orders})),
+            stops=[{**stop, "stop_id": orders[position].get("stop_id") or stop["customer_id"],
+                    "location": {"lat": stop["lat"], "lng": stop["lng"]}, "delivery_day": service_date}
+                   for position, stop in enumerate(sequence)])
+        route = {key: value for key, value in route.items() if key in Route.model_fields}
+        route["stops"] = [{key: value for key, value in stop.items() if key in Stop.model_fields}
+                          for stop in route["stops"]]
+        solved["contracted_routes"].append(route)
     fleet_cost = solved["kpis"]["cost_breakdown"]["total_cost"]
     contracted_cost = round(sum(quote["total_cost"] for quote in quotes), 2)
     contracted_revenue = revenue_for_cases(sum(order["demand_cases"] for order in contracted))

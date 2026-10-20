@@ -944,6 +944,8 @@ export interface DepotPlanCoverage {
 }
 
 export interface DepotPlanDaySummary {
+  outsourced_by_cost_deliveries?: number
+  outsourcing_savings?: number
   contracted_cost?: number | null
   contracted_revenue?: number | null
   total_revenue?: number | null
@@ -963,12 +965,16 @@ export interface DepotPlanDaySummary {
 }
 
 export interface DepotPlanDayResult {
+  contracted_routes?: Route[]
+  outsourced_by_cost_deliveries?: number
+  outsourcing_savings?: number
   contracted_revenue?: number
   fleet_cost?: number | null
   contracted_cost?: number
   contracted_deliveries?: number
   contracted_cases?: number
   contracted_orders?: Array<{
+    decision_reason?: 'outsourced_by_cost' | 'overflow'
     order_id?: string
     stop_id?: string
     customer_id: string
@@ -1020,11 +1026,16 @@ export interface DepotPlanDayResult {
     contract_snapshots?: RateContractDetail[]
     rate_book_snapshot_hash?: string
     allow_contracted_overflow?: boolean
+    allow_cost_based_outsourcing?: boolean
+    outsourcing_mileage_basis?: string
+    outsourcing_fixed_cost_policy?: string
   } | null
   created_at: string
 }
 
 export interface DepotPlanSet {
+  outsourced_by_cost_deliveries?: number
+  outsourcing_savings?: number
   rates_locked_at?: string | null
   rate_book_snapshot_hash?: string | null
   contracted_cost?: number
@@ -1061,6 +1072,7 @@ export type DepotPlanDailyChange =
   | { kind: 'facility_move'; new_depot_location: LatLng; preserve_service_windows: boolean }
 
 export interface DepotPlanOverrideRequest {
+  allow_cost_based_outsourcing?: boolean
   allow_contracted_overflow?: boolean
   projected_period_volume?: number | null
   route_scenario_id: string

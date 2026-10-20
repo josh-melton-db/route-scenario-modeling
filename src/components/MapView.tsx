@@ -33,6 +33,7 @@ interface DraftStopDatum extends DeliveryDraft {
 }
 
 interface MapViewProps {
+  datedContractedStyle?: boolean
   depot: Depot
   routes: Route[]
   selectedRouteId: string | null
@@ -85,6 +86,7 @@ export default function MapView({
   viewState,
   onViewStateChange,
   editable = false,
+  datedContractedStyle = false,
   draftStops = [],
   selectedDraftIndex = null,
   onMapClick,
@@ -114,10 +116,10 @@ export default function MapView({
         route_id: route.route_id,
         route_name: route.route_name,
         path: route.path.map((point) => [point.lng, point.lat] as [number, number]),
-        color: routeColor(index),
+        color: datedContractedStyle && route.fulfillment_method === 'carrier' ? [14, 165, 233] : routeColor(index),
         fulfillment_method: route.fulfillment_method,
       })),
-    [routes],
+    [datedContractedStyle, routes],
   )
 
   const stops = useMemo<StopDatum[]>(
@@ -127,10 +129,10 @@ export default function MapView({
           ...stop,
           route_id: route.route_id,
           route_name: route.route_name,
-          color: routeColor(index),
+          color: datedContractedStyle && route.fulfillment_method === 'carrier' ? [14, 165, 233] : routeColor(index),
         })),
       ),
-    [routes],
+    [datedContractedStyle, routes],
   )
 
   const draftData = useMemo<DraftStopDatum[]>(
@@ -152,7 +154,7 @@ export default function MapView({
         data: paths,
         getPath: (datum) => datum.path,
         getColor: (datum) => {
-          const color: [number, number, number] = datum.fulfillment_method === 'carrier' ? [249, 115, 22] : datum.color
+          const color: [number, number, number] = !datedContractedStyle && datum.fulfillment_method === 'carrier' ? [249, 115, 22] : datum.color
           return isSelected(datum.route_id) ? [...color, 230] as [number, number, number, number] : [...color, 60] as [number, number, number, number]
         },
         widthMinPixels: 3,
@@ -162,7 +164,7 @@ export default function MapView({
         jointRounded: true,
         pickable: !editable,
         updateTriggers: {
-          getColor: [selectedRouteId],
+          getColor: [datedContractedStyle, selectedRouteId],
           getWidth: [selectedRouteId],
         },
       }),
@@ -259,7 +261,7 @@ export default function MapView({
           ]
         : []),
     ]
-  }, [depot, draftData, editable, paths, proposedDepotLocation, selectedDraftIndex, selectedRouteId, selectedCustomerId, stops])
+  }, [datedContractedStyle, depot, draftData, editable, paths, proposedDepotLocation, selectedDraftIndex, selectedRouteId, selectedCustomerId, stops])
 
   return (
     <div className="relative h-full w-full overflow-hidden rounded-lg border border-border bg-card">

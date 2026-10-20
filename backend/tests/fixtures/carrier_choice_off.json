@@ -1,0 +1,122 @@
+{
+  "routes": [
+    {
+      "route_id": "RTE-001",
+      "scenario_id": "test",
+      "route_name": "Route 1",
+      "depot_id": "DPT",
+      "driver_id": "D",
+      "driver_name": "D",
+      "vehicle_id": "V",
+      "delivery_day": "2026-10-06",
+      "path": [
+        {
+          "lat": 39.0,
+          "lng": -86.0
+        },
+        {
+          "lat": 39.1,
+          "lng": -86.1
+        },
+        {
+          "lat": 40.0,
+          "lng": -87.0
+        },
+        {
+          "lat": 39.0,
+          "lng": -86.0
+        }
+      ],
+      "total_miles": 226.9,
+      "drive_minutes": 358,
+      "service_minutes": 20,
+      "total_cases": 10,
+      "capacity_cases": 1000,
+      "capacity_utilization_pct": 1.0,
+      "driver_utilization_pct": 78.8,
+      "overtime_minutes": 0,
+      "missed_windows": 0,
+      "late_minutes": 0,
+      "total_cost": 1660.7,
+      "stops": [
+        {
+          "delivery_day": "2026-10-06",
+          "customer_id": "C0",
+          "customer_name": "C0",
+          "sequence": 1,
+          "demand_cases": 5,
+          "service_minutes": 10,
+          "time_window_start": "06:30",
+          "time_window_end": "18:00",
+          "arrival_time": "06:48",
+          "departure_time": "06:58",
+          "window_risk": "none",
+          "is_new_customer": false,
+          "stop_id": "C0",
+          "location": {
+            "lat": 39.1,
+            "lng": -86.1
+          }
+        },
+        {
+          "delivery_day": "2026-10-06",
+          "customer_id": "C1",
+          "customer_name": "C1",
+          "sequence": 2,
+          "demand_cases": 5,
+          "service_minutes": 10,
+          "time_window_start": "06:30",
+          "time_window_end": "18:00",
+          "arrival_time": "09:39",
+          "departure_time": "09:49",
+          "window_risk": "none",
+          "is_new_customer": false,
+          "stop_id": "C1",
+          "location": {
+            "lat": 40.0,
+            "lng": -87.0
+          }
+        }
+      ]
+    }
+  ],
+  "kpis": {
+    "route_count": 1,
+    "driver_count": 1,
+    "vehicle_count": 1,
+    "total_miles": 226.9,
+    "drive_minutes": 358,
+    "service_minutes": 20,
+    "waiting_minutes": 0,
+    "total_cases": 10,
+    "avg_stops_per_route": 2,
+    "avg_capacity_utilization_pct": 1.0,
+    "avg_driver_utilization_pct": 78.8,
+    "overtime_minutes": 0,
+    "missed_windows": 0,
+    "late_minutes": 0,
+    "total_revenue": 62.5,
+    "profit": -1598.2,
+    "cost_breakdown": {
+      "mileage_cost": 680.7,
+      "labor_cost": 640.0,
+      "overtime_cost": 0.0,
+      "fixed_vehicle_cost": 340.0,
+      "sla_penalty_cost": 0.0,
+      "carrier_linehaul_cost": 0.0,
+      "carrier_lane_cost": 0.0,
+      "carrier_stop_cost": 0.0,
+      "carrier_minimum_adjustment": 0.0,
+      "fuel_surcharge_cost": 0.0,
+      "accessorial_cost": 0.0,
+      "volume_tier_adjustment": 0.0,
+      "commitment_adjustment": 0.0,
+      "total_cost": 1660.7
+    }
+  },
+  "routed_cases": 10,
+  "unserved_cases": 0,
+  "unserved_orders": [],
+  "fleet_cost": 1660.7,
+  "contracted_cost": 0
+}

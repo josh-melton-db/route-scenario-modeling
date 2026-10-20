@@ -6,6 +6,7 @@ import { routeColorCss } from '@/lib/routeColors'
 import { cn } from '@/lib/utils'
 
 interface RouteSidebarProps {
+  datedContractedStyle?: boolean
   routes: Route[]
   selectedRouteId: string | null
   onSelectRoute: (routeId: string | null) => void
@@ -19,6 +20,7 @@ export default function RouteSidebar({
   onSelectRoute,
   title = 'Routes',
   headerAction,
+  datedContractedStyle = false,
 }: RouteSidebarProps) {
   const totals = routes.reduce(
     (acc, route) => {
@@ -65,10 +67,11 @@ export default function RouteSidebar({
               <div className="flex items-center gap-2">
                 <span
                   className="h-2.5 w-2.5 rounded-full"
-                  style={{ backgroundColor: routeColorCss(index) }}
+                  style={{ backgroundColor: datedContractedStyle && route.fulfillment_method === 'carrier' ? '#0ea5e9' : routeColorCss(index) }}
                 />
                 <RouteIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="text-sm font-semibold">{route.route_name}</span>
+                {datedContractedStyle && route.fulfillment_method === 'carrier' && <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] text-sky-500">Contracted</span>}
                 <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
                   {route.driver_name}
                 </span>
@@ -82,6 +85,11 @@ export default function RouteSidebar({
               </div>
 
               {isSelected && <ol className="mt-3 space-y-1.5">
+                {datedContractedStyle && route.fulfillment_method === 'carrier' && <li className="text-sky-500">
+                  {route.decision_reason?.includes('outsourced_by_cost') && 'Outsourced by cost'}
+                  {route.decision_reason?.includes('outsourced_by_cost') && route.decision_reason.includes('overflow') && ' · '}
+                  {route.decision_reason?.includes('overflow') && 'Overflow'}
+                </li>}
                 {route.stops.map((stop) => (
                   <li
                     key={stop.stop_id}

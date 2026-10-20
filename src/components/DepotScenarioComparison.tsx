@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import type { DepotPlanDayResult, DepotPlanSet } from '@/api/types'
 import { useDepotPlanDay } from '@/api/queries'
 import MapView, { type ViewState } from './MapView'
 import KpiDeltaGrid from './KpiDeltaGrid'
+import RouteSidebar from './RouteSidebar'
 import { kpiDeltas } from '@/lib/depotKpiDeltas'
 
 const reasons: Record<string, string> = {
@@ -32,6 +33,10 @@ export default function DepotScenarioComparison({ plan, serviceDate, leftId, rig
     return { pending, result: pending ? null : result, error: query.error ? String(query.error) : data?.error }
   }
   const a = state(left, leftId), b = state(right, rightId)
+  const displayRoutes = useMemo(() => ({
+    left: [...(a.result?.routes ?? []), ...(a.result?.contracted_routes ?? [])],
+    right: [...(b.result?.routes ?? []), ...(b.result?.contracted_routes ?? [])],
+  }), [a.result, b.result])
   function panel(side: 'left' | 'right', id: string, value: typeof a) {
     return <section className="min-w-0 rounded-lg border border-border bg-card p-3">
       <label className="text-xs text-muted-foreground">{side === 'left' ? 'First scenario' : 'Compare with'}
@@ -42,7 +47,10 @@ export default function DepotScenarioComparison({ plan, serviceDate, leftId, rig
       </label>
       {value.pending ? <div role="status" className="flex h-[480px] items-center justify-center gap-2"><Loader2 className="h-5 w-5 animate-spin" />Optimizing…</div> : value.error ? <p role="alert" className="text-destructive">{value.error}</p> : value.result ? <>
         <p className="mb-2 text-xs text-muted-foreground">{serviceDate} routes</p>
-        <div className="h-[480px]"><MapView depot={value.result.depot ?? plan.depot} routes={value.result.routes} selectedRouteId={selectedRoute} onSelectRoute={setSelectedRoute} viewState={viewState} onViewStateChange={setViewState} /></div>
+        <div className="h-[480px]"><MapView datedContractedStyle depot={value.result.depot ?? plan.depot} routes={displayRoutes[side]} selectedRouteId={selectedRoute} onSelectRoute={setSelectedRoute} viewState={viewState} onViewStateChange={setViewState} /></div>
+        {(value.result.contracted_routes?.length ?? 0) > 0 && <div className="mt-2 max-h-80 overflow-auto rounded-md border border-sky-500/40">
+          <RouteSidebar datedContractedStyle title="Contracted routes · informational" routes={value.result.contracted_routes ?? []} selectedRouteId={selectedRoute} onSelectRoute={setSelectedRoute} />
+        </div>}
         <Unserved result={value.result} />
       </> : <div className="flex h-[480px] items-center justify-center text-sm text-muted-foreground">No optimization saved for this scenario and date. Run it from Scenarios.</div>}
     </section>
@@ -61,13 +69,14 @@ function Unserved({ result }: { result: DepotPlanDayResult }) {
     {showOverflow && <>
       <p>Fleet cost: {money(result.fleet_cost ?? result.kpis.cost_breakdown.total_cost)} · Contracted cost: {money(result.contracted_cost ?? 0)} · Contracted revenue: {money(result.contracted_revenue ?? 0)} · Total cost: {money(result.kpis.cost_breakdown.total_cost)}</p>
       <p>Contracted: {result.contracted_deliveries ?? 0} deliveries · {result.contracted_cases ?? 0} cases</p>
+      <p>Outsourced by cost: {result.outsourced_by_cost_deliveries ?? 0} deliveries · Savings: {money(result.outsourcing_savings ?? 0)}</p>
       {(result.kpis.cost_breakdown.volume_tier_adjustment ?? 0) < 0 && <p>Total tier discount: {money(-result.kpis.cost_breakdown.volume_tier_adjustment)}</p>}
     </>}
     {(result.contracted_orders?.length ?? 0) > 0 && <details className="mt-2">
       <summary>Contracted delivery rates</summary>
       <p className="text-xs text-muted-foreground">Charge lines apply to the shared quote, not separately to each delivery.</p>
       {result.contracted_orders?.map((order, index) => <div key={`${order.quote_id}:${order.order_id ?? index}`} className="mt-2">
-        <p>{order.customer_id} · {order.demand_cases} cases · {order.contract_id} · {order.contract_version_id} · {order.matched_lane}</p>
+        <p>{order.customer_id} · {order.demand_cases} cases · {order.contract_id} · {order.contract_version_id} · {order.matched_lane} · {order.decision_reason === 'outsourced_by_cost' ? 'Outsourced by cost' : 'Overflow'}</p>
         <ul>{order.charge_lines.map((line, index) => <li key={`${line.rule_id}:${index}`}>{line.label}: {money(line.amount)}</li>)}</ul>
       </div>)}
     </details>}
