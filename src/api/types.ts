@@ -930,6 +930,8 @@ export interface DepotPlanCoverage {
 }
 
 export interface DepotPlanDaySummary {
+  contracted_cases?: number | null
+  contracted_deliveries?: number | null
   service_date: string
   status: DepotPlanStatus
   default_status: DepotPlanStatus
@@ -943,6 +945,24 @@ export interface DepotPlanDaySummary {
 }
 
 export interface DepotPlanDayResult {
+  fleet_cost?: number | null
+  contracted_cost?: number
+  contracted_deliveries?: number
+  contracted_cases?: number
+  contracted_orders?: Array<{
+    order_id?: string
+    stop_id?: string
+    customer_id: string
+    demand_cases: number
+    quote_id: string
+    contract_id: string
+    contract_version_id: string
+    matched_lane: string
+    matched_lane_rule_id: string
+    charge_lines: RateChargeLine[]
+    rate_book_snapshot_id: string
+  }>
+  contracted_quotes?: Array<RateQuote & { stops: number; cases: number; miles: number; mileage_source: string }>
   depot?: Depot | null
   result_id: string
   service_date: string
@@ -970,6 +990,8 @@ export interface DepotPlanDayResult {
     approximate?: boolean
     available_vehicle_count?: number
     driver_delta?: number
+    contract_versions?: Array<{ contract_id: string; version_id: string }>
+    allow_contracted_overflow?: boolean
   } | null
   created_at: string
 }
@@ -1007,6 +1029,7 @@ export type DepotPlanDailyChange =
   | { kind: 'facility_move'; new_depot_location: LatLng; preserve_service_windows: boolean }
 
 export interface DepotPlanOverrideRequest {
+  allow_contracted_overflow?: boolean
   route_scenario_id: string
   driver_delta?: number
   allow_overtime?: boolean

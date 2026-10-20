@@ -57,6 +57,8 @@ class DaySummary(StrictModel):
     default_status: PlanStatus
     assigned_cases: int = Field(ge=0)
     routed_cases: int | None = Field(default=None, ge=0)
+    contracted_cases: int | None = Field(default=None, ge=0)
+    contracted_deliveries: int | None = Field(default=None, ge=0)
     unserved_cases: int | None = Field(default=None, ge=0)
     total_cost: float | None = Field(default=None, ge=0)
     is_overridden: bool = False
@@ -80,6 +82,12 @@ class DayResult(StrictModel):
     routed_cases: int = Field(ge=0)
     unserved_cases: int = Field(ge=0)
     unserved_orders: list[dict[str, Any]] = Field(default_factory=list)
+    contracted_orders: list[dict[str, Any]] = Field(default_factory=list)
+    contracted_quotes: list[dict[str, Any]] = Field(default_factory=list)
+    contracted_deliveries: int = Field(default=0, ge=0)
+    contracted_cases: int = Field(default=0, ge=0)
+    fleet_cost: float | None = Field(default=None, ge=0)
+    contracted_cost: float = Field(default=0, ge=0)
     diagnostics: list[dict[str, Any]] = Field(default_factory=list)
     matrix_source: MatrixSource
     execution: dict[str, Any] | None = None
@@ -89,9 +97,9 @@ class DayResult(StrictModel):
     @model_validator(mode="after")
     def validate_result(self) -> "DayResult":
         _validate_date(self.service_date, "service_date")
-        if self.routed_cases + self.unserved_cases != self.assigned_cases:
+        if self.routed_cases + self.contracted_cases + self.unserved_cases != self.assigned_cases:
             raise ValueError(
-                "routed_cases plus unserved_cases must equal assigned_cases."
+                "routed_cases plus contracted_cases plus unserved_cases must equal assigned_cases."
             )
         if self.status == "completed" and self.unserved_cases:
             raise ValueError(
@@ -195,6 +203,7 @@ class DailyPlanChange(StrictModel):
 
 class OverrideRequest(StrictModel):
     route_scenario_id: str = Field(min_length=1)
+    allow_contracted_overflow: bool = False
     driver_delta: int = Field(default=0, ge=-64, le=64)
     allow_overtime: bool | None = None
     max_route_minutes: int | None = Field(default=None, ge=1, le=1_440)
