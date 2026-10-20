@@ -22,6 +22,9 @@ sync:
     - /tailwind.config.ts
 
 variables:
+  depot_routes_app_auth_uc_secret_schema:
+    description: Optional catalog.schema containing depot_job_client_id and depot_job_client_secret (takes precedence over workspace scope)
+    default: ""
   depot_routes_app_auth_secret_scope:
     description: Secret scope containing the dedicated depot preparation identity client-id and client-secret
     default: route-scenario-modeling-depot-job

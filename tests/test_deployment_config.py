@@ -1,7 +1,14 @@
+import ast
+import hashlib
 import json
+import runpy
 import subprocess
+import tomllib
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock, call
 
+import pytest
 import yaml
 
 from deployment.config import (
@@ -16,6 +23,169 @@ from deployment.config import (
 
 
 ROOT = Path(__file__).parents[1]
+
+
+def depot_auth_helper():
+    notebook = ast.parse((ROOT / "notebooks/11_prepare_depot_routes.py").read_text())
+    helper = next(node for node in notebook.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "get_app_credentials")
+    namespace = {}
+    exec(compile(ast.Module(body=[helper], type_ignores=[]), str(ROOT / "notebooks/11_prepare_depot_routes.py"), "exec"), namespace)
+    return namespace["get_app_credentials"]
+
+
+def test_depot_uc_credentials_take_precedence() -> None:
+    secrets = Mock()
+    secrets.get.side_effect = ["oauth-client", "oauth-secret"]
+    credentials = depot_auth_helper()(secrets, " manufacturing.route_scenario_modeling ", "old-scope")
+    assert credentials == {"client_id": "oauth-client", "client_secret": "oauth-secret"}
+    assert secrets.get.call_args_list == [
+        call(catalog="manufacturing", schema="route_scenario_modeling", key="depot_job_client_id"),
+        call(catalog="manufacturing", schema="route_scenario_modeling", key="depot_job_client_secret"),
+    ]
+
+
+def test_depot_workspace_scope_credentials_are_unchanged() -> None:
+    secrets = Mock()
+    secrets.get.side_effect = ["oauth-client", "oauth-secret"]
+    assert depot_auth_helper()(secrets, "", " old-scope ") == {
+        "client_id": "oauth-client", "client_secret": "oauth-secret",
+    }
+    assert secrets.get.call_args_list == [
+        call(scope="old-scope", key="client-id"),
+        call(scope="old-scope", key="client-secret"),
+    ]
+
+
+def test_depot_no_credentials_selects_notebook_token() -> None:
+    secrets = Mock()
+    assert depot_auth_helper()(secrets, " ", " ") is None
+    secrets.get.assert_not_called()
+
+
+@pytest.mark.parametrize("uc_schema,scope", [
+    ("manufacturing.route_scenario_modeling", "old-scope"),
+    ("", "old-scope"),
+    ("", ""),
+])
+def test_depot_notebook_uses_selected_authentication(monkeypatch, capsys, uc_schema: str, scope: str) -> None:
+    import databricks.sdk
+    import requests
+    import route_opt.app_notebook_auth
+
+    widgets = {
+        "app_auth_uc_secret_schema": uc_schema,
+        "app_auth_secret_scope": scope,
+        "publish_daily_plans": "false",
+        "service_date": "2026-10-06",
+    }
+    dbutils = MagicMock()
+    dbutils.widgets.text.side_effect = lambda name, default: widgets.setdefault(name, default)
+    dbutils.widgets.get.side_effect = widgets.__getitem__
+    context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+    context.notebookPath().get.return_value = "/Workspace/example/notebooks/11_prepare_depot_routes"
+    context.apiToken().get.return_value = "ephemeral-token"
+    dbutils.secrets.get.side_effect = ["oauth-client", "oauth-secret"]
+    workspace = Mock()
+    workspace.config.host = "https://workspace.example"
+    workspace.apps.get.return_value = SimpleNamespace(url="https://app.example", oauth2_app_client_id="app-client")
+    oauth_client = Mock()
+    client_factory = Mock(side_effect=[workspace, oauth_client])
+    notebook_auth_factory = Mock()
+    response = Mock(status_code=200, headers={"content-type": "application/json"})
+    response.json.return_value = {"preparation_id": "test-preparation", "state": "completed"}
+    request = Mock(return_value=response)
+    monkeypatch.setattr(databricks.sdk, "WorkspaceClient", client_factory)
+    monkeypatch.setattr(route_opt.app_notebook_auth, "NotebookAppAuth", notebook_auth_factory)
+    monkeypatch.setattr(requests, "request", request)
+    monkeypatch.syspath_prepend(str(ROOT))
+    runpy.run_path(str(ROOT / "notebooks/11_prepare_depot_routes.py"), init_globals={"dbutils": dbutils})
+    captured = capsys.readouterr()
+    assert "oauth-secret" not in captured.out + captured.err
+    assert "oauth-client" not in captured.out + captured.err
+    dbutils.widgets.text.assert_any_call("app_auth_uc_secret_schema", "")
+    if uc_schema or scope:
+        assert client_factory.call_args_list == [call(), call(
+            host="https://workspace.example", auth_type="oauth-m2m",
+            client_id="oauth-client", client_secret="oauth-secret",
+        )]
+        notebook_auth_factory.assert_not_called()
+        oauth_client.config.authenticate.assert_called_once_with()
+    else:
+        client_factory.assert_called_once_with()
+        dbutils.secrets.get.assert_not_called()
+        assert notebook_auth_factory.call_args.args == (workspace, "app-client")
+        assert notebook_auth_factory.call_args.kwargs["notebook_token"]() == "ephemeral-token"
+        notebook_auth_factory.return_value.headers.assert_called_once_with()
+
+
+@pytest.mark.parametrize("schema", ["manufacturing", ".schema", "catalog.", "catalog.schema.extra"])
+def test_depot_rejects_malformed_uc_schema(schema: str) -> None:
+    secrets = Mock()
+    with pytest.raises(ValueError, match=r"catalog\.schema"):
+        depot_auth_helper()(secrets, schema, "old-scope")
+    secrets.get.assert_not_called()
+
+
+@pytest.mark.parametrize("failed_key", ["depot_job_client_id", "depot_job_client_secret"])
+@pytest.mark.parametrize("failure", ["missing", "unreadable", "empty", "unsupported"])
+def test_depot_uc_errors_are_actionable_and_do_not_leak(failed_key: str, failure: str) -> None:
+    def get_secret(**kwargs):
+        if kwargs["key"] != failed_key:
+            return "private-value"
+        if failure == "empty":
+            return ""
+        if failure == "unsupported":
+            raise TypeError("private-value: unexpected keyword argument 'catalog'")
+        raise RuntimeError(f"private-value: {failure}")
+
+    secrets = SimpleNamespace(get=get_secret)
+    with pytest.raises(RuntimeError) as caught:
+        depot_auth_helper()(secrets, "manufacturing.route_scenario_modeling", "old-scope")
+    assert "private-value" not in str(caught.value)
+    assert caught.value.__suppress_context__
+    if failure == "unsupported":
+        assert "serverless environment version 4" in str(caught.value)
+        assert "17.3" in str(caught.value)
+    else:
+        assert failed_key in str(caught.value)
+        assert "READ SECRET" in str(caught.value)
+
+
+def test_depot_notebook_pins_uc_capable_environment_without_changing_dependencies() -> None:
+    source = (ROOT / "notebooks/11_prepare_depot_routes.py").read_text()
+    metadata = source.split("# /// script\n", 1)[1].split("# ///", 1)[0]
+    environment = tomllib.loads("\n".join(line.removeprefix("# ") for line in metadata.splitlines()))
+    assert environment == {"tool": {"databricks": {"environment": {"environment_version": "4"}}}}
+    assert "# MAGIC %pip install faker==40.38.0" in source
+
+
+def test_depot_uc_bundle_wiring_and_dev_render_compatibility(tmp_path: Path) -> None:
+    output = render(ROOT / "configs/deployment/minimal.example.json", ROOT, tmp_path / "rendered")
+    bundle = yaml.safe_load((output / "databricks.yml").read_text())
+    assert bundle["variables"]["depot_routes_app_auth_uc_secret_schema"]["default"] == ""
+    assert bundle["variables"]["depot_routes_app_auth_secret_scope"]["default"] == "route-scenario-modeling-depot-job"
+    job_path = "resources/depot_routes.job.yml"
+    job = yaml.safe_load((output / job_path).read_text())
+    parameters = job["resources"]["jobs"]["depot_routes_morning"]["tasks"][0]["notebook_task"]["base_parameters"]
+    assert parameters.pop("app_auth_uc_secret_schema") == "${var.depot_routes_app_auth_uc_secret_schema}"
+    v010_job_sha256 = "ce3ab47eddea11fa14de2d7710cb38a991556f5e32522c9f1eba417fa4669beb"
+    assert hashlib.sha256(json.dumps(job, sort_keys=True).encode()).hexdigest() == v010_job_sha256
+    bundle["variables"].pop("depot_routes_app_auth_uc_secret_schema")
+    defaults = {key: bundle[key] for key in ("variables", "targets")}
+    v010_defaults_sha256 = "c2176a5a9abafc3a7e7f96a176fc41d879cdf95512f1d37cf32a88906ac2fbd3"
+    assert hashlib.sha256(json.dumps(defaults, sort_keys=True).encode()).hexdigest() == v010_defaults_sha256
+
+
+def test_depot_uc_operator_variable_is_forwarded(tmp_path: Path) -> None:
+    raw = json.loads((ROOT / "configs/deployment/minimal.example.json").read_text())
+    raw["variables"]["depot_routes_app_auth_uc_secret_schema"] = "manufacturing.route_scenario_modeling"
+    config_path = tmp_path / "uc.json"
+    config_path.write_text(json.dumps(raw))
+    config = DeploymentConfig.load(config_path)
+    assert "depot_routes_app_auth_uc_secret_schema=manufacturing.route_scenario_modeling" in variable_args(config)
+    output = render(config_path, ROOT, tmp_path / "rendered")
+    assert json.loads((output / ".deployment-vars.json").read_text())["depot_routes_app_auth_uc_secret_schema"] == "manufacturing.route_scenario_modeling"
 
 
 def test_minimal_render_excludes_optional_resources(tmp_path: Path) -> None:
