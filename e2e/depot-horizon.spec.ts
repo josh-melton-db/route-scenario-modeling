@@ -93,6 +93,38 @@ test('contracted overflow defaults off, submits on, and displays rated and unrat
   await expect(page.getByText('no-rate · 10 cases · No contract rate')).toBeVisible()
 })
 
+for (const mode of ['off', 'enabled-unpriced', 'contracted'] as const) {
+  test(`overflow cost lines respect saved result mode: ${mode}`, async ({ page }) => {
+    const contracted = mode === 'contracted'
+    const stored = {
+      ...result('2026-09-01', 'stored', contracted ? 10 : 0),
+      routed_cases: contracted ? 70 : 100,
+      contracted_cases: contracted ? 20 : 0,
+      contracted_deliveries: contracted ? 2 : 0,
+      execution: mode === 'enabled-unpriced' ? { allow_contracted_overflow: true } : {},
+    }
+    await page.route(/^https?:\/\/[^/]+\/api\//, async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/depot-plans/plan-1') {
+        const plan = planSet(1)
+        return route.fulfill({ json: { ...plan, days: [{ ...plan.days[0], ...stored }] } })
+      }
+      if (path.includes('/days/')) return route.fulfill({ json: {
+        default_status: 'completed', default_result: stored, selected_result: stored,
+      } })
+      return route.fulfill({ status: 404, json: { detail: path } })
+    })
+    await page.goto(`${appUrl}/analyze?networkRun=run-1&depot=DPT_NORTH&depotPlan=plan-1&date=2026-09-01`)
+    await expect(page.getByText('2026-09-01 routes')).toBeVisible()
+    await expect(page.getByText(/^Fleet cost:/)).toHaveCount(mode === 'off' ? 0 : 1)
+    await expect(page.getByText(/^Contracted:/)).toHaveCount(mode === 'off' ? 0 : 1)
+    if (contracted) {
+      await page.getByLabel('Depot plan date', { exact: true }).getByRole('button').click()
+      await expect(page.getByText('90/100 cases · 20 contracted')).toBeVisible()
+    }
+  })
+}
+
 test('shows strict road provenance and an actionable failure without an approximate result', async ({ page }) => {
   let fail = false
   const stored = {

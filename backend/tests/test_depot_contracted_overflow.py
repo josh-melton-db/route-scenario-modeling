@@ -102,6 +102,98 @@ def test_classic_six_stop_quote_chunks_and_minimum_charge():
     assert solved["contracted_cases"] == 35
 
 
+def test_two_chunks_against_capacity_six_leaves_second_chunk_unserved():
+    solved, rows = inputs(12)
+    detail = contract()
+    detail["capacity_commitments"] = [{
+        "rule_id": "CAPACITY", "name": "Reserved stops", "unit": "stops",
+        "committed_quantity": 0, "capacity_quantity": 6, "current_utilization": 0,
+        "overage_rate": 50,
+    }]
+    apply(solved, rows, [detail])
+    assert solved["contracted_deliveries"] == 6
+    assert solved["contracted_cost"] == 360
+    assert solved["unserved_cases"] == 30
+    assert [order["customer_id"] for order in solved["unserved_orders"]] == [f"C{index}" for index in range(6, 12)]
+    assert all(order["reason"] == "no_contract_rate" for order in solved["unserved_orders"])
+    assert detail["capacity_commitments"][0]["current_utilization"] == 0
+
+
+def test_exhausted_contract_uses_another_contract_with_running_utilization():
+    solved, rows = inputs(12)
+    first = contract()
+    first["capacity_commitments"] = [{
+        "rule_id": "CAPACITY", "name": "Reserved stops", "unit": "stops",
+        "committed_quantity": 0, "capacity_quantity": 8, "current_utilization": 2,
+        "overage_rate": 50,
+    }]
+    second = deepcopy(first)
+    second["contract_id"] = "ALTERNATE"
+    second["version"]["version_id"] = "ALTERNATE_V1"
+    second["lane_rates"][0]["rate_per_stop"] = 20
+    apply(solved, rows, [first, second])
+    assert [quote["contract_id"] for quote in solved["contracted_quotes"]] == ["DELIVERY", "ALTERNATE"]
+    assert solved["contracted_deliveries"] == 12
+    assert solved["contracted_cost"] == 780
+    assert solved["unserved_cases"] == 0
+
+
+def test_missing_customer_stays_unserved_instead_of_crashing():
+    solved, rows = inputs()
+    rows["dim_network_customers"] = []
+    apply(solved, rows, [contract()])
+    assert solved["unserved_orders"] == [{"customer_id": "C0", "demand_cases": 5, "reason": "no_contract_rate"}]
+    assert solved["contracted_deliveries"] == 0
+
+
+def test_failed_quotes_return_each_original_order_once(monkeypatch):
+    import backend.services.depot_contracted_overflow as overflow
+
+    solved, rows = inputs(12)
+    rows["dim_network_customers"] = rows["dim_network_customers"][:1]
+    for index, order in enumerate(solved["unserved_orders"]):
+        order.update(customer_id="C0", order_id=f"ORDER-{index}")
+    original = deepcopy(solved["unserved_orders"])
+    quote_contract = overflow.quote_contract
+
+    def reject_final_quote(detail, request):
+        quote = quote_contract(detail, request)
+        if request["miles"] > 0:
+            quote["eligible"] = False
+        return quote
+
+    monkeypatch.setattr(overflow, "quote_contract", reject_final_quote)
+    apply(solved, rows, [contract()])
+    assert solved["unserved_orders"] == [{**order, "reason": "no_contract_rate"} for order in original]
+    assert solved["unserved_cases"] == solved["assigned_cases"]
+
+
+def test_contracted_deliveries_keep_original_order_identity():
+    solved, rows = inputs(2)
+    rows["dim_network_customers"] = rows["dim_network_customers"][:1]
+    for index, order in enumerate(solved["unserved_orders"]):
+        order.update(customer_id="C0", order_id=f"ORDER-{index}")
+    apply(solved, rows, [contract()])
+    assert [order["order_id"] for order in solved["contracted_orders"]] == ["ORDER-0", "ORDER-1"]
+
+
+@pytest.mark.parametrize("has_rate", [True, False])
+def test_diagnostics_describe_final_overflow_result(has_rate):
+    solved, rows = inputs()
+    solved["diagnostics"] = [{"status": "infeasible", "message": "Fleet could not serve delivery",
+                              "dropped_stop_count": 1, "unserved_cases": 5}]
+    apply(solved, rows, [contract()] if has_rate else [])
+    diagnostic = solved["diagnostics"][0]
+    assert diagnostic["status"] == ("succeeded" if has_rate else "infeasible")
+    assert diagnostic["dropped_stop_count"] == (0 if has_rate else 1)
+    assert diagnostic["unserved_cases"] == solved["unserved_cases"]
+    assert diagnostic["contracted_cases"] == solved["contracted_cases"]
+    assert diagnostic["message"] == (
+        f"Assigned {int(has_rate)} overflow stops using eligible carrier rate rules; "
+        f"{int(not has_rate)} remain unserved."
+    )
+
+
 @pytest.mark.parametrize("change", [{"status": "draft"}, {"effective_end": "2026-01-01"}, {"effective_start": "2027-01-01"}])
 def test_contract_must_be_published_and_effective(change):
     detail = contract()
@@ -117,6 +209,11 @@ def test_service_persists_overflow_and_reconciles_day_result(monkeypatch):
     from backend.tests.test_depot_plan_service import _service, DEPOT_ID, DATE_ONE
 
     service, repository, jobs, _, solve_inputs = _service()
+    fleet_provider = service.fleet_provider
+    service.fleet_provider = lambda snapshot, depot_id: (
+        [{**vehicle, "available_dates": [DATE_ONE]} for vehicle in fleet_provider(snapshot, depot_id)[0]],
+        "test_fixed_fleet",
+    )
     detail = contract(origin=DEPOT_ID, origin_endpoint_id=DEPOT_ID)
     monkeypatch.setattr(plans, "get_store", lambda: object())
     monkeypatch.setattr(plans, "list_rate_contract_details", lambda store: [SimpleNamespace(model_dump=lambda **kwargs: detail)])
@@ -139,6 +236,10 @@ def test_service_persists_overflow_and_reconciles_day_result(monkeypatch):
     assert result.unserved_cases == 0
     assert result.contracted_orders[0]["contract_id"] == "DELIVERY"
     assert result.execution["contract_versions"]
+    summary = next(day for day in service.get_plan(plan.plan_set_id, scenario.route_scenario_id).days if day.service_date == DATE_ONE)
+    assert summary.contracted_cases == 100
+    assert summary.contracted_deliveries == 1
+    assert summary.routed_cases + summary.contracted_cases + summary.unserved_cases == summary.assigned_cases
     assert "rate_contract_details" not in solve_inputs[-1]["network_rows"]
     assert service.get_day(plan.plan_set_id, DATE_ONE).default_result.model_dump() == baseline
 

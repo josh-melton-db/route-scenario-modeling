@@ -841,6 +841,8 @@ def _day_summary_payload(
         "default_status": day["default_status"],
         "assigned_cases": result["assigned_cases"] if result else day["assigned_cases"],
         "routed_cases": result["routed_cases"] if result else None,
+        "contracted_cases": result.get("contracted_cases", 0) if result else None,
+        "contracted_deliveries": result.get("contracted_deliveries", 0) if result else None,
         "unserved_cases": result["unserved_cases"] if result else None,
         "total_cost": result["kpis"]["cost_breakdown"]["total_cost"] if result else None,
         "is_overridden": scenario_id != DEFAULT_SCENARIO_ID

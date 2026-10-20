@@ -930,6 +930,8 @@ export interface DepotPlanCoverage {
 }
 
 export interface DepotPlanDaySummary {
+  contracted_cases?: number | null
+  contracted_deliveries?: number | null
   service_date: string
   status: DepotPlanStatus
   default_status: DepotPlanStatus
@@ -948,6 +950,8 @@ export interface DepotPlanDayResult {
   contracted_deliveries?: number
   contracted_cases?: number
   contracted_orders?: Array<{
+    order_id?: string
+    stop_id?: string
     customer_id: string
     demand_cases: number
     quote_id: string
@@ -987,6 +991,7 @@ export interface DepotPlanDayResult {
     available_vehicle_count?: number
     driver_delta?: number
     contract_versions?: Array<{ contract_id: string; version_id: string }>
+    allow_contracted_overflow?: boolean
   } | null
   created_at: string
 }

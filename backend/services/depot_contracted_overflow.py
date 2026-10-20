@@ -40,7 +40,10 @@ def apply_contracted_overflow(
     options = {}
     remaining = []
     for order in solved.get("unserved_orders", []):
-        customer = customers[order["customer_id"]]
+        customer = customers.get(order["customer_id"])
+        if customer is None:
+            remaining.append({**order, "reason": "no_contract_rate"})
+            continue
         destinations = list(dict.fromkeys(str(value) for value in (
             customer.get("market_id"), customer.get("sales_territory"), customer["customer_id"],
         ) if value))
@@ -68,17 +71,20 @@ def apply_contracted_overflow(
             continue
         key = tuple((detail["contract_id"], detail["version"]["version_id"], destination, lane) for detail, destination, lane in candidates)
         options[key] = candidates
-        groups[key].append({**customer, **order,
+        groups[key].append((order, {**customer, **order,
                             "customer_name": customer.get("customer_name") or customer["customer_id"],
                             "receiving_window_start": customer.get("receiving_window_start") or "06:30",
                             "receiving_window_end": customer.get("receiving_window_end") or "18:00",
-                            "service_minutes": customer.get("service_minutes") or 20})
+                            "service_minutes": customer.get("service_minutes") or 20}))
     quotes = []
     contracted = []
     versions = set()
+    contract_usage = defaultdict(int)
     for key, stops in groups.items():
         for offset in range(0, len(stops), 6):
-            chunk = stops[offset:offset + 6]
+            entries = stops[offset:offset + 6]
+            chunk_orders = [order for order, _ in entries]
+            chunk = [stop for _, stop in entries]
             route, _ = build_route_from_ordered_stops(
                 scenario_id="contracted-overflow", route_number=len(quotes) + 1,
                 depot=depot, ordered_stops=chunk, delivery_day=service_date, params=cost_parameters,
@@ -93,7 +99,15 @@ def apply_contracted_overflow(
                     accessorials.add("INSIDE_DELIVERY")
             candidates = []
             for detail, destination, _ in options[key]:
-                quote = quote_contract(detail, {
+                pricing_detail = deepcopy(detail)
+                commitments = pricing_detail.get("capacity_commitments") or []
+                if commitments:
+                    commitment = commitments[0]
+                    current = float(commitment.get("current_utilization", 0)) + contract_usage[detail["contract_id"]]
+                    if current + len(chunk) > float(commitment.get("capacity_quantity", 0)):
+                        continue
+                    commitment["current_utilization"] = current
+                quote = quote_contract(pricing_detail, {
                     "service_date": service_date, "origin": depot_id, "destination": destination,
                     "miles": route["total_miles"], "stops": len(chunk),
                     "cases": sum(stop["demand_cases"] for stop in chunk),
@@ -102,16 +116,17 @@ def apply_contracted_overflow(
                 if quote["eligible"]:
                     candidates.append(quote)
             if not candidates:
-                remaining.extend({**order, "reason": "no_contract_rate"} for order in solved["unserved_orders"] if order["customer_id"] in {stop["customer_id"] for stop in chunk})
+                remaining.extend({**order, "reason": "no_contract_rate"} for order in chunk_orders)
                 continue
             quote = min(candidates, key=lambda value: value["total_cost"])
+            contract_usage[quote["contract_id"]] += len(chunk)
             quote.update(stops=len(chunk), cases=sum(stop["demand_cases"] for stop in chunk),
                          miles=route["total_miles"], mileage_source="classic_fallback_haversine_circuity")
             quotes.append(quote)
             versions.add((quote["contract_id"], quote["contract_version_id"]))
-            for stop in chunk:
+            for order in chunk_orders:
                 contracted.append({
-                    "customer_id": stop["customer_id"], "demand_cases": stop["demand_cases"],
+                    **{field: value for field, value in order.items() if field != "reason"},
                     **{field: quote[field] for field in ("quote_id", "contract_id", "contract_version_id",
                        "matched_lane", "matched_lane_rule_id", "charge_lines", "rate_book_snapshot_id")},
                 })
@@ -141,3 +156,12 @@ def apply_contracted_overflow(
     solved.setdefault("execution", {})["contract_versions"] = [
         {"contract_id": contract_id, "version_id": version_id} for contract_id, version_id in sorted(versions)
     ]
+    solved["execution"]["allow_contracted_overflow"] = True
+    for diagnostic in solved.get("diagnostics", []):
+        diagnostic.update(
+            status="succeeded" if not remaining else "infeasible",
+            dropped_stop_count=len(remaining), unserved_cases=solved["unserved_cases"],
+            contracted_cases=solved["contracted_cases"], contracted_deliveries=len(contracted),
+            message=(f"Assigned {len(contracted)} overflow stops using eligible carrier rate rules; "
+                     f"{len(remaining)} remain unserved."),
+        )

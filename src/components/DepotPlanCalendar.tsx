@@ -35,7 +35,7 @@ export default function DepotPlanCalendar({
               <Check className={cn('h-4 w-4 text-primary', selectedDate !== day.service_date && 'opacity-0')} />
               <span className="min-w-0 flex-1">
                 <span className="block font-medium">{formatDate(day.service_date)}</span>
-                <span className="block truncate text-xs text-muted-foreground">{day.routed_cases == null ? `${day.assigned_cases} assigned cases` : `${day.routed_cases}/${day.assigned_cases} cases`}{day.is_overridden ? ' · override' : ''}</span>
+                <span className="block truncate text-xs text-muted-foreground">{day.routed_cases == null ? `${day.assigned_cases} assigned cases` : `${day.routed_cases + (day.contracted_cases ?? 0)}/${day.assigned_cases} cases`}{(day.contracted_cases ?? 0) > 0 ? ` · ${day.contracted_cases} contracted` : ''}{day.is_overridden ? ' · override' : ''}</span>
               </span>
               <span className={cn('text-xs capitalize', statusTone(day.status))}>{statusLabel(day.status)}</span>
             </button>

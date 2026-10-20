@@ -57,6 +57,8 @@ class DaySummary(StrictModel):
     default_status: PlanStatus
     assigned_cases: int = Field(ge=0)
     routed_cases: int | None = Field(default=None, ge=0)
+    contracted_cases: int | None = Field(default=None, ge=0)
+    contracted_deliveries: int | None = Field(default=None, ge=0)
     unserved_cases: int | None = Field(default=None, ge=0)
     total_cost: float | None = Field(default=None, ge=0)
     is_overridden: bool = False

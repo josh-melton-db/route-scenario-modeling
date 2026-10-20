@@ -56,13 +56,16 @@ export default function DepotScenarioComparison({ plan, serviceDate, leftId, rig
 }
 function Unserved({ result }: { result: DepotPlanDayResult }) {
   const money = (value: number) => value.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+  const showOverflow = result.execution?.allow_contracted_overflow || result.fleet_cost != null || (result.contracted_deliveries ?? 0) > 0
   return <div className="mt-3 text-sm">
-    <p>Fleet cost: {money(result.fleet_cost ?? result.kpis.cost_breakdown.total_cost)} · Contracted cost: {money(result.contracted_cost ?? 0)} · Total cost: {money(result.kpis.cost_breakdown.total_cost)}</p>
-    <p>Contracted: {result.contracted_deliveries ?? 0} deliveries · {result.contracted_cases ?? 0} cases</p>
+    {showOverflow && <>
+      <p>Fleet cost: {money(result.fleet_cost ?? result.kpis.cost_breakdown.total_cost)} · Contracted cost: {money(result.contracted_cost ?? 0)} · Total cost: {money(result.kpis.cost_breakdown.total_cost)}</p>
+      <p>Contracted: {result.contracted_deliveries ?? 0} deliveries · {result.contracted_cases ?? 0} cases</p>
+    </>}
     {(result.contracted_orders?.length ?? 0) > 0 && <details className="mt-2">
       <summary>Contracted delivery rates</summary>
       <p className="text-xs text-muted-foreground">Charge lines apply to the shared quote, not separately to each delivery.</p>
-      {result.contracted_orders?.map(order => <div key={`${order.quote_id}:${order.customer_id}`} className="mt-2">
+      {result.contracted_orders?.map((order, index) => <div key={`${order.quote_id}:${order.order_id ?? index}`} className="mt-2">
         <p>{order.customer_id} · {order.demand_cases} cases · {order.contract_id} · {order.contract_version_id} · {order.matched_lane}</p>
         <ul>{order.charge_lines.map((line, index) => <li key={`${line.rule_id}:${index}`}>{line.label}: {money(line.amount)}</li>)}</ul>
       </div>)}
