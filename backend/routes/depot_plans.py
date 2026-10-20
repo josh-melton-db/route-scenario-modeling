@@ -27,6 +27,11 @@ def get_depot_plan_service() -> Any:
     return depot_plan_service
 
 
+@router.post("/depot-plans/{plan_set_id}/refresh-rates", response_model=PlanSet)
+def refresh_depot_plan_rates(plan_set_id: str, service: Any = Depends(get_depot_plan_service)) -> PlanSet:
+    return _service_call(service.refresh_rates, plan_set_id)
+
+
 def _date_text(value: date | None) -> str | None:
     if value is None:
         return None

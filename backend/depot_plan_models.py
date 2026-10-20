@@ -131,6 +131,8 @@ class DayDetail(StrictModel):
 
 
 class PlanSet(StrictModel):
+    rate_book_snapshot_hash: str | None = None
+    rates_locked_at: str | None = None
     plan_set_id: str
     parent_run_id: str
     depot: Depot
