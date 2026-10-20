@@ -1011,7 +1011,9 @@ def _apply_override(
     request: Mapping[str, object],
     params: CostParameters,
 ) -> tuple[list[dict[str, object]], dict[str, list[dict[str, object]]], CostParameters]:
-    adjusted_fleet = [deepcopy(row) for row in fleet]
+    adjusted_fleet = [
+        deepcopy(row) for row in _available_fleet(fleet, depot_id, service_date)
+    ]
     driver_delta = int(request.get("driver_delta") or 0)
     if driver_delta < 0:
         adjusted_fleet = adjusted_fleet[: max(0, len(adjusted_fleet) + driver_delta)]
@@ -1035,14 +1037,8 @@ def _apply_override(
                 int(vehicle.get("max_route_minutes", params.max_route_minutes)),
                 params.overtime_threshold_minutes,
             )
-        elif allow_overtime is True:
-            vehicle["max_route_minutes"] = max(
-                int(vehicle.get("max_route_minutes", params.max_route_minutes)),
-                params.max_route_minutes,
-            )
         if max_stops is not None:
             vehicle["max_stops_per_route"] = int(max_stops)
-        vehicle["available_dates"] = [service_date]
 
     adjusted_rows = {
         table_name: [dict(row) for row in rows]
