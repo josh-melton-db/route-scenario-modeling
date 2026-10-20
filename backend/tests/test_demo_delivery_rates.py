@@ -85,11 +85,11 @@ def test_san_antonio_no_fleet_overflow_is_priced_and_capacity_limited(demo):
     }))
 
 
-def test_delivery_contracts_do_not_change_network_ratings(demo):
+def test_delivery_contracts_do_not_change_network_ratings_when_option_off(demo):
     rows, details = demo
     flows = rows["baseline_network_flow_daily"]
     original = [detail for detail in details if not any(lane.lane_type == "DELIVERY" for lane in detail.lane_rates)]
-    assert rate_network_flows(rows, flows, {}, contracts=details) == rate_network_flows(rows, flows, {}, contracts=original)
+    assert rate_network_flows(rows, flows, {}, contracts=details, use_delivery_contract_rates=False) == rate_network_flows(rows, flows, {}, contracts=original)
 
 
 def test_stub_uses_same_delivery_books_as_seed(demo):

@@ -6,6 +6,51 @@ from backend.services.network_overview import network_overview_service
 from backend.services.network_scenarios import NetworkScenarioService
 
 
+def test_delivery_option_pins_both_sides_and_reassignment(monkeypatch):
+    service = NetworkScenarioService()
+    options = network_overview_service.get_options()
+    scenario = service.create(NetworkScenarioCreateRequest(
+        scenario_name='Delivery contract comparison',
+        demand_plan_version_id=options.default_demand_plan_version_id,
+        capacity_plan_version_id=options.default_capacity_plan_version_id,
+        horizon_start=options.default_horizon_start, horizon_end=options.default_horizon_start,
+        region_id='REGION_TOLA', assumptions={'use_delivery_contract_rates': True},
+    ))
+    first = service.run(scenario.scenario_id).result
+    assert first.pricing_context.pricing_basis == 'comparable_pinned_dated_contracts_v2_delivery_contracts'
+    assert any(row['contract_id'].startswith('DEMO_DELIVERY_')
+               for row in first.pricing_context.contract_snapshots)
+    assert any(row.rate_source == 'delivery_contract' for row in first.charge_details)
+    assert any(row.rate_source == 'delivery_contract' for row in first.baseline_charge_details)
+    assert first.scenario_total_modeled_cost == first.baseline_total_modeled_cost
+    assert first.scenario_total_modeled_cost == first.overview.kpis.total_cost
+    assert first.baseline_total_modeled_cost == first.baseline_overview.kpis.total_cost
+    assert first.scenario_total_modeled_cost == round(sum(row.total_cost for row in first.charge_details), 2)
+    assert first.scenario_rate_coverage.governed_charge_count + first.scenario_rate_coverage.fallback_charge_count == len(first.charge_details)
+    audit = service.charge_audit(first.run_id, side='scenario', offset=0, limit=250)
+    assert audit.coverage == first.scenario_rate_coverage
+    off = service.create(NetworkScenarioCreateRequest(
+        scenario_name='Delivery option off control',
+        demand_plan_version_id=scenario.demand_plan_version_id,
+        capacity_plan_version_id=scenario.capacity_plan_version_id,
+        horizon_start=scenario.horizon_start, horizon_end=scenario.horizon_end,
+        region_id=scenario.region_id,
+    ))
+    off_result = service.run(off.scenario_id).result
+    assert off_result.pricing_context.pricing_basis == 'comparable_pinned_dated_contracts_v1'
+    assert service.get_run_snapshot(off_result.run_id).flow_rows == service.get_run_snapshot(first.run_id).flow_rows
+    assert off_result.optimization_objective_cost == first.optimization_objective_cost
+
+    def reject_live_rates(_store):
+        raise AssertionError('Delivery comparison must use pinned contracts')
+
+    monkeypatch.setattr(network_scenarios, 'list_rate_contract_details', reject_live_rates)
+    reassigned = service.reassign(first.run_id, []).result
+    assert reassigned.pricing_context.contract_snapshots == first.pricing_context.contract_snapshots
+    assert reassigned.baseline_total_modeled_cost == first.scenario_total_modeled_cost
+    assert service.get_run_snapshot(first.run_id).result == first
+
+
 def test_new_original_baseline_freezes_rates_for_cache_reconstruction(monkeypatch):
     from backend.services.baseline_service import BaselineService
     from backend.services import rates

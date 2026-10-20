@@ -779,6 +779,22 @@ function ScenarioTab({
             </p>
           </div>
           <label className="flex flex-col gap-1.5 text-sm">
+            <span className="font-medium">
+              <input
+                type="checkbox"
+                checked={assumptions.use_delivery_contract_rates ?? false}
+                onChange={(event) => touchAssumptions({ ...assumptions, use_delivery_contract_rates: event.target.checked })}
+                className="mr-2"
+              />
+              Use DELIVERY contract rates
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Reporting only: cheapest published depot DELIVERY quote, using 6 stops and 40 miles.
+              Cases per stop use lane demand, then the depot average; missing rates or demand retain the planning estimate.
+              Baseline and scenario use the same pinned contracts and option; saved results do not change.
+            </span>
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm">
             <span className="font-medium">Unmet-demand penalty ($ / case)</span>
             <input
               type="number"
@@ -1292,7 +1308,7 @@ function FlowTab({
       tone: deltas.unmet_units <= 0 ? ('good' as const) : ('bad' as const),
     },
     {
-      label: 'Linehaul cost',
+      label: result.data.pricing_context?.pricing_basis === 'comparable_pinned_dated_contracts_v2_delivery_contracts' ? 'Linehaul + delivery cost' : 'Linehaul cost',
       value: formatCurrency(overview.kpis.total_cost),
       delta: signedCurrency(deltas.total_cost),
       tone: deltas.total_cost <= 0 ? ('good' as const) : ('neutral' as const),
@@ -1367,6 +1383,7 @@ function FlowTab({
         />
         <div className="rounded-lg border border-border bg-card p-4">
           <h2 className="text-sm font-semibold">Baseline vs. scenario</h2>
+          <NetworkPricingNote result={result.data} />
           <div className="mt-3 border-b border-border pb-3"><NetworkBaselineActions runId={result.data.run_id} /></div>
           <ul className="mt-2 flex flex-col gap-2 text-sm">
             <CompareRow
@@ -1380,7 +1397,7 @@ function FlowTab({
               scenario={formatNumber(overview.kpis.unmet_units)}
             />
             <CompareRow
-              label="Linehaul cost"
+              label={result.data.pricing_context?.pricing_basis === 'comparable_pinned_dated_contracts_v2_delivery_contracts' ? 'Linehaul + delivery cost' : 'Linehaul cost'}
               baseline={formatCurrency(baseline_overview.kpis.total_cost)}
               scenario={formatCurrency(overview.kpis.total_cost)}
             />
@@ -1788,12 +1805,12 @@ function ChargeRow({
           <span
             className={cn(
               'rounded-full px-2 py-0.5 text-[10px] font-medium',
-              row.rate_source === 'governed_contract'
+              row.rate_source === 'governed_contract' || row.rate_source === 'delivery_contract'
                 ? 'bg-primary/15 text-primary'
                 : 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
             )}
           >
-            {row.rate_source === 'governed_contract' ? 'Governed contract' : 'Planning fallback'}
+            {row.rate_source === 'delivery_contract' ? 'Delivery contract' : row.rate_source === 'delivery_planning_fallback' ? 'Delivery planning fallback' : row.rate_source === 'governed_contract' ? 'Governed contract' : 'Planning fallback'}
           </span>
         </td>
         <td className="px-4 py-2.5 text-xs text-muted-foreground">
@@ -1812,6 +1829,12 @@ function ChargeRow({
         <tr className="bg-muted/30">
           <td colSpan={8} className="px-4 py-3">
             <div className="flex flex-col gap-1.5 text-xs">
+              {row.synthetic_route_assumptions && (
+                <div className="text-muted-foreground">
+                  {row.cost_per_case == null ? 'Planning fallback' : `$${row.cost_per_case.toFixed(4)} / case`} · {row.synthetic_route_assumptions.stops} stops · {row.synthetic_route_assumptions.miles} miles · {row.synthetic_route_assumptions.cases} cases · {row.synthetic_route_assumptions.cases_per_stop_source === 'depot_average' ? 'Depot average fallback' : 'Lane demand'}
+                  {row.matched_lane_rule_id && ` · Lane rule ${row.matched_lane_rule_id}`}
+                </div>
+              )}
               {row.charge_lines.map((line, index) => (
                 <div
                   key={`${line.rule_id}-${index}`}

@@ -852,10 +852,10 @@ class NetworkScenarioRepository:
                 params.extend([needle, needle])
             summary = lakebase_store.postgres.query_one(
                 f"""SELECT COUNT(*) AS total,
-                    COUNT(*) FILTER (WHERE rate_source='governed_contract') AS governed_count,
-                    COUNT(*) FILTER (WHERE rate_source='planning_fallback') AS fallback_count,
-                    COALESCE(SUM(assigned_units) FILTER (WHERE rate_source='governed_contract'),0) AS governed_units,
-                    COALESCE(SUM(assigned_units) FILTER (WHERE rate_source='planning_fallback'),0) AS fallback_units
+                    COUNT(*) FILTER (WHERE rate_source IN ('governed_contract','delivery_contract')) AS governed_count,
+                    COUNT(*) FILTER (WHERE rate_source IN ('planning_fallback','delivery_planning_fallback')) AS fallback_count,
+                    COALESCE(SUM(assigned_units) FILTER (WHERE rate_source IN ('governed_contract','delivery_contract')),0) AS governed_units,
+                    COALESCE(SUM(assigned_units) FILTER (WHERE rate_source IN ('planning_fallback','delivery_planning_fallback')),0) AS fallback_units
                     FROM {self._table('network_run_charge_details')} WHERE {where}""",
                 tuple(params),
             )
@@ -893,8 +893,8 @@ class NetworkScenarioRepository:
             charges,
             key=lambda row: (-row.total_cost, row.service_date, row.lane_id),
         )
-        governed = [row for row in ordered if row.rate_source == "governed_contract"]
-        fallback = [row for row in ordered if row.rate_source == "planning_fallback"]
+        governed = [row for row in ordered if row.rate_source in {"governed_contract", "delivery_contract"}]
+        fallback = [row for row in ordered if row.rate_source in {"planning_fallback", "delivery_planning_fallback"}]
         return NetworkChargeAuditPage(
             items=[row.model_copy(deep=True) for row in ordered[offset:offset + limit]],
             total=len(ordered),
@@ -1438,6 +1438,7 @@ class NetworkScenarioService:
         tariff_by_date_lane: dict[tuple[str, str], tuple[float, str]],
         *,
         contracts: list[RateContractDetail] | None = None,
+        use_delivery_contract_rates: bool = False,
     ) -> tuple[
         list[dict[str, Any]],
         list[NetworkFlowChargeDetail],
@@ -1446,6 +1447,7 @@ class NetworkScenarioService:
         rated = rate_network_flows(
             rows, flow_rows, tariff_by_date_lane,
             contracts=contracts if contracts is not None else list_rate_contract_details(get_store()),
+            use_delivery_contract_rates=use_delivery_contract_rates,
         )
         exceptions = [
             NetworkScenarioException(
@@ -1455,7 +1457,12 @@ class NetworkScenarioService:
                 entity_type="lane",
                 entity_id=lane_id,
                 message=(
-                    "No published canonical linehaul rate matched; the stored "
+                    ("No published DELIVERY rate or demand basis matched; the stored "
+                     if use_delivery_contract_rates and any(
+                         str(lane["lane_id"]) == lane_id and str(lane["lane_type"]) == "DELIVERY"
+                         for lane in rows["dim_network_lanes"]
+                     ) else "No published canonical linehaul rate matched; the stored ")
+                    +
                     "planning fallback charge lines were used."
                 ),
             )
@@ -1536,7 +1543,10 @@ class NetworkScenarioService:
             source_metadata[0].get("network_pricing_context", {})
             if source_metadata else {}
         )
-        if parent is not None and parent.result.pricing_context.pricing_basis == "comparable_pinned_dated_contracts_v1":
+        if parent is not None and parent.result.pricing_context.pricing_basis in {
+            "comparable_pinned_dated_contracts_v1",
+            "comparable_pinned_dated_contracts_v2_delivery_contracts",
+        }:
             pinned_context = parent.result.pricing_context.model_dump(mode="json")
         contracts = (
             [
@@ -1652,7 +1662,8 @@ class NetworkScenarioService:
             rows["facility_supply_provenance"] = [{"source": supply_source}]
         flow_rows = allocation["flow_rows"]
         cost_rows, charges, exceptions = self._rate_flows(
-            rows, flow_rows, tariff_by_date_lane, contracts=contracts
+            rows, flow_rows, tariff_by_date_lane, contracts=contracts,
+            use_delivery_contract_rates=scenario.assumptions.use_delivery_contract_rates,
         )
         mark("scenario_rating")
         baseline_flow_rows = [
@@ -1665,6 +1676,7 @@ class NetworkScenarioService:
         baseline_cost_rows, baseline_charges, _ = self._rate_flows(
             source_rows, baseline_flow_rows, baseline_tariff_by_date_lane,
             contracts=contracts,
+            use_delivery_contract_rates=scenario.assumptions.use_delivery_contract_rates,
         )
         mark("baseline_rating")
         for unmet in allocation["unmet_rows"]:
@@ -1707,7 +1719,7 @@ class NetworkScenarioService:
             horizon_start=scenario.horizon_start,
             horizon_end=scenario.horizon_end,
             region_id=scenario.region_id,
-            lane_type="LINEHAUL",
+            lane_type="ALL" if scenario.assumptions.use_delivery_contract_rates else "LINEHAUL",
             metric="assigned_flow",
         )
         comparable_baseline_rows = dict(source_rows)
@@ -1731,10 +1743,8 @@ class NetworkScenarioService:
             facility_supply_retained_pct=scenario.assumptions.facility_supply_retained_pct,
         )
         mark("overview_construction")
-        # The comparison/audit uses the same selected linehaul scope as its
-        # KPIs. Complete cost rows remain in the immutable run for promotion.
-        scenario_lane_ids = {lane.lane_id for lane in overview.lanes if lane.lane_type == "LINEHAUL"}
-        baseline_lane_ids = {lane.lane_id for lane in baseline.lanes if lane.lane_type == "LINEHAUL"}
+        scenario_lane_ids = {lane.lane_id for lane in overview.lanes if lane.included_in_network_cost}
+        baseline_lane_ids = {lane.lane_id for lane in baseline.lanes if lane.included_in_network_cost}
         comparison_lane_ids = scenario_lane_ids | baseline_lane_ids
         all_rating_charges = baseline_charges + charges
         charges = [row for row in charges if row.lane_id in scenario_lane_ids]
@@ -1880,8 +1890,8 @@ class NetworkScenarioService:
         )
 
         def coverage(rows_: list[NetworkFlowChargeDetail]) -> NetworkRateCoverage:
-            governed = [row for row in rows_ if row.rate_source == "governed_contract"]
-            fallback = [row for row in rows_ if row.rate_source == "planning_fallback"]
+            governed = [row for row in rows_ if row.rate_source in {"governed_contract", "delivery_contract"}]
+            fallback = [row for row in rows_ if row.rate_source in {"planning_fallback", "delivery_planning_fallback"}]
             return NetworkRateCoverage(
                 governed_charge_count=len(governed), fallback_charge_count=len(fallback),
                 governed_assigned_units=sum(row.assigned_units for row in governed),
@@ -1951,7 +1961,9 @@ class NetworkScenarioService:
             baseline_rate_coverage=coverage(baseline_charges),
             scenario_rate_coverage=coverage(charges),
             pricing_context=NetworkPricingContext(
-                pricing_basis="comparable_pinned_dated_contracts_v1",
+                pricing_basis=("comparable_pinned_dated_contracts_v2_delivery_contracts"
+                               if scenario.assumptions.use_delivery_contract_rates
+                               else "comparable_pinned_dated_contracts_v1"),
                 contract_snapshots=[row.model_dump(mode="json") for row in contracts],
                 contract_version_ids=sorted({row.version.version_id for row in contracts}),
                 rate_book_snapshot_ids=rate_snapshot_ids,
