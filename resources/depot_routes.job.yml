@@ -18,6 +18,7 @@ resources:
               schema: ${resources.schemas.route_scenario_modeling_schema.name}
               publish_daily_plans: "true"
               app_auth_secret_scope: ${var.depot_routes_app_auth_secret_scope}
+              app_auth_uc_secret_schema: ${var.depot_routes_app_auth_uc_secret_schema}
               app_name: ${var.app_name}
               service_date: today
               timezone: America/Indiana/Indianapolis

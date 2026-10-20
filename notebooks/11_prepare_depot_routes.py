@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "4"
+# ///
 # MAGIC %pip install faker==40.38.0
 
 # COMMAND ----------
@@ -15,6 +19,7 @@ import requests
 from databricks.sdk import WorkspaceClient
 
 dbutils.widgets.text("app_auth_secret_scope", "route-scenario-modeling-depot-job")  # type: ignore[name-defined]
+dbutils.widgets.text("app_auth_uc_secret_schema", "")  # type: ignore[name-defined]
 dbutils.widgets.text("app_name", "route-scenario-modeling")  # type: ignore[name-defined]
 dbutils.widgets.text("service_date", "today")  # type: ignore[name-defined]
 dbutils.widgets.text("catalog", "demos")  # type: ignore[name-defined]
@@ -54,14 +59,53 @@ if publish_daily:
     print(json.dumps(publication, indent=2))
 
 
-app_auth_secret_scope = dbutils.widgets.get("app_auth_secret_scope").strip()  # type: ignore[name-defined]
-if app_auth_secret_scope:
-    # Dedicated automation identity: App access only. The job's native identity
-    # still publishes UC plans; credentials stay in the configured secret scope.
+def get_app_credentials(secrets, uc_secret_schema, secret_scope):
+    uc_secret_schema = uc_secret_schema.strip()
+    secret_scope = secret_scope.strip()
+    if uc_secret_schema:
+        parts = uc_secret_schema.split(".")
+        if len(parts) != 2 or not all(part.strip() for part in parts):
+            raise ValueError("app_auth_uc_secret_schema must be catalog.schema.")
+        catalog, schema = parts
+        credentials = {}
+        for field, key in (("client_id", "depot_job_client_id"), ("client_secret", "depot_job_client_secret")):
+            try:
+                value = secrets.get(catalog=catalog, schema=schema, key=key)
+            except TypeError:
+                raise RuntimeError(
+                    "Unity Catalog secret reads require serverless environment version 4 or later "
+                    "(or DBR 17.3+); dbutils.secrets.get must accept catalog= and schema=."
+                ) from None
+            except Exception:
+                raise RuntimeError(
+                    f"Cannot read Unity Catalog secret {uc_secret_schema}.{key}. "
+                    "Check that the key exists and the job run-as identity has USE CATALOG, "
+                    "USE SCHEMA and READ SECRET."
+                ) from None
+            if not value:
+                raise RuntimeError(
+                    f"Unity Catalog secret {uc_secret_schema}.{key} is empty. "
+                    "Check the key and the job run-as identity's READ SECRET privilege."
+                ) from None
+            credentials[field] = value
+        return credentials
+    if secret_scope:
+        return {
+            "client_id": secrets.get(scope=secret_scope, key="client-id"),
+            "client_secret": secrets.get(scope=secret_scope, key="client-secret"),
+        }
+    return None
+
+
+app_credentials = get_app_credentials(
+    dbutils.secrets,  # type: ignore[name-defined]
+    dbutils.widgets.get("app_auth_uc_secret_schema"),  # type: ignore[name-defined]
+    dbutils.widgets.get("app_auth_secret_scope"),  # type: ignore[name-defined]
+)
+if app_credentials is not None:
     app_client = WorkspaceClient(
         host=workspace.config.host, auth_type="oauth-m2m",
-        client_id=dbutils.secrets.get(scope=app_auth_secret_scope, key="client-id"),  # type: ignore[name-defined]
-        client_secret=dbutils.secrets.get(scope=app_auth_secret_scope, key="client-secret"),  # type: ignore[name-defined]
+        **app_credentials,
     )
     app_auth_headers = app_client.config.authenticate
 else:
