@@ -25,7 +25,7 @@ from backend.services.depot_plans import (
     _verify_cost_snapshot,
 )
 from route_opt.cost import CostParameters
-from route_opt.depot_planning import materialize_depot_targets, solve_depot_plan
+from route_opt.depot_planning import _available_fleet, materialize_depot_targets, solve_depot_plan
 from backend.services.depot_route_preparation import prepare_depot_routes
 
 
@@ -175,8 +175,14 @@ def _payload(value: object) -> dict[str, object]:
 def test_untouched_overtime_override_preserves_baseline_solver_inputs(route_minutes) -> None:
     snapshot = _snapshot()
     fleet, _ = _fleet_provider(snapshot, DEPOT_ID)
-    fleet[0].update(max_route_minutes=route_minutes, available_dates=[DATE_ONE])
+    fleet[0].update(max_route_minutes=route_minutes, available_days="Thursday")
+    fleet.extend([
+        {**fleet[0], "vehicle_id": "VEH-2", "available_days": "Sunday"},
+        {key: value for key, value in {**fleet[0], "vehicle_id": "VEH-3"}.items()
+         if key != "available_days"},
+    ])
     original_fleet = deepcopy(fleet)
+    baseline_fleet = _available_fleet(fleet, DEPOT_ID, DATE_ONE)
     original_rows = deepcopy(snapshot["network_rows"])
     params = CostParameters(labor_regular_hour=95.0)
     baseline_targets = materialize_depot_targets(
@@ -188,7 +194,10 @@ def test_untouched_overtime_override_preserves_baseline_solver_inputs(route_minu
         {"driver_delta": 0, "allow_overtime": True, "changes": []}, params,
     )
 
-    assert adjusted_fleet == original_fleet
+    effective_fleet = _available_fleet(adjusted_fleet, DEPOT_ID, DATE_ONE)
+    assert len(effective_fleet) == len(baseline_fleet) == 2
+    assert [vehicle["vehicle_id"] for vehicle in effective_fleet] == ["VEH-1", "VEH-3"]
+    assert effective_fleet == baseline_fleet
     assert adjusted_rows == original_rows
     assert materialize_depot_targets(
         adjusted_rows, snapshot["flow_rows"], DEPOT_ID, DATE_ONE
@@ -499,7 +508,7 @@ def test_operational_override_changes_only_local_solver_inputs() -> None:
     vehicle = override_input["fleet"][0]
     assert vehicle["max_route_minutes"] == 300
     assert vehicle["max_stops_per_route"] == 1
-    assert vehicle["available_dates"] == [DATE_ONE]
+    assert vehicle["available_days"] == DATE_ONE
     depot = override_input["network_rows"]["dim_facilities"][0]
     assert (depot["lat"], depot["lng"]) == (39.8, -86.1)
     detail = _payload(service.get_day(plan["plan_set_id"], DATE_ONE, scenario["route_scenario_id"]))
