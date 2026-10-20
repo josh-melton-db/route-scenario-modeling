@@ -11,7 +11,7 @@ export type OperationalDraft = Omit<DepotPlanOverrideRequest, 'route_scenario_id
 
 export const emptyOperationalDraft: OperationalDraft = {
   driver_delta: 0,
-  allow_overtime: false,
+  allow_overtime: true,
   changes: [],
 }
 
@@ -93,7 +93,7 @@ export default function DepotOperationalOverrideForm({
         <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
           <input
             type="checkbox"
-            checked={value.allow_overtime ?? false}
+            checked={value.allow_overtime ?? true}
             onChange={(event) => onChange({ ...value, allow_overtime: event.target.checked })}
           />
           Allow overtime
