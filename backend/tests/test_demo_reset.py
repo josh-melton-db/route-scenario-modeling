@@ -235,7 +235,7 @@ def test_canonical_rate_seed_is_complete_and_preserves_published_versions(
 
     count = LakebaseSeedService(postgres).ensure_canonical_rate_books()
 
-    assert count == 9
+    assert count == 11
     statements = [call.args[0] for call in postgres.executemany.call_args_list]
     assert len(statements) == 8
     assert all("ON CONFLICT" in statement and "DO NOTHING" in statement for statement in statements)
@@ -256,6 +256,24 @@ def test_canonical_rate_seed_is_complete_and_preserves_published_versions(
     }
     assert all(row[2] == 20271119 for row in versions)
     assert all(row[5:7] == ("2027-01-01", "2027-12-31") for row in versions)
+    lane_call = next(call for call in postgres.executemany.call_args_list
+        if '"contract_lane_rates"' in call.args[0])
+    delivery_lanes = [row for row in lane_call.args[1] if row[5] == "DELIVERY"]
+    assert {row[1] for row in delivery_lanes} == {
+        "DEMO_DELIVERY_STANDARD_2026_V1_20271119_V1",
+        "DEMO_DELIVERY_RESERVE_2026_V1_20271119_V1",
+    }
+    assert any(row[3] == "DPT_TOLA_SAN_ANTONIO" for row in delivery_lanes)
+    contract_call = next(call for call in postgres.executemany.call_args_list
+        if '"carrier_contracts"' in call.args[0])
+    delivery_contracts = [row for row in contract_call.args[1] if row[0].startswith("DEMO_DELIVERY_")]
+    assert [(row[3], row[4], row[5], row[6]) for row in delivery_contracts] == [
+        (6, 6.0, 90, 650), (12, 8.0, 120, 850),
+    ]
+    capacity_call = next(call for call in postgres.executemany.call_args_list
+        if '"contract_capacity_commitments"' in call.args[0])
+    delivery_capacity = [row for row in capacity_call.args[1] if row[0].startswith("DEMO_DELIVERY_")]
+    assert [(row[6], row[7]) for row in delivery_capacity] == [(6, 0), (12, 0)]
 
 
 @pytest.mark.parametrize("code", ["TABLE_OR_VIEW_NOT_FOUND", "SCHEMA_NOT_FOUND"])

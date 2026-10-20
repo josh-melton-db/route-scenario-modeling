@@ -13,7 +13,7 @@ from route_opt.synthetic import generate_all
 
 from .lakebase_migrations import migrate_lakebase
 from .postgres import PostgresService
-from .rates import canonical_rate_contract_details
+from .rates import CANONICAL_RATE_CONTRACTS, canonical_rate_contract_details
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,10 @@ class LakebaseSeedService:
         """Idempotently install the complete immutable national demo rate set."""
         migrate_lakebase(self.postgres)
         details = canonical_rate_contract_details()
+        delivery_templates = {
+            str(row["contract_id"]): row for row in CANONICAL_RATE_CONTRACTS
+            if str(row["contract_id"]).startswith("DEMO_DELIVERY_")
+        }
         with self.postgres.transaction() as connection:
             self.postgres.executemany(
                 f"""INSERT INTO {self.postgres.qualified_table('carriers')}
@@ -112,10 +116,13 @@ class LakebaseSeedService:
                 [
                     (
                         row.contract_id, row.carrier_id, row.contract_name,
-                        int(row.capacity_commitments[0].capacity_quantity / 5),
-                        row.lane_rates[-1].rate_per_mile / 1.05,
+                        delivery_templates[row.contract_id]["capacity_stops"]
+                        if row.contract_id in delivery_templates else int(row.capacity_commitments[0].capacity_quantity / 5),
+                        delivery_templates[row.contract_id]["rate_per_mile"]
+                        if row.contract_id in delivery_templates else row.lane_rates[-1].rate_per_mile / 1.05,
                         row.lane_rates[-1].rate_per_stop,
-                        row.lane_rates[-1].minimum_charge / 1.1,
+                        delivery_templates[row.contract_id]["minimum_charge"]
+                        if row.contract_id in delivery_templates else row.lane_rates[-1].minimum_charge / 1.1,
                         row.fuel_surcharges[0].rate_pct,
                         row.version.effective_start, row.version.effective_end,
                     )
