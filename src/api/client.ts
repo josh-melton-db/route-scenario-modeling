@@ -306,6 +306,9 @@ export const api = {
       `/api/depot-plans/${encodeURIComponent(planSetId)}?${qs({ route_scenario_id: routeScenarioId })}`,
       { signal },
     ),
+  refreshDepotPlanRates: (planSetId: string) => requestJSON<DepotPlanSet>(
+    `/api/depot-plans/${encodeURIComponent(planSetId)}/refresh-rates`, { method: 'POST' },
+  ),
   depotPlanDay: (planSetId: string, serviceDate: string, routeScenarioId = 'default', signal?: AbortSignal) =>
     requestJSON<DepotPlanDayDetail>(
       `/api/depot-plans/${encodeURIComponent(planSetId)}/days/${encodeURIComponent(serviceDate)}?${qs({ route_scenario_id: routeScenarioId })}`,

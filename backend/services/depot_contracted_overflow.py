@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
+import hashlib
+import json
 
 from route_opt.baseline import build_route_from_ordered_stops
 from route_opt.cost import CostParameters
@@ -9,9 +11,14 @@ from route_opt.pricing import revenue_for_cases
 from route_opt.rates import contract_status, quote_contract
 
 
+def rate_book_content_hash(details: list[dict]) -> str:
+    return hashlib.sha256(json.dumps(details, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
 def apply_contracted_overflow(
     solved: dict, *, network_rows: dict, depot_id: str, service_date: str,
     cost_parameters: CostParameters, contract_details: list[dict], enabled: bool,
+    snapshot_hash: str | None = None,
 ) -> None:
     if not enabled:
         return
@@ -161,6 +168,11 @@ def apply_contracted_overflow(
     solved.setdefault("execution", {})["contract_versions"] = [
         {"contract_id": contract_id, "version_id": version_id} for contract_id, version_id in sorted(versions)
     ]
+    solved["execution"]["contract_snapshots"] = deepcopy([
+        detail for detail in contract_details
+        if (detail["contract_id"], detail["version"]["version_id"]) in versions
+    ])
+    solved["execution"]["rate_book_snapshot_hash"] = snapshot_hash or rate_book_content_hash(contract_details)
     solved["execution"]["allow_contracted_overflow"] = True
     for diagnostic in solved.get("diagnostics", []):
         diagnostic.update(

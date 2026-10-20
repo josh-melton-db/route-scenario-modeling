@@ -34,6 +34,11 @@ DATE_TWO = "2026-10-02"
 DEPOT_ID = "DPT_TEST"
 
 
+@pytest.fixture(autouse=True)
+def empty_rate_book(monkeypatch):
+    monkeypatch.setattr("backend.services.depot_plans.list_rate_contract_details", lambda store: [])
+
+
 class FakeRepository:
     def __init__(self) -> None:
         self.records: dict[str, dict[str, object]] = {}
@@ -253,6 +258,102 @@ def _service():
         job_manager=jobs,
     )
     return service, repository, jobs, solve_calls, solve_inputs
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_rate_book_freeze_refresh_and_result_history(monkeypatch, legacy):
+    from backend.tests.test_depot_contracted_overflow import contract
+    from backend.models import RateContractDetail
+
+    detail = RateContractDetail.model_validate(contract(origin=DEPOT_ID, origin_endpoint_id=DEPOT_ID)).model_dump(mode="json")
+    live = [detail]
+    monkeypatch.setattr("backend.services.depot_plans.list_rate_contract_details",
+                        lambda store: [RateContractDetail.model_validate(row) for row in live])
+    service, repository, jobs, calls, _ = _service()
+    plan = service.get_or_create_plan("RATE-RUN", DEPOT_ID)
+    record = repository.get(plan.plan_set_id)
+    assert record["rate_book_snapshot"] == [detail]
+    assert plan.rate_book_snapshot_hash
+    assert plan.rates_locked_at
+    while jobs.run_next():
+        pass
+    if legacy:
+        repository.mutate(plan.plan_set_id, lambda row: row.pop("rate_book_snapshot"))
+    scenario = service.create_scenario(plan.plan_set_id, "Overflow")
+
+    def optimize(recover=False):
+        nonlocal service, jobs
+        service.optimize_day(plan.plan_set_id, DATE_ONE, {
+            "route_scenario_id": scenario.route_scenario_id,
+            "driver_delta": -1, "allow_contracted_overflow": True,
+        })
+        if recover:
+            jobs = DepotPlanJobManager(max_workers=1, start_workers=False)
+            service = DepotPlanService(repository=repository,
+                                       snapshot_provider=lambda run_id: deepcopy(_snapshot()),
+                                       fleet_provider=_fleet_provider, solver=service.solver,
+                                       job_manager=jobs)
+            assert service.recover_pending_plans() == 1
+        while jobs.run_next():
+            pass
+        return service.get_day(plan.plan_set_id, DATE_ONE, scenario.route_scenario_id).selected_result.model_dump(mode="json")
+
+    first = optimize()
+    first_stored = repository.get(plan.plan_set_id)["days"][DATE_ONE]["results"][first["result_id"]]
+    assert first["contracted_cost"] == 10
+    assert first["execution"]["contract_snapshots"] == [detail]
+    assert first["execution"]["rate_book_snapshot_hash"] == plan.rate_book_snapshot_hash
+    live[0]["lane_rates"][0]["rate_per_stop"] = 70
+    second = optimize(recover=True)
+    assert second["contracted_cost"] == (70 if legacy else 10)
+    before = repository.get(plan.plan_set_id)["days"]
+    call_count = len(calls)
+    refreshed = service.refresh_rates(plan.plan_set_id)
+    assert refreshed.rate_book_snapshot_hash != plan.rate_book_snapshot_hash
+    assert refreshed.rates_locked_at
+    assert len(calls) == call_count
+    assert repository.get(plan.plan_set_id)["days"] == before
+    third = optimize()
+    assert third["contracted_cost"] == 70
+    assert third["execution"]["rate_book_snapshot_hash"] == refreshed.rate_book_snapshot_hash
+    assert repository.get(plan.plan_set_id)["days"][DATE_ONE]["results"][first["result_id"]] == first_stored
+    live[0]["version"]["effective_end"] = "2026-09-01"
+    assert optimize()["contracted_cost"] == 70
+
+
+def test_rate_book_scope_empty_snapshot_and_canonical_hash(monkeypatch):
+    from backend.tests.test_depot_contracted_overflow import contract
+    from backend.models import RateContractDetail
+    from backend.services.depot_contracted_overflow import rate_book_content_hash
+    from backend.services.depot_plans import _freeze_rate_book
+
+    delivery = RateContractDetail.model_validate(contract(origin=DEPOT_ID, origin_endpoint_id=DEPOT_ID))
+    other_depot = RateContractDetail.model_validate(contract())
+    linehaul = RateContractDetail.model_validate(contract(lane_type="LINEHAUL"))
+    monkeypatch.setattr("backend.services.depot_plans.list_rate_contract_details",
+                        lambda store: [linehaul, delivery, other_depot])
+    frozen = _freeze_rate_book(DEPOT_ID, [DATE_ONE])
+    assert frozen == [delivery.model_dump(mode="json")]
+    assert rate_book_content_hash(frozen) == rate_book_content_hash([
+        dict(reversed(list(frozen[0].items())))])
+    monkeypatch.setattr("backend.services.depot_plans.list_rate_contract_details", lambda store: [])
+    service, repository, jobs, _, _ = _service()
+    plan = service.get_or_create_plan("EMPTY-RATES", DEPOT_ID)
+    while jobs.run_next():
+        pass
+    scenario = service.create_scenario(plan.plan_set_id, "Empty snapshot")
+    monkeypatch.setattr("backend.services.depot_plans.list_rate_contract_details",
+                        lambda store: pytest.fail("Frozen empty book must not read live rates"))
+    service.optimize_day(plan.plan_set_id, DATE_ONE, {
+        "route_scenario_id": scenario.route_scenario_id,
+        "driver_delta": -1, "allow_contracted_overflow": True,
+    })
+    while jobs.run_next():
+        pass
+    result = service.get_day(plan.plan_set_id, DATE_ONE, scenario.route_scenario_id).selected_result
+    assert result.contracted_cost == 0
+    assert result.execution["contract_snapshots"] == []
+    assert result.execution["rate_book_snapshot_hash"] == plan.rate_book_snapshot_hash
 
 
 def test_route_preparation_reuses_saved_first_day_on_repeated_visits(monkeypatch) -> None:
